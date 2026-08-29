@@ -1,0 +1,18 @@
+{
+  "name": "pi-badger-integration",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Canonical source for pi coding-agent extensions that are not part of ai-badger, plus the publish flow that installs them to pi's user scope and vendors the ai-badger adapter back into an ai-badger checkout.",
+  "scripts": {
+    "test": "bun test",
+    "publish": "bun publish.ts",
+    "check": "bun publish.ts --check",
+    "typecheck": "bunx tsc --noEmit -p ."
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.4",
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  }
+}
