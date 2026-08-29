@@ -13,6 +13,7 @@ independent of ai-badger's release machinery.
 |---|---|---|
 | ai-badger hooks adapter (PreToolUse gates + PostToolUse arms) | `features/pi/adjustments/adapter/` | `~/.pi/agent/extensions/ai-badger/` |
 | shift-enter-newline (Shift+Enter newline for terminals that cannot report it, e.g. JetBrains IDE terminal) | `extensions/shift-enter-newline.ts` | `~/.pi/agent/extensions/shift-enter-newline.ts` |
+| session-signals (marker `!` importance — mid-run abort; delegation working status in the footer) | `extensions/session-signals.ts` | `~/.pi/agent/extensions/session-signals.ts` |
 
 Out of scope (still ai-badger-owned, vendored + tested in ai-badger's `features/pi/`):
 `ai-badger-subagent`, `pi-cron`.

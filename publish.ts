@@ -36,9 +36,11 @@ const ADAPTER_FILES = ["index.ts", "hook-bridge.ts", "package.json"] as const;
 
 const ADAPTER_SOURCE_DIR = "features/pi/adjustments/adapter";
 const SHIFT_ENTER_SOURCE = "extensions/shift-enter-newline.ts";
+const SESSION_SIGNALS_SOURCE = "extensions/session-signals.ts";
 const USER_EXTENSIONS_DIR = join(homedir(), ".pi", "agent", "extensions");
 const ADAPTER_USER_DIR = join(USER_EXTENSIONS_DIR, "ai-badger");
 const SHIFT_ENTER_USER_PATH = join(USER_EXTENSIONS_DIR, "shift-enter-newline.ts");
+const SESSION_SIGNALS_USER_PATH = join(USER_EXTENSIONS_DIR, "session-signals.ts");
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 
@@ -63,11 +65,18 @@ function adapterTarget(userDir: string): Target {
 	};
 }
 
+/** A standalone single-file extension: byte-compare its one file; no ownedDir (its
+ * destination is the shared extensions dir, which other extensions live in too). */
+function singleFileTarget(name: string, source: string, destination: string): Target {
+	return { name: `${name} (${destination})`, pairs: [{ source, destination }] };
+}
+
 function shiftEnterTarget(): Target {
-	return {
-		name: `shift-enter-newline (${SHIFT_ENTER_USER_PATH})`,
-		pairs: [{ source: join(ROOT, SHIFT_ENTER_SOURCE), destination: SHIFT_ENTER_USER_PATH }],
-	};
+	return singleFileTarget("shift-enter-newline", join(ROOT, SHIFT_ENTER_SOURCE), SHIFT_ENTER_USER_PATH);
+}
+
+function sessionSignalsTarget(): Target {
+	return singleFileTarget("session-signals", join(ROOT, SESSION_SIGNALS_SOURCE), SESSION_SIGNALS_USER_PATH);
 }
 
 function sha256(path: string): string {
@@ -152,7 +161,7 @@ function main(argv: string[]): number {
 		return 1;
 	}
 
-	const targets = [adapterTarget(ADAPTER_USER_DIR), shiftEnterTarget()];
+	const targets = [adapterTarget(ADAPTER_USER_DIR), shiftEnterTarget(), sessionSignalsTarget()];
 
 	if (check) {
 		const problems = targets.flatMap((target) => drifts(target).map((p) => `[${target.name}] ${p}`));
