@@ -36,8 +36,8 @@ fresh pi session.
 
 1. Edit canonical source here; keep tests green: `bun test` (adapter + shift-enter).
 2. `bun run publish -- --ai-badger /Users/arasz/RiderProjects/ai-badger` — vendors the
-   adapter into that checkout (writes; always announced; refuses if the vendored dir does
-   not exist; never combined with `--check`).
+   adapter into that checkout (vendor-ONLY: user scope is not touched in this step; refuses
+   if the vendored dir does not exist; cannot be combined with `--check`).
 3. In the ai-badger checkout: `bun test features/pi` — its tests exercise the freshly
    vendored artifact — then commit.
 4. `bun run publish` — installs canonical to user scope.
@@ -56,10 +56,11 @@ shape.
 
 ## Concurrency note
 
-Installs write to a temp file then rename, so a pi session *starting* mid-publish cannot
-load a mixed old/new file pair. Already-running sessions are unaffected (their modules are
-loaded). ai-badger's freshness gates run `--no-install`, so CI activity never races the
-user-scope install.
+Installs write to a temp file then rename — no partially written file ever appears at a
+destination. The rename is per-FILE, not per-set: a pi session starting inside the
+sub-millisecond window between two adapter-file renames could observe a mixed set.
+Already-running sessions are unaffected (their modules are loaded). ai-badger's freshness
+gates run `--no-install`, so CI activity never races the user-scope install.
 
 ## Commands
 

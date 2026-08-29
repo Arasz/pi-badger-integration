@@ -27,7 +27,8 @@
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /** Byte-identical to ai-badger's adjust_hooks.py copy contract — never add a file here
  * without vendoring it there too, or scaffolds will ship it while --check calls it extra. */
@@ -39,7 +40,7 @@ const USER_EXTENSIONS_DIR = join(homedir(), ".pi", "agent", "extensions");
 const ADAPTER_USER_DIR = join(USER_EXTENSIONS_DIR, "ai-badger");
 const SHIFT_ENTER_USER_PATH = join(USER_EXTENSIONS_DIR, "shift-enter-newline.ts");
 
-const ROOT = dirnameOf(import.meta.url);
+const ROOT = fileURLToPath(new URL(".", import.meta.url));
 
 interface Target {
 	name: string;
@@ -49,10 +50,6 @@ interface Target {
 	 * are drift. A single-file target must not set it — its destination dir is shared with
 	 * every other extension pi loads. */
 	ownedDir?: string;
-}
-
-function dirnameOf(url: string): string {
-	return new URL(".", url).pathname;
 }
 
 function adapterTarget(userDir: string): Target {
@@ -85,12 +82,15 @@ function drifts(target: Target): string[] {
 		else if (!existsSync(destination)) problems.push(`not installed: ${destination}`);
 		else if (sha256(source) !== sha256(destination)) problems.push(`differs: ${destination}`);
 	}
-	const destinationDir = target.ownedDir ? target.ownedDir : undefined;
+	const destinationDir = target.ownedDir;
 	if (destinationDir !== undefined && existsSync(destinationDir)) {
 		for (const entry of readdirSync(destinationDir)) {
 			const shipped = target.pairs.some((p) => p.destination === join(destinationDir, entry));
 			if (!shipped) {
-				problems.push(`extra file at destination (not canonical): ${join(destinationDir, entry)}`);
+				problems.push(
+					`extra file at destination (not canonical): ${join(destinationDir, entry)}` +
+						` — delete it, or add it to canonical and ship it`,
+				);
 			}
 		}
 	}
@@ -101,9 +101,12 @@ function dirnameOf2(path: string): string {
 	return path.slice(0, Math.max(path.lastIndexOf("/"), 0));
 }
 
-/** Install one file atomically enough for a directory pi reads at session start. */
+/** Install one file atomically (no partially written file ever appears at the
+ * destination; a crashed publish leaves only a `.publishing-<pid>` stray that --check
+ * names). Note this is per-file atomicity, not per-set: a session starting between two
+ * renames of a multi-file target can observe a mixed set — sub-millisecond window. */
 function install(source: string, destination: string): void {
-	mkdirSync(dirnameOf2(destination), { recursive: true });
+	mkdirSync(dirname(destination), { recursive: true });
 	const staged = `${destination}.publishing-${process.pid}`;
 	copyFileSync(source, staged);
 	renameSync(staged, destination);
@@ -142,6 +145,12 @@ function main(argv: string[]): number {
 		console.error("FATAL: --ai-badger needs a path to an ai-badger checkout");
 		return 1;
 	}
+	if (check && aiBadgerFlag >= 0) {
+		// M1 (review): silently dropping the vendoring request would let an operator
+		// believe the durability step happened. Refuse instead.
+		console.error("FATAL: --ai-badger cannot be combined with --check — checking never writes; vendoring always does");
+		return 1;
+	}
 
 	const targets = [adapterTarget(ADAPTER_USER_DIR), shiftEnterTarget()];
 
@@ -155,9 +164,12 @@ function main(argv: string[]): number {
 		return 0;
 	}
 
+	// --ai-badger is VENDOR-ONLY (review m1): the README flow runs ai-badger's tests
+	// between vendoring and the user-scope install, so propagation to user scope is a
+	// deliberate separate step.
 	if (aiBadgerPath) vendorAdapter(aiBadgerPath);
-	for (const target of targets) installTarget(target);
+	else for (const target of targets) installTarget(target);
 	return 0;
 }
 
-process.exit(main(process.argv.slice(2)));
+if (import.meta.main) process.exit(main(process.argv.slice(2)));

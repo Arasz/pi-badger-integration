@@ -33,11 +33,11 @@ const { KEYBINDINGS } = require2(join(dirname(GLOBAL_PI), "dist", "core", "keybi
 const jiti = createJiti(import.meta.url, {
 	moduleCache: false,
 	tryNative: false,
+	// resolve from the global install's own tree, so the aliased packages are the exact
+	// copies the running pi uses (no local duplicate to drift)
 	alias: {
-		"@earendil-works/pi-coding-agent":
-			"/Users/arasz/.bun/install/global/node_modules/@earendil-works/pi-coding-agent/dist/index.js",
-		"@earendil-works/pi-tui":
-			"/Users/arasz/.bun/install/global/node_modules/@earendil-works/pi-tui/dist/index.js",
+		"@earendil-works/pi-coding-agent": join(dirname(GLOBAL_PI), "dist", "index.js"),
+		"@earendil-works/pi-tui": join(dirname(GLOBAL_PI), "..", "pi-tui", "dist", "index.js"),
 	},
 });
 

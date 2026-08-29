@@ -71,8 +71,8 @@ describe("rewrite target sequence", () => {
 			tuiStub() as never,
 			themeStub(),
 			// the extension's own wiring (shift-enter-newline.ts) builds the manager via
-			// pi-tui's getKeybindings(); the cast documents the dual-package type identity
-			// (same class at runtime — bun dedupes the module), not a behavioural cheat
+			// pi-tui's getKeybindings(); the cast papers over the dual-package type identity
+			// (local node_modules copy vs the jiti-aliased global the extension loads with)
 			getKeybindings() as never,
 		);
 		editor.handleInput("a");
@@ -83,10 +83,10 @@ describe("rewrite target sequence", () => {
 });
 
 describe("ESC+CR — the bytes JetBrains terminals send for Shift+Enter", () => {
-	/** The editor's escape-sequence parser settles the ESC+CR decision asynchronously on a
-	 * cold module cache; without this flush the rewrite could land after the assertion
-	 * (observed once as a cold-start flake). Awaiting a macrotask keeps the mutation
-	 * detection intact — a dropped rewrite condition still leaves these red. */
+	/** Defensive macrotask flush before assertions. In pi 0.84.4 the newline branch is
+	 * fully synchronous, but one cold-start run observed the rewrite landing after the
+	 * assertion; flushing costs nothing and a dropped rewrite condition still goes red
+	 * (verified by mutation). */
 	async function settle(): Promise<void> {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	}
