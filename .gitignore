@@ -7,3 +7,4 @@ __pycache__/
 .ai-badger/worktrees/
 # per-project task-tracking runtime state (write lock, executed-tasks, token usage)
 .ai-badger/task-tracking/
+.ai-badger.bckp/
