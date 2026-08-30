@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "python3 \".ai-badger/skills/task/scripts/drift_notice_hook.py\"",
+        "timeoutSec": 10,
+        "matcher": "startup|resume"
+      },
+      {
+        "type": "command",
+        "bash": "python3 \".ai-badger/skills/git-work/scripts/git_config_health_hook.py\"",
+        "timeoutSec": 10,
+        "matcher": "startup|resume"
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "python3 \".ai-badger/skills/mcp-index/scripts/context_enrichment_hook.py\"",
+        "timeoutSec": 10
+      },
+      {
+        "type": "command",
+        "bash": "python3 .ai-badger/skills/prompt-markers/scripts/user_prompt_hook.py",
+        "timeoutSec": 5
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "python3 \".ai-badger/skills/commit-reminder/scripts/commit_reminder_hook.py\"",
+        "timeoutSec": 10,
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit"
+      },
+      {
+        "type": "command",
+        "bash": "python3 \".ai-badger/skills/ai-raccoon-memory/scripts/memory_first_gate_post_hook.py\"",
+        "timeoutSec": 10,
+        "matcher": "memory_search"
+      },
+      {
+        "type": "command",
+        "bash": "python3 \".ai-badger/skills/ai-raccoon-memory/scripts/memory_grade_hook.py\"",
+        "timeoutSec": 10,
+        "matcher": "memory_search"
+      },
+      {
+        "type": "command",
+        "bash": "python3 \".ai-badger/skills/ai-raccoon-memory/scripts/memory_grade_hook.py\"",
+        "timeoutSec": 10,
+        "matcher": "Read|ReadFile"
+      },
+      {
+        "type": "command",
+        "bash": "python3 \".ai-badger/skills/semantica-knowledge-graph/scripts/semantica_export_autosave_hook.py\"",
+        "timeoutSec": 10,
+        "matcher": "export_graph"
+      },
+      {
+        "type": "command",
+        "bash": "python3 \".ai-badger/skills/prompt-markers/scripts/grounded_feedback_hook.py\"",
+        "timeoutSec": 10,
+        "matcher": "bash|Bash"
+      }
+    ],
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "python3 \".ai-badger/skills/ai-raccoon-memory/scripts/memory_first_gate_hook.py\"",
+        "timeoutSec": 10,
+        "matcher": "grep|rg|Glob|bash"
+      }
+    ]
+  }
+}

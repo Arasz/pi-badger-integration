@@ -1,2 +1,5 @@
 node_modules/
 *.tsbuildinfo
+__pycache__/
+*.py[cod]
+.claude/settings.json.bak-*
