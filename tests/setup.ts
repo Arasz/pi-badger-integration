@@ -15,7 +15,8 @@ export const EXTENSION_PATH = join(
 	dirname(fileURLToPath(import.meta.url)),
 	"..",
 	"extensions",
-	"shift-enter-newline.ts",
+	"shift-enter-newline",
+	"index.ts",
 );
 
 const GLOBAL_PI = join(

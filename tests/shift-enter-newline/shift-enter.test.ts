@@ -9,7 +9,7 @@ import {
 	makeEditor,
 	themeStub,
 	tuiStub,
-} from "./setup";
+} from "../setup";
 
 const SHIFT_HELD = { isModifierPressed: () => true };
 const SHIFT_UP = { isModifierPressed: () => false };
@@ -70,7 +70,7 @@ describe("rewrite target sequence", () => {
 			// but its parameter type is the full interface
 			tuiStub() as never,
 			themeStub(),
-			// the extension's own wiring (shift-enter-newline.ts) builds the manager via
+			// the extension's own wiring (extensions/shift-enter-newline/index.ts) builds the manager via
 			// pi-tui's getKeybindings(); the cast papers over the dual-package type identity
 			// (local node_modules copy vs the jiti-aliased global the extension loads with)
 			getKeybindings() as never,

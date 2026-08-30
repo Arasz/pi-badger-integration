@@ -12,7 +12,7 @@ import {
 	renderStatus,
 	shouldInterrupt,
 	type MarkerName,
-} from "../extensions/session-signals.ts";
+} from "../../extensions/session-signals/index.ts";
 
 describe("marker grammar: meaning and importance are split", () => {
 	test("every base marker parses with its long and short alias", () => {
