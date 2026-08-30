@@ -20,11 +20,21 @@ export class McpToolAdapter {
     filterPatterns?: string[],
   ): ToolDefinition<TSchema, TDetails> | null {
     if (filterPatterns && filterPatterns.length > 0) {
-      const matches = filterPatterns.some((pattern) => {
-        const regex = new RegExp(pattern);
-        return regex.test(mcpTool.name);
-      });
-      if (!matches) {
+      // Every RegExp construction is try/caught (plan M1): a poison pattern is
+      // dropped with a warning and can never escape into the per-server catch,
+      // which would kill every tool of the server. Fail-open when no pattern
+      // compiles: hiding every tool silently would be the worse failure.
+      const compiled: RegExp[] = [];
+      for (const pattern of filterPatterns) {
+        try {
+          compiled.push(new RegExp(pattern));
+        } catch {
+          console.warn(
+            `[pi-mcp-tools] server '${serverName}': invalid filter pattern '${pattern}' ignored (tool filtering degraded)`,
+          );
+        }
+      }
+      if (compiled.length > 0 && !compiled.some((regex) => regex.test(mcpTool.name))) {
         return null;
       }
     }

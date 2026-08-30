@@ -1,0 +1,10 @@
+CAPABILITY_PROJECT_SCOPE_MCP
+
+This extension reads the project's claude-format `.mcp.json` at `session_start`
+and merges it project-over-global, gated by pi project trust.
+
+Installed marker name: `.ai-badger-capability-project-scope-mcp` (the ai-badger
+migration adjustments gate on this marker's presence in
+`~/.pi/agent/extensions/pi-mcp-tools/`, never on a version number).
+
+Shipped by ai-badger task aib-pi-stack-mcp-skills-parity, package P1 (2026-08-30).
