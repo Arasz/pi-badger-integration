@@ -21,10 +21,12 @@
  * worker to every later importer — so this file's import must not race in an
  * unmocked capture that would poison the sibling lifecycle/merge suites (and
  * conversely, a mocked capture is inert here: this file only calls the
- * explicit-path/pure functions F12 scoped it to).
+ * explicit-path/pure functions F12 scoped it to.
+ */
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import * as osActual from "node:os";
 import type { McpConfig } from "../../extensions/pi-mcp-tools/types.ts";
 import type { ConfigLoader as ConfigLoaderType } from "../../extensions/pi-mcp-tools/ConfigLoader.ts";
@@ -54,7 +56,6 @@ try {
 
 const { ConfigLoader: _C } = await import("../../extensions/pi-mcp-tools/ConfigLoader.ts");
 const loader = _C as typeof ConfigLoaderType;
-const loader = ConfigLoader as typeof ConfigLoaderType;
 
 let dir: string;
 

@@ -20,7 +20,6 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import * as osActual from "node:os";
-import * as osActual from "node:os";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ConfigLoader as ConfigLoaderType } from "../../extensions/pi-mcp-tools/ConfigLoader.ts";
 
