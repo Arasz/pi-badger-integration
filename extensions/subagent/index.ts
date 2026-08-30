@@ -2,7 +2,7 @@
  * ai-badger subagent for pi: one delegation tool over the personas ai-badger scaffolds into
  * `<cwd>/.pi/agents/*.md` (written by `features/pi/adjustments/adjust_agents.py`).
  *
- * Installed user-scope at `~/.pi/agent/extensions/ai-badger-subagent/index.ts`, and it reads the
+ * Installed user-scope at `~/.pi/agent/extensions/subagent/index.ts`, and it reads the
  * project's agent files ITSELF through `node:fs`. That is the whole trick, and it must not be
  * "simplified" into pi's own resource loader later: project-local resources are trust-gated, and
  * pi's settings docs state that `-p`, `--mode json` and `--mode rpc` ignore project resources
