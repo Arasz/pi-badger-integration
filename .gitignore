@@ -3,3 +3,7 @@ node_modules/
 __pycache__/
 *.py[cod]
 .claude/settings.json.bak-*
+# task worktrees, in the agent-neutral place the /task skill puts them
+.ai-badger/worktrees/
+# per-project task-tracking runtime state (write lock, executed-tasks, token usage)
+.ai-badger/task-tracking/
