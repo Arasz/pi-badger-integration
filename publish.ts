@@ -44,8 +44,16 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Byte-identical to ai-badger's adjust_hooks.py copy contract — never add a file here
- * without vendoring it there too, or scaffolds will ship it while --check calls it extra. */
-const ADAPTER_FILES = ["index.ts", "hook-bridge.ts", "package.json"] as const;
+ * without vendoring it there too, or scaffolds will ship it while --check calls it extra.
+ * .ai-badger-capability-resources-discover is the installed capability marker the
+ * migration adjustments gate on (R8/R9) — a dotfile ON PURPOSE: it must ship with
+ * the adapter to user scope (P2 of aib-pi-stack-mcp-skills-parity). */
+export const ADAPTER_FILES = [
+	"index.ts",
+	"hook-bridge.ts",
+	"package.json",
+	".ai-badger-capability-resources-discover",
+] as const;
 
 const ADAPTER_SOURCE_DIR = "features/pi/adjustments/adapter";
 /** Directory names under extensions/, each installed as ~/.pi/agent/extensions/<name>/. */

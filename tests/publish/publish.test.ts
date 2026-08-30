@@ -14,7 +14,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { directoryTarget, drifts, main } from "../../publish.ts";
+import { fileURLToPath } from "node:url";
+import { ADAPTER_FILES, directoryTarget, drifts, main } from "../../publish.ts";
+
+/** The repo root — for reading canonical SOURCE trees only (never a destination). */
+function rootDir(): string {
+	return join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+}
 
 const cleanup: string[] = [];
 afterEach(() => {
@@ -274,5 +280,59 @@ describe("install (into injected temp targets)", () => {
 		}
 		expect(code).toBe(0);
 		expect(captured.lines.join("\n")).toContain("WITHOUT node_modules");
+	});
+});
+
+describe("dotfiles ship as canonical pairs (P2 capability markers)", () => {
+	test("directoryTarget picks dotfiles up as pairs — a marker must install to user scope", () => {
+		const { root, userDir } = fixture();
+		writeTree(extensionSource(root, "pi-mcp-tools"), {
+			"index.ts": "export default {};",
+			".ai-badger-capability-project-scope-mcp": "marker bytes",
+		});
+
+		const target = directoryTarget("pi-mcp-tools", { root, userDir });
+		const markerPair = target.pairs.find((p) => p.source.endsWith(".ai-badger-capability-project-scope-mcp"));
+		expect(markerPair).toBeDefined();
+		expect(markerPair!.destination).toBe(join(userDir, "pi-mcp-tools", ".ai-badger-capability-project-scope-mcp"));
+	});
+
+	test("--check treats a missing dotfile at destination as a fatal problem (canonical pair, not an extra)", () => {
+		const { root, userDir } = fixture();
+		writeTree(extensionSource(root, "pi-mcp-tools"), {
+			"index.ts": "export default {};",
+			".ai-badger-capability-project-scope-mcp": "marker bytes",
+		});
+		// destination has the code file but NOT the marker
+		writeTree(join(userDir, "pi-mcp-tools"), { "index.ts": "export default {};" });
+
+		const report = drifts(directoryTarget("pi-mcp-tools", { root, userDir }));
+		expect(report.problems).toHaveLength(1);
+		expect(report.problems[0]).toContain(".ai-badger-capability-project-scope-mcp");
+		expect(report.problems[0]).toContain("not installed");
+	});
+
+	test("a dotfile at destination that is NOT canonical is still flagged as extra", () => {
+		const { root, userDir } = fixture();
+		writeTree(extensionSource(root, "pi-mcp-tools"), { "index.ts": "export default {};" });
+		writeTree(join(userDir, "pi-mcp-tools"), {
+			"index.ts": "export default {};",
+			".some-stray-dotfile": "stray",
+		});
+
+		const report = drifts(directoryTarget("pi-mcp-tools", { root, userDir }));
+		expect(report.problems.some((p) => p.includes(".some-stray-dotfile"))).toBe(true);
+	});
+});
+
+describe("adapter capability marker (P2)", () => {
+	test("ADAPTER_FILES carries .ai-badger-capability-resources-discover (installed at user scope, gated on by the adjustments)", () => {
+		expect(ADAPTER_FILES).toContain(".ai-badger-capability-resources-discover");
+	});
+
+	test("the canonical adapter dir matches ADAPTER_FILES exactly (add a file ⇒ list it; list a file ⇒ ship it)", () => {
+		const adapterDir = join(rootDir(), "features", "pi", "adjustments", "adapter");
+		const onDisk = readdirSync(adapterDir).sort();
+		expect(onDisk).toEqual([...ADAPTER_FILES].sort());
 	});
 });
