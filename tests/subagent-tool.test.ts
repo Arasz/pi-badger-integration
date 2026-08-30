@@ -9,9 +9,11 @@
  * was witnessed against the current implementation, and the exact argv/orderings pinned here
  * are the ones the current code emits.
  *
- * Row 1 pins the planned FUTURE argv (`--mode json`, denylist `delegate,delegations`) that no
- * code produces yet; per the tests doc's RED-first protocol it was witnessed RED in lane P0
- * and is committed skipped, to be unskipped in P3 together with the argv change.
+ * Row 1 pins the planned argv (`--mode json`, denylist `delegate,delegations`) that lane P0
+ * witnessed RED; lane P3 unskipped it in the same commit as the `delegationArgs` change that
+ * satisfies it. Rows 2–3 pinned the pre-P3 argv details that legitimately changed (R3/R6:
+ * JSON mode + the two-tool denylist): row 2's full-array expectations were amended consciously
+ * to the new argv; row 3's structural assertions (task behind `--`, single `--`) hold unchanged.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -53,9 +55,9 @@ function persona(overrides: Partial<Persona> = {}): Persona {
 }
 
 describe("delegationArgs", () => {
-  // row 1 pins the FUTURE argv (plan R3/R6: `--mode json` + denylist "delegate,delegations") —
-  // witnessed RED in lane P0; unskip in P3 together with the argv change that satisfies it.
-  test.skip("row 1 — witnessed RED in lane P0; unskip in P3 with the argv change", () => {
+  // row 1 — witnessed RED in lane P0; unskipped in P3 together with the argv change that
+  // satisfies it (`--mode json` + the delegate,delegations denylist, R3/R6).
+  test("row 1 — argv carries JSON mode + new denylist", () => {
     const args = delegationArgs(persona({ systemPrompt: "" }), "Draft the plan");
 
     expect(args.slice(0, 6)).toEqual([
@@ -74,13 +76,16 @@ describe("delegationArgs", () => {
   test("row 2 — argv keeps persona prompt and model", () => {
     const args = delegationArgs(persona(), "Draft the plan", "openrouter/moonshotai/kimi-k2.6");
 
-    // Full-array equality pins the current ordering: flags, then model, then the persona's
-    // body, then `--` and the task.
+    // Full-array equality pins the ordering: JSON mode, then flags, then model, then the
+    // persona's body, then `--` and the task. (Amended in P3 for the row-1 argv change: the
+    // pre-P3 array lacked `--mode json` and excluded only `delegate`.)
     expect(args).toEqual([
       "-p",
+      "--mode",
+      "json",
       "--no-session",
       "--exclude-tools",
-      "delegate",
+      "delegate,delegations",
       "--model",
       "openrouter/moonshotai/kimi-k2.6",
       "--append-system-prompt",
@@ -93,7 +98,19 @@ describe("delegationArgs", () => {
   test("row 2 — an empty body omits --append-system-prompt even when a model is present", () => {
     const args = delegationArgs(persona({ systemPrompt: "  \n" }), "t", "m");
 
-    expect(args).toEqual(["-p", "--no-session", "--exclude-tools", "delegate", "--model", "m", "--", "t"]);
+    // Amended in P3 for the row-1 argv change (same reason as above).
+    expect(args).toEqual([
+      "-p",
+      "--mode",
+      "json",
+      "--no-session",
+      "--exclude-tools",
+      "delegate,delegations",
+      "--model",
+      "m",
+      "--",
+      "t",
+    ]);
     expect(args).not.toContain("--append-system-prompt");
   });
 

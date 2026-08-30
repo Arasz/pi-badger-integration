@@ -10,29 +10,78 @@
  * subject to that gate, which is what makes the personas live in the headless runs ai-badger's
  * delegation map depends on.
  *
- * pi's 35 KB subagent example is deliberately not vendored: its parallel streaming, cost
- * accounting and workflow prompts are not what the delegation map asks for, and copying a third
- * party's example owes us its maintenance forever.
+ * Delegation lifecycle (plan §2 R2/R3/R5/R6/R10): every child runs `pi -p --mode json` through
+ * the P2 runner/registry, so `delegation-core.ts` parses its event stream. In a TUI the tool
+ * returns immediately with a receipt and the completion rides one `delegation-result` followUp
+ * message (R5); headless modes stay fully blocking (R2). Every delegation tees its raw JSONL to
+ * `~/.pi/agent/subagent-logs/<runId>.jsonl` (R4) — that dir is the single source of truth for
+ * restart reconstruction (R10) and run-id allocation (T73).
  *
- * Every failure is loud (`ctx.ui.notify`) and degrades to a reported result — a missing agents
- * directory, an unreadable or unparseable persona, an unknown agent name, or a failed child
- * process. Silent failure is the defect class this extension exists to end.
+ * Every failure is loud and degrades to a reported result — a missing agents directory, an
+ * unreadable or unparseable persona, an unknown agent name, an invalid `cwd`, or a failed child.
+ * Silent failure is the defect class this extension exists to end.
  */
 
-import { spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { basename, join } from "node:path";
-import { type ExtensionAPI, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, isAbsolute, join } from "node:path";
+import { Box, Text } from "@earendil-works/pi-tui";
+import {
+  allocateRunId,
+  classifyFromLogDir,
+  formatDuration,
+  formatUsage,
+  pruneLogFiles,
+  renderDelegationStatus,
+  type DelegationState,
+  type DelegationUsage,
+  type LogDirEntry,
+  type LogRunFile,
+  type LogRunSummary,
+  type DelegationRecord,
+} from "./delegation-core.ts";
+import {
+  DelegationRegistry,
+  type DelegationReceipt,
+  type DelegationTransition,
+  type StartOutcome,
+} from "./delegation-registry.ts";
+import type { DelegationNote, DelegationProgress, SpawnFn } from "./delegation-runner.ts";
+import { type AgentToolUpdateCallback, type ExtensionAPI, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 /** The tool the LLM calls. Also excluded from the child, so a delegation cannot re-delegate. */
 export const TOOL_NAME = "delegate";
+
+/** The plural status tool P4 registers (`delegation-status.ts`); excluded from children too. */
+export const TOOL_NAME_PLURAL = "delegations";
+
+/** `--exclude-tools` value for children: neither call type may recurse (R6, verified comma form). */
+export const CHILD_EXCLUDED_TOOLS = `${TOOL_NAME},${TOOL_NAME_PLURAL}`;
 
 /** Where adjust_agents.py writes, relative to the project root. */
 export const AGENTS_DIR = [".pi", "agents"];
 
 /** Output kept from the child, so one runaway subagent cannot flood the parent's context. */
 export const MAX_OUTPUT_CHARS = 64 * 1024;
+
+/** The delegation-result followUp's custom message type (R5); the renderer below draws it. */
+export const RESULT_CUSTOM_TYPE = "delegation-result";
+
+/** Answer-tail budget of the delegation-result card: the whole message content stays ≤ 8 KB (T71). */
+export const NOTIFICATION_CAP_CHARS = 8 * 1024;
+
+/** R4: the durable per-run log dir, outside every git repo. Injectable via deps for tests. */
+export const DEFAULT_LOG_DIR = join(homedir(), ".pi", "agent", "subagent-logs");
+
+/** Custom entry type of the session_start reconstruction report (R10, row 47). */
+export const RECONSTRUCTION_ENTRY_TYPE = "delegation-reconstruction";
+
+/** pi.events channel carrying the registry's serializable transition snapshots (T60). */
+export const TRANSITION_CHANNEL = "delegation-transition";
+
+/** R7: env override for the running cap (queue cap stays at the P1 default). */
+export const MAX_CONCURRENT_ENV = "PI_BADGER_SUBAGENT_MAX_CONCURRENT";
 
 export interface Persona {
   name: string;
@@ -140,15 +189,18 @@ export function personaList(personas: Persona[]): string {
 }
 
 /**
- * The argv for the delegated `pi -p` run.
+ * The argv for the delegated `pi -p` run (row 1).
  *
- * `--no-session` keeps a delegation out of the session store; `--exclude-tools` removes this
- * tool from the child so delegation cannot recurse; `--append-system-prompt` carries the
- * persona's body (pi appends it to the coding-assistant prompt rather than replacing it, so the
- * child keeps its tool guidance); `--` ends option parsing so a task starting with `-` is a task.
+ * `--mode json` turns the child's stdout into the JSON event stream delegation-core parses —
+ * that is what makes live progress, usage and answer extraction possible (R3). `--no-session`
+ * keeps a delegation out of the session store; `--exclude-tools delegate,delegations` removes
+ * both call types from the child so delegation cannot recurse; `--append-system-prompt` carries
+ * the persona's body (pi appends it to the coding-assistant prompt rather than replacing it, so
+ * the child keeps its tool guidance); `--` ends option parsing so a task starting with `-` is a
+ * task.
  */
 export function delegationArgs(persona: Persona, task: string, model?: string): string[] {
-  const args = ["-p", "--no-session", "--exclude-tools", TOOL_NAME];
+  const args = ["-p", "--mode", "json", "--no-session", "--exclude-tools", CHILD_EXCLUDED_TOOLS];
   if (model) args.push("--model", model);
   if (persona.systemPrompt.trim()) args.push("--append-system-prompt", persona.systemPrompt);
   args.push("--", task);
@@ -182,78 +234,338 @@ export function capOutput(text: string, limit: number = MAX_OUTPUT_CHARS): strin
   return `[...${text.length - limit} earlier characters dropped]\n${text.slice(-limit)}`;
 }
 
-export interface ChildResult {
-  code: number | null;
-  stdout: string;
-  stderr: string;
-  /** Set when the process could not run at all, as opposed to running and failing. */
-  spawnError?: string;
+// ------------------------------------------------------------------ lifecycle wiring (R5/R8/R10)
+
+/** Injectable seams for tests: everything else is wired from pi and the environment. */
+export interface SubagentDeps {
+  /** Defaults to the real `node:child_process` spawn via the P2 runner. */
+  spawnFn?: SpawnFn;
+  /** R4 log dir override (tests). Default `~/.pi/agent/subagent-logs`. */
+  logDir?: string;
+  /** Injected clock for records and rendering. */
+  now?: () => number;
+  /** SIGTERM → SIGKILL grace for the session_shutdown kill path (R8). Default 5000. */
+  escalateAfterMs?: number;
+  /** R7 running cap override; default reads `PI_BADGER_SUBAGENT_MAX_CONCURRENT`, then 4. */
+  cap?: number;
+  /** R7 queue cap override; default 16. */
+  queueCap?: number;
 }
 
-/** Run the delegated child. `spawnFn` is injectable so tests drive the real handler. */
-export function runPi(
-  args: string[],
-  cwd: string,
-  signal: AbortSignal | undefined,
-  spawnFn: typeof spawn = spawn,
-): Promise<ChildResult> {
-  return new Promise((settle) => {
-    const invocation = piInvocation(args);
-    let child;
-    try {
-      child = spawnFn(invocation.command, invocation.args, {
-        cwd,
-        shell: false,
-        signal,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    } catch (error) {
-      settle({ code: null, stdout: "", stderr: "", spawnError: String(error) });
-      return;
-    }
-
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (chunk) => {
-      stdout += String(chunk);
-    });
-    child.stderr?.on("data", (chunk) => {
-      stderr += String(chunk);
-    });
-    child.on("error", (error) => {
-      settle({ code: null, stdout, stderr, spawnError: String(error) });
-    });
-    child.on("close", (code) => {
-      settle({ code, stdout, stderr });
-    });
-  });
+/** Receipt details (row 45, §4): the background tool result's `details`. */
+export interface ReceiptDetails {
+  id: string;
+  agent: string;
+  state: DelegationState;
+  queuePosition?: number;
+  toolCallId: string;
+  logFile?: string;
 }
 
-const DelegateParams = Type.Object({
-  agent: Type.String({ description: "Name of the ai-badger persona to delegate to" }),
-  task: Type.String({ description: "The task, stated so the persona can act on it alone" }),
-});
-
-interface DelegateDetails {
+/** Blocking result details: today's shape (rows 2–7 oracle) + `usage` + optional `degraded`. */
+export interface BlockingDetails {
   agent: string;
   exitCode: number | null;
   agentsDir: string;
   errors: string[];
+  usage?: DelegationUsage;
+  /** Set when an explicit `background:true` degraded to full blocking outside tui (T67). */
+  degraded?: boolean;
 }
 
-/** The one content shape this tool returns. Written inline so the extension declares no
- * dependency beyond pi's own package and typebox, both of which pi aliases for extensions. */
+function envCap(): number | undefined {
+  const raw = process.env[MAX_CONCURRENT_ENV];
+  if (!raw?.trim()) return undefined;
+  const value = Number(raw);
+  return Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+/**
+ * The completion verdict line of a delegation-result card (R5). State-driven: completed with a
+ * non-zero exit renders "exited N"; the silent-JSON variant names itself loudly (R3/CR4).
+ */
+export function notificationVerdict(note: DelegationNote): string {
+  const duration = note.durationMs !== undefined ? ` in ${formatDuration(note.durationMs)}` : "";
+  switch (note.state) {
+    case "aborted":
+      return `Delegation ${note.id} (${note.agent}) aborted${duration}.`;
+    case "failed":
+      return `Delegation ${note.id} (${note.agent}) failed to start${duration}: ${note.spawnError ?? "unknown error"}.`;
+    default:
+      if (note.silentReason) {
+        return `Delegation ${note.id} (${note.agent}) finished without an answer${duration} — ${note.silentReason}`;
+      }
+      if (note.exitCode != null && note.exitCode !== 0) {
+        return `Delegation ${note.id} (${note.agent}) exited ${note.exitCode}${duration}.`;
+      }
+      return `Delegation ${note.id} (${note.agent}) completed${duration}.`;
+  }
+}
+
+/**
+ * Cap `text` into a budget: what remains of `NOTIFICATION_CAP_CHARS` after `used` characters.
+ * Truncation keeps the TAIL (the answer lives at the end) and marks the drop capTail-style, so
+ * marker + tail together fit the room exactly and the whole card stays ≤ 8 KB (T71).
+ */
+function capIntoBudget(text: string, used: number): string {
+  const room = NOTIFICATION_CAP_CHARS - used;
+  if (text.length <= room) return text;
+  const marker = (dropped: number) => `[...${dropped} earlier characters dropped]\n`;
+  let tailLength = room - marker(text.length).length;
+  if (tailLength <= 0) return "(over the 8 KB card budget — see the run log)";
+  let head = marker(text.length - tailLength);
+  if (head.length + tailLength > room) {
+    tailLength = room - head.length;
+    head = marker(text.length - tailLength);
+  }
+  return head + text.slice(-tailLength);
+}
+
+/**
+ * The delegation-result card body (R5): verdict line, usage + log path meta line, then the
+ * answer tail capped so the WHOLE content stays ≤ NOTIFICATION_CAP_CHARS (T71).
+ */
+export function notificationContent(note: DelegationNote): string {
+  const lines: string[] = [notificationVerdict(note)];
+  const meta: string[] = [];
+  const usage = formatUsage(note.usage);
+  if (usage) meta.push(usage);
+  if (note.logFile) meta.push(note.logFile);
+  if (meta.length > 0) lines.push(meta.join(" — "));
+
+  let used = lines.join("\n").length;
+  const answer = note.answer.trim();
+  if (answer) {
+    const capped = capIntoBudget(answer, used + 2);
+    lines.push("", capped);
+    used = lines.join("\n").length;
+  }
+  const stderr = note.stderrTail?.trim();
+  if (stderr) {
+    const capped = capIntoBudget(`stderr: ${stderr}`, used + 2);
+    lines.push("", capped);
+  }
+  return lines.join("\n");
+}
+
+// ------------------------------------------------------------------ log dir (R4/R10)
+
+function readLogLines(file: string): string[] {
+  try {
+    return readFileSync(file, "utf-8").split("\n").filter((line) => line.trim().length > 0);
+  } catch {
+    return []; // unreadable log: classifyFromLogDir marks the run lost (a partial write is lost, not hidden)
+  }
+}
+
+/**
+ * R10 reconstruction, pure-decision side: prune (plan from P1, unlinks performed here — the
+ * caller of a pure function owns the side effects), then classify the surviving logs with P1's
+ * classifier and a kill(pid,0)-style probe. Reconstruction never spawns, never notifies (T47).
+ */
+export function reconstructFromLogDir(logDir: string, now: number): LogRunSummary[] {
+  let entries: LogDirEntry[];
+  try {
+    entries = readdirSync(logDir)
+      .filter((name) => name.endsWith(".jsonl"))
+      .map((name) => ({ name, mtimeMs: statSync(join(logDir, name)).mtimeMs }));
+  } catch {
+    return []; // no log dir yet — nothing to reconstruct
+  }
+
+  const plan = pruneLogFiles(entries, now);
+  for (const name of plan.delete) {
+    try {
+      rmSync(join(logDir, name));
+    } catch {
+      // an unlink failure leaves the file; classification below still reads it
+    }
+  }
+
+  const files: LogRunFile[] = plan.keep.map((name) => ({
+    id: name.replace(/\.jsonl$/, ""),
+    lines: readLogLines(join(logDir, name)),
+  }));
+  return classifyFromLogDir(files, pidAlive);
+}
+
+/** kill(pid, 0) probe: EPERM means the process exists but is not ours — still alive. */
+export function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+// ------------------------------------------------------------------ tool schemas and results
+
+const DelegateParams = Type.Object({
+  agent: Type.String({ description: "Name of the ai-badger persona to delegate to" }),
+  task: Type.String({ description: "The task, stated so the persona can act on it alone" }),
+  background: Type.Optional(
+    Type.Boolean({
+      description:
+        "Run in the background: the tool returns a receipt immediately and the completion arrives as a followUp message. Default: true in the TUI, false otherwise. There is no automatic per-run timeout.",
+    }),
+  ),
+  cwd: Type.Optional(
+    Type.String({
+      description:
+        "Absolute working directory for the delegated child. Personas are still read from this project's .pi/agents. Validated with stat; must be an existing directory.",
+    }),
+  ),
+});
+
+/** The one content shape tool results return. */
 function text(body: string) {
   return [{ type: "text" as const, text: body }];
 }
 
-export default function (pi: ExtensionAPI) {
+interface DelegateToolContext {
+  cwd: string;
+  mode: string;
+  model?: { provider: string; id: string } | undefined;
+  signal?: AbortSignal | undefined;
+  sessionManager?: { getSessionId(): string };
+  ui: { notify(message: string, level?: string): void };
+}
+
+/** T74 (review CR13): `cwd` must be an absolute, statable directory — the failure reason otherwise. */
+function validateChildCwd(cwd: string): string | undefined {
+  if (!isAbsolute(cwd)) return "it must be an absolute path";
+  try {
+    if (!statSync(cwd).isDirectory()) return "it is not a directory";
+  } catch (error) {
+    return `it could not be accessed (${String(error)})`;
+  }
+  return undefined;
+}
+
+export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   if (typeof pi?.registerTool !== "function") {
     console.error(
       "ai-badger: pi.registerTool is not a function — this pi build's extension API has moved; the delegation tool is not installed.",
     );
     return;
   }
+
+  const logDir = deps.logDir ?? DEFAULT_LOG_DIR;
+  const now = deps.now ?? Date.now;
+
+  // Notes and per-run progress subscribers key by run id. Notes: the blocking path reads the
+  // run's note (answer/stderr tails) after awaiting `done`; capped, because background runs
+  // never consume theirs. Progress: the registry-level onUpdate routes to the one blocking
+  // execute subscribed to that run id (the widget in P4 polls the registry instead); the
+  // latest-progress buffer replays anything that fired between start and subscribe.
+  const notes = new Map<string, DelegationNote>();
+  const latestProgress = new Map<string, DelegationProgress>();
+  const progressSubscribers = new Map<string, (progress: DelegationProgress) => void>();
+
+  /** R5's single notification wire: exactly one followUp per terminal transition (row 38: the
+   * registry drops notifications after shutdown, so this is never called for those). */
+  const deliverNote = (note: DelegationNote): void => {
+    notes.set(note.id, note);
+    if (notes.size > 64) {
+      const oldest = notes.keys().next().value;
+      if (oldest !== undefined) notes.delete(oldest);
+    }
+    pi.sendMessage(
+      {
+        customType: RESULT_CUSTOM_TYPE,
+        content: notificationContent(note),
+        display: true,
+        details: { ...note },
+      },
+      { deliverAs: "followUp", triggerTurn: true },
+    );
+  };
+
+  /** R4's per-run log sink factory: `~/.pi/agent/subagent-logs/<runId>.jsonl`, dir 0o700, file 0o600. */
+  const logSink = (init: { id: string; agent: string; task: string }) => {
+    mkdirSync(logDir, { recursive: true, mode: 0o700 });
+    const file = join(logDir, `${init.id}.jsonl`);
+    return {
+      logFile: file,
+      appendLine: (line: string) => {
+        appendFileSync(file, `${line}\n`, { mode: 0o600 });
+      },
+    };
+  };
+
+  const registry = new DelegationRegistry({
+    ...(deps.cap !== undefined ? { cap: deps.cap } : {}),
+    ...(deps.queueCap !== undefined ? { queueCap: deps.queueCap } : {}),
+    ...(deps.escalateAfterMs !== undefined ? { escalateAfterMs: deps.escalateAfterMs } : {}),
+    ...(deps.spawnFn ? { spawnFn: deps.spawnFn } : {}),
+    ...(deps.now ? { now } : {}),
+    logSink,
+    notifyComplete: deliverNote,
+    onUpdate: (progress) => {
+      latestProgress.set(progress.id, progress);
+      if (latestProgress.size > 64) {
+        const oldest = latestProgress.keys().next().value;
+        if (oldest !== undefined) latestProgress.delete(oldest);
+      }
+      progressSubscribers.get(progress.id)?.(progress);
+    },
+    ...(typeof pi.events?.emit === "function"
+      ? { emit: (transition: DelegationTransition) => pi.events.emit(TRANSITION_CHANNEL, transition) }
+      : {}),
+    // T73: ids allocate over the LIVE log dir listing, past the highest id ever seen — a
+    // restarted session never reuses an id, so `delegations log d-N` stays unambiguous.
+    allocateId: () =>
+      allocateRunId(
+        (() => {
+          try {
+            return readdirSync(logDir).filter((name) => name.endsWith(".jsonl")).map((name) => name.replace(/\.jsonl$/, ""));
+          } catch {
+            return [];
+          }
+        })(),
+        (candidate) => existsSync(join(logDir, `${candidate}.jsonl`)),
+      ),
+  });
+
+  pi.on("session_start", () => {
+    const summaries = reconstructFromLogDir(logDir, now());
+    if (summaries.length === 0) return;
+    // Row 47: reconstruction only MARKS runs (status surfaces show them); it never notifies
+    // (R10: no auto-followUp after restart). The entry is the report; P4's surfaces may read it.
+    const rendered = renderDelegationStatus(
+      summaries.map((summary) => ({
+        id: summary.id,
+        agent: summary.agent ?? "?",
+        state: summary.state,
+        ...(summary.startedAt !== undefined ? { startedAt: summary.startedAt } : {}),
+        ...(summary.exitCode !== undefined ? { exitCode: summary.exitCode } : {}),
+        ...(summary.spawnError !== undefined ? { spawnError: summary.spawnError } : {}),
+      })),
+      now(),
+    );
+    pi.appendEntry(RECONSTRUCTION_ENTRY_TYPE, { runs: summaries, rendered });
+  });
+
+  // R8: session_shutdown = SIGTERM → grace → SIGKILL via the registry, which also drops every
+  // notification from here on (row 38) and empties the records. Delegations do not outlive
+  // the session; the runtime teardown re-runs this factory with a fresh registry.
+  pi.on("session_shutdown", () => {
+    registry.shutdown();
+  });
+
+  // T72: the compact card the delegation-result followUp renders through in the transcript.
+  pi.registerMessageRenderer(RESULT_CUSTOM_TYPE, (message, options, theme) => {
+    const body = typeof message.content === "string" ? message.content : "";
+    if (!body) return undefined;
+    const note = message.details as DelegationNote | undefined;
+    const lines = body.split("\n");
+    const failed = note?.state === "failed" || (note?.state === "completed" && (note.exitCode ?? 0) !== 0);
+    const head = theme.fg(failed ? "error" : note?.state === "aborted" ? "warning" : "success", lines[0] ?? "");
+    const box = new Box(options.outputPad, 1, (line: string) => theme.bg("customMessageBg", line));
+    box.addChild(new Text([head, ...lines.slice(1)].join("\n"), 0, 0));
+    return box;
+  });
 
   pi.registerTool({
     name: TOOL_NAME,
@@ -262,68 +574,214 @@ export default function (pi: ExtensionAPI) {
       "Delegate a task to one of this project's ai-badger personas, each of which runs as a",
       `separate pi process with its own context. Personas live in ${AGENTS_DIR.join("/")}/*.md;`,
       "call this with an unknown agent name to get the list of available ones.",
+      "In the TUI this runs in the background by default: it returns a receipt immediately and",
+      'the result arrives as a followUp message when the delegation finishes; pass background:',
+      "false to block instead. There is no automatic per-run timeout — use the delegations tool",
+      "to inspect or abort running delegations.",
     ].join(" "),
     parameters: DelegateParams,
 
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const scan = scanPersonas(ctx.cwd);
-      const agentsDir = scan.missingDir ?? join(ctx.cwd, ...AGENTS_DIR);
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const toolCtx = ctx as unknown as DelegateToolContext;
+      const scan = scanPersonas(toolCtx.cwd);
+      const agentsDir = scan.missingDir ?? join(toolCtx.cwd, ...AGENTS_DIR);
 
       if (scan.missingDir) {
         const message = `ai-badger: no personas — ${scan.missingDir} does not exist. Run welcome-ai-badger in this project to scaffold them.`;
-        ctx.ui.notify(message, "warning");
+        toolCtx.ui.notify(message, "warning");
         return {
           content: text(message),
-          details: { agent: params.agent, exitCode: null, agentsDir, errors: [] },
+          details: { agent: params.agent, exitCode: null, agentsDir, errors: [] } satisfies BlockingDetails,
         };
       }
       for (const error of scan.errors) {
-        ctx.ui.notify(`ai-badger: persona skipped — ${error}`, "warning");
+        toolCtx.ui.notify(`ai-badger: persona skipped — ${error}`, "warning");
       }
       for (const duplicate of scan.duplicates ?? []) {
-        ctx.ui.notify(`ai-badger: duplicate persona — ${duplicate}`, "warning");
+        toolCtx.ui.notify(`ai-badger: duplicate persona — ${duplicate}`, "warning");
       }
 
       const persona = scan.personas.find((p) => p.name === params.agent);
       if (!persona) {
         const message = `ai-badger: no persona named "${params.agent}" in ${agentsDir}.\nAvailable:\n${personaList(scan.personas)}`;
-        ctx.ui.notify(message, "warning");
+        toolCtx.ui.notify(message, "warning");
         return {
           content: text(message),
-          details: { agent: params.agent, exitCode: null, agentsDir, errors: scan.errors },
+          details: { agent: params.agent, exitCode: null, agentsDir, errors: scan.errors } satisfies BlockingDetails,
         };
       }
 
-      const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-      // The execute signal is the turn's own; ctx.signal is the fallback for a build that only
-      // populates the context. Either one aborting kills the child rather than orphaning it.
-      const result = await runPi(
-        delegationArgs(persona, params.task, model),
-        ctx.cwd,
-        signal ?? ctx.signal,
-      );
-
-      if (result.spawnError) {
-        const message = `ai-badger: delegation to "${persona.name}" could not run (${result.spawnError})`;
-        ctx.ui.notify(message, "warning");
-        return {
-          content: text(message),
-          details: { agent: persona.name, exitCode: null, agentsDir, errors: scan.errors },
-        };
-      }
-      if (result.code !== 0) {
-        const message = `ai-badger: delegation to "${persona.name}" exited ${result.code}: ${capOutput(result.stderr).trim() || "(no stderr)"}`;
-        ctx.ui.notify(message, "warning");
-        return {
-          content: text(message),
-          details: { agent: persona.name, exitCode: result.code, agentsDir, errors: scan.errors },
-        };
+      // T74 (R6): personas always scanned from ctx.cwd; the CHILD runs in params.cwd, which is
+      // validated loudly (stat + isDirectory) before anything spawns.
+      let childCwd = toolCtx.cwd;
+      if (params.cwd !== undefined) {
+        const problem = validateChildCwd(params.cwd);
+        if (problem) {
+          const message = `ai-badger: invalid cwd "${params.cwd}" — ${problem}`;
+          toolCtx.ui.notify(message, "warning");
+          return {
+            content: text(message),
+            details: { agent: persona.name, exitCode: null, agentsDir, errors: scan.errors } satisfies BlockingDetails,
+          };
+        }
+        childCwd = params.cwd;
       }
 
-      return {
-        content: text(capOutput(result.stdout).trim() || "(the delegated run printed nothing)"),
-        details: { agent: persona.name, exitCode: 0, agentsDir, errors: scan.errors },
-      };
+      // R2: auto = background iff ctx.mode === "tui" (NOT hasUI — rpc has UI and still blocks);
+      // an explicit value always wins. An explicit background:true outside tui degrades to FULL
+      // blocking with the warning riding the tool result content AND details.degraded — never
+      // ui.notify alone, which is a no-op in print/json.
+      const wantsBackground = params.background ?? toolCtx.mode === "tui";
+      const degraded = wantsBackground && toolCtx.mode !== "tui";
+
+      const model = toolCtx.model ? `${toolCtx.model.provider}/${toolCtx.model.id}` : undefined;
+      const invocation = piInvocation(delegationArgs(persona, params.task, model));
+      let sessionId: string | undefined;
+      try {
+        sessionId = toolCtx.sessionManager?.getSessionId();
+      } catch {
+        sessionId = undefined;
+      }
+
+      const outcome: StartOutcome = await registry.start({
+        agent: persona.name,
+        task: params.task,
+        args: invocation.args,
+        command: invocation.command,
+        cwd: childCwd,
+        toolCallId,
+        ...(sessionId !== undefined ? { sessionId } : {}),
+        // The execute signal is the turn's own; ctx.signal is the fallback for a build that only
+        // populates the context. Either one aborting kills the child rather than orphaning it.
+        signal: signal ?? toolCtx.signal,
+      });
+
+      if (!outcome.ok) {
+        // R7: admission rejection (cap and queue both full) — loud guidance, never a receipt.
+        const message = `ai-badger: delegation rejected — ${outcome.reason}`;
+        toolCtx.ui.notify(message, "warning");
+        return {
+          content: text(message),
+          details: { agent: persona.name, exitCode: null, agentsDir, errors: scan.errors } satisfies BlockingDetails,
+        };
+      }
+
+      if (wantsBackground && !degraded) {
+        return receiptResult(outcome, toolCallId);
+      }
+      return blockingResult(outcome, { personaName: persona.name, agentsDir, errors: scan.errors, degraded, onUpdate });
     },
   });
+
+  // The single registry instance for this runtime — reachable for the P4 status surface, which
+  // the orchestrator wires here at merge: registerDelegationStatus(pi, registry).
+  return { registry };
+
+  // ------------------------------------------------------------------ result builders
+
+  /** Row 45 / T68 (§4): the receipt — running and queued variants, details { id, agent, state,
+   * queuePosition?, toolCallId, logFile? }. */
+  function receiptResult(outcome: DelegationReceipt, toolCallId: string) {
+    const record = outcome.record;
+    const tail = "the result will arrive as a followUp message when it completes.";
+    const line =
+      record.state === "queued"
+        ? `Delegation ${record.id} queued (position ${record.queuePosition}) (${record.agent}) — ${tail}`
+        : record.state === "running"
+          ? `Delegation ${record.id} started (${record.agent}) — ${tail}`
+          : `Delegation ${record.id} ${record.state} (${record.agent}).`;
+    return {
+      content: text(line),
+      details: {
+        id: record.id,
+        agent: record.agent,
+        state: record.state,
+        ...(record.queuePosition !== undefined ? { queuePosition: record.queuePosition } : {}),
+        toolCallId,
+        ...(record.logFile !== undefined ? { logFile: record.logFile } : {}),
+      } satisfies ReceiptDetails,
+    };
+  }
+
+  /** Blocking path: await the run's done; today's result shape + details.usage (AC6). */
+  async function blockingResult(
+    outcome: DelegationReceipt,
+    context: { personaName: string; agentsDir: string; errors: string[]; degraded: boolean; onUpdate: AgentToolUpdateCallback<unknown> | undefined },
+  ) {
+    const { id } = outcome;
+    if (context.onUpdate) {
+      const replay = latestProgress.get(id);
+      if (replay) context.onUpdate({ content: text(progressLine(replay, now())), details: { ...replay } });
+      progressSubscribers.set(id, (progress) => {
+        context.onUpdate!({ content: text(progressLine(progress, now())), details: { ...progress } });
+      });
+    }
+    let record: DelegationRecord;
+    try {
+      record = await outcome.done;
+    } finally {
+      progressSubscribers.delete(id);
+      latestProgress.delete(id);
+    }
+    const note = notes.get(id);
+    notes.delete(id);
+
+    const body = blockingContent(record, note, context.personaName);
+    return {
+      // T67: the degrade warning rides the tool result content AND details.degraded — never
+      // ui.notify alone (a no-op in print/json).
+      content: text(
+        context.degraded
+          ? `[ai-badger] background was requested outside tui mode — running fully blocking instead.\n${body}`
+          : body,
+      ),
+      details: {
+        agent: context.personaName,
+        exitCode: record.exitCode ?? null,
+        agentsDir: context.agentsDir,
+        errors: context.errors,
+        ...(record.usage !== undefined ? { usage: record.usage } : {}),
+        ...(context.degraded ? { degraded: true } : {}),
+      } satisfies BlockingDetails,
+    };
+  }
+}
+
+function progressLine(progress: DelegationProgress, nowMs: number): string {
+  return renderDelegationStatus([progress], nowMs) ?? `${progress.id} ${progress.agent} running`;
+}
+
+/**
+ * Blocking content: today's verdict shapes (the rows 2–7 oracle's caller) fed from the note's
+ * extracted answer instead of raw stdout — headless consumers get content-equivalent answers
+ * (AC6) plus the R3 fallbacks: silent-JSON loud error with capped raw stdout, failure verdict
+ * with the partial answer tail and stderr.
+ */
+function blockingContent(
+  record: { state: DelegationState; exitCode?: number | null; spawnError?: string },
+  note: DelegationNote | undefined,
+  personaName: string,
+): string {
+  if (record.spawnError !== undefined) {
+    return `ai-badger: delegation to "${personaName}" could not run (${record.spawnError})`;
+  }
+  if (record.state === "aborted") {
+    return `ai-badger: delegation to "${personaName}" was aborted before it finished`;
+  }
+  const exitCode = record.exitCode ?? null;
+  if (exitCode !== null && exitCode !== 0) {
+    const lines = [
+      `ai-badger: delegation to "${personaName}" exited ${exitCode}: ${(note?.stderrTail ?? "").trim() || "(no stderr)"}`,
+    ];
+    const partial = note?.answer.trim();
+    if (partial) lines.push("", `Partial answer before the failure:`, partial);
+    return lines.join("\n");
+  }
+  if (note?.silentReason) {
+    const lines = [`ai-badger: ${note.silentReason}`];
+    const stdout = note.stdoutTail?.trim();
+    if (stdout) lines.push("", `Raw child stdout (capped):`, stdout);
+    return lines.join("\n");
+  }
+  return note?.answer.trim() || "(the delegated run printed nothing)";
 }
