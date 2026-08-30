@@ -134,16 +134,16 @@ describe("status rendering: footer text or an explicit clear", () => {
 	});
 });
 
-describe("tool-name source: env override or the default delegate tool", () => {
-	test("default is the ai-badger subagent extension's delegate tool", () => {
-		expect(parseToolNames({})).toEqual(["delegate"]);
-		expect(parseToolNames({ PI_BADGER_DELEGATION_TOOLS: "  " })).toEqual(["delegate"]);
+describe("tool-name source: env override or the default delegation tools", () => {
+	test("default watches both ai-badger delegation tools (T77: delegations so wait is visible)", () => {
+		expect(parseToolNames({})).toEqual(["delegate", "delegations"]);
+		expect(parseToolNames({ PI_BADGER_DELEGATION_TOOLS: "  " })).toEqual(["delegate", "delegations"]);
 	});
 
 	test("override is a comma-separated list; empty entries drop out; a fully empty value falls back", () => {
 		expect(parseToolNames({ PI_BADGER_DELEGATION_TOOLS: "delegate, spawn , task" }))
 			.toEqual(["delegate", "spawn", "task"]);
-		expect(parseToolNames({ PI_BADGER_DELEGATION_TOOLS: ",," })).toEqual(["delegate"]);
+		expect(parseToolNames({ PI_BADGER_DELEGATION_TOOLS: ",," })).toEqual(["delegate", "delegations"]);
 	});
 });
 
@@ -249,12 +249,13 @@ describe("factory wiring: delegation status rides the delegate tool events", () 
 		return harness.fireNamed("tool_result", { toolName: "delegate", toolCallId }, ctx);
 	}
 
-	test("a delegate tool_call shows the running delegation in the footer", async () => {
+	test("a delegate tool_call defers the footer render to the tick (R9: no sub-second flash)", async () => {
 		const { ctx, statuses } = makeCtx();
 		await fireToolCall(ctx);
-		const [key, text] = statuses[statuses.length - 1];
-		expect(key).toBe("pi-badger");
-		expect(text).toContain("delegate architect —");
+		expect(statuses).toEqual([]); // nothing immediate — the first render is the tick's job
+
+		await fireToolResult(ctx);
+		expect(statuses).toEqual([["pi-badger", undefined]]); // the clear still lands immediately
 	});
 
 	test("the tool_result clears the footer", async () => {
