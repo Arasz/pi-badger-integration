@@ -17,6 +17,7 @@ import { spawn as nodeSpawn } from "node:child_process";
 import {
   applyUsage,
   DEFAULT_TEE_CAP_BYTES,
+  deriveActivity,
   elideTeeStream,
   emptyUsage,
   extractAnswer,
@@ -225,25 +226,6 @@ function isProgressEvent(event: ChildEvent): boolean {
     event.type === "tool_execution_update" ||
     event.type === "tool_execution_end"
   );
-}
-
-/** One-line activity label from the live stream (R9's `currentActivity`). */
-function deriveActivity(event: ChildEvent): string | undefined {
-  if (event.type === "tool_execution_start" && typeof event.toolName === "string" && event.toolName.trim()) {
-    return event.toolName;
-  }
-  if (event.type === "message_update") {
-    const ame = event.assistantMessageEvent;
-    if (typeof ame === "object" && ame !== null) {
-      const { type, delta, toolName } = ame as { type?: unknown; delta?: unknown; toolName?: unknown };
-      if (type === "toolcall_start" && typeof toolName === "string" && toolName.trim()) return toolName;
-      if (typeof delta === "string" && delta.trim()) {
-        const tail = delta.trim().slice(-80);
-        return delta.trim().length > 80 ? `…${tail}` : tail;
-      }
-    }
-  }
-  return undefined;
 }
 
 export class DelegationRunner {

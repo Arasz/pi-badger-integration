@@ -312,7 +312,7 @@ describe("T75: the widget renders background/queued runs only (review CR17)", ()
 		expect(widget[0]).toBe(DEFAULT_WIDGET_KEY);
 		const content = widget[1]!.join("\n");
 		expect(content).toContain("d-1 architect");
-		expect(content).toContain("bash");
+		expect(content).toContain("running…"); // R9: bash maps to a stable verb label
 		expect(content).toContain("↓1234");
 	});
 

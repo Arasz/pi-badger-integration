@@ -10,12 +10,14 @@
 import { describe, expect, test } from "bun:test";
 import {
   type AdmissionCaps,
+  MAX_ACTIVITY_LEN,
   type LogDirEntry,
   type LogRunFile,
   admitRequest,
   allocateRunId,
   applyUsage,
   classifyFromLogDir,
+  deriveActivity,
   elideTeeStream,
   emptyAdmission,
   emptyUsage,
@@ -410,5 +412,79 @@ describe("elideTeeStream (T56)", () => {
     // The marker accounts for every dropped byte: header + marker + kept = total.
     const markerChars = outLines[1].length + 1;
     expect(dropped).toBe(stream.length - keptChars);
+  });
+});
+
+// ------------------------------------------------------------------ deriveActivity (R9 activity labels)
+
+describe("deriveActivity (R9: stable keyword labels, constant length)", () => {
+  const toolStart = (toolName: string, args?: unknown) => ({
+    type: "tool_execution_start",
+    toolCallId: "tc-1",
+    toolName,
+    args,
+  });
+
+  test("read with a path arg → 'reading <basename>…'", () => {
+    expect(deriveActivity(toolStart("read", { path: "src/helpers/deep/util.ts" }))).toBe("reading util.ts…");
+  });
+
+  test("edit and write map to editing/writing with a short target", () => {
+    expect(deriveActivity(toolStart("edit", { path: "core.ts" }))).toBe("editing core.ts…");
+    expect(deriveActivity(toolStart("write", { path: "/tmp/new-file.ts" }))).toBe("writing new-file.ts…");
+  });
+
+  test("bash/powershell → bare 'running…' (command text never leaks)", () => {
+    expect(deriveActivity(toolStart("bash", { command: "bun run test --ci" }))).toBe("running…");
+  });
+
+  test("search-family tools → 'searching…'", () => {
+    for (const tool of ["grep", "find", "ls"]) {
+      expect(deriveActivity(toolStart(tool, { pattern: "x", path: "/y" }))).toBe("searching…");
+    }
+  });
+
+  test("delegate → 'delegating…'", () => {
+    expect(deriveActivity(toolStart("delegate"))).toBe("delegating…");
+  });
+
+  test("unknown tool → 'using <name>…'", () => {
+    expect(deriveActivity(toolStart("sqlite_query"))).toBe("using sqlite_query…");
+  });
+
+  test("toolcall_start inside message_update maps like a tool start", () => {
+    expect(
+      deriveActivity({
+        type: "message_update",
+        assistantMessageEvent: { type: "toolcall_start", toolName: "read", contentIndex: 0, id: "t1" },
+      }),
+    ).toBe("reading…");
+  });
+
+  test("text_delta → constant 'responding…', raw delta never surfaces", () => {
+    const event = {
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "some very long partial jsonl {text}" },
+    };
+    const label = deriveActivity(event);
+    expect(label).toBe("responding…");
+    expect(label).not.toContain("jsonl");
+  });
+
+  test("thinking_delta → constant 'thinking…'", () => {
+    expect(
+      deriveActivity({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "hmm" } }),
+    ).toBe("thinking…");
+  });
+
+  test("labels stay within MAX_ACTIVITY_LEN", () => {
+    const label = deriveActivity(toolStart("read", { path: "a-very-long-directory-name-that-keeps-going/and-a-file.ts" }));
+    expect(label!.length).toBeLessThanOrEqual(MAX_ACTIVITY_LEN);
+  });
+
+  test("other events → undefined (caller keeps the previous label)", () => {
+    expect(deriveActivity({ type: "agent_start" })).toBeUndefined();
+    expect(deriveActivity({ type: "message_update", assistantMessageEvent: { type: "toolcall_delta", contentIndex: 0 } })).toBeUndefined();
+    expect(deriveActivity({ type: "tool_execution_end", toolCallId: "tc-1", toolName: "read", result: {}, isError: false })).toBeUndefined();
   });
 });

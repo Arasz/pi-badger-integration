@@ -286,7 +286,8 @@ describe("live parse and progress (rows 26–30)", () => {
     const latest = h.updates[h.updates.length - 1]!;
     expect(latest.id).toBe("d-1");
     expect(latest.state).toBe("running");
-    expect(latest.activity).toContain("partial answer so far");
+    expect(latest.activity).toBe("responding…"); // R9: stable label — the raw delta never surfaces
+    expect(latest.activity).not.toContain("partial answer so far");
     handle.killImmediate(); // hygiene: no live child outlives the test
   });
 

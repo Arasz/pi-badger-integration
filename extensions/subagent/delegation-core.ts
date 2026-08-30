@@ -273,6 +273,86 @@ export function formatUsage(usage: DelegationUsage | undefined): string {
   return parts.join(" ");
 }
 
+// ------------------------------------------------------------------ activity labels (R9)
+
+/** Longest activity label the status surfaces render; keeps the line constant-width. */
+export const MAX_ACTIVITY_LEN = 40;
+
+/** Known tools → short present-participle verbs (the keywords the label matches on). */
+const TOOL_VERBS: Record<string, string> = {
+  read: "reading",
+  edit: "editing",
+  write: "writing",
+  bash: "running",
+  powershell: "running",
+  grep: "searching",
+  find: "searching",
+  ls: "searching",
+  glob: "searching",
+  delegate: "delegating",
+  webfetch: "fetching",
+};
+
+/** Arg keys a tool's primary target usually rides; only path-shaped targets are shown. */
+const TARGET_KEYS = ["path", "file_path", "file"];
+
+/** Trailing ellipsis is the in-progress marker; caps the whole label. */
+function clampLabel(label: string): string {
+  const ellipsis = "…";
+  const budget = MAX_ACTIVITY_LEN - ellipsis.length;
+  const body = label.length > budget ? label.slice(0, budget) : label;
+  return `${body}${ellipsis}`;
+}
+
+/** Basename of a path-shaped target, itself capped, or undefined when arg-less/odd. */
+function targetFromArgs(args: unknown): string | undefined {
+  if (typeof args !== "object" || args === null) return undefined;
+  for (const key of TARGET_KEYS) {
+    const value = (args as Record<string, unknown>)[key];
+    if (typeof value !== "string" || !value.trim()) continue;
+    const base = value.replaceAll("\\", "/").split("/").filter(Boolean).pop();
+    if (base) return base.length > 18 ? base.slice(0, 18) : base;
+  }
+  return undefined;
+}
+
+/**
+ * One stable activity label from a live child event (R9's `currentActivity`).
+ *
+ * Keyword-matched, deliberately NOT the raw stream text: a text delta maps to the constant
+ * `responding…`, thinking to `thinking…`, and a tool start to its verb (plus a short
+ * path basename when the tool is file-shaped — `reading util.ts…`). Every label ends in
+ * `…` (the in-progress marker) and fits MAX_ACTIVITY_LEN, so the status line stops
+ * flickering with the child's JSON stream. Unknown event types return undefined — the
+ * caller keeps the previous label. The delta content never surfaces here.
+ */
+export function deriveActivity(event: ChildEvent): string | undefined {
+  const toolName =
+    event.type === "tool_execution_start" && typeof event.toolName === "string" && event.toolName.trim()
+      ? event.toolName.trim()
+      : undefined;
+  const ame =
+    event.type === "message_update" && typeof event.assistantMessageEvent === "object" && event.assistantMessageEvent !== null
+      ? (event.assistantMessageEvent as { type?: unknown; toolName?: unknown })
+      : undefined;
+  const callToolName =
+    ame?.type === "toolcall_start" && typeof ame.toolName === "string" && ame.toolName.trim() ? ame.toolName.trim() : undefined;
+
+  const name = toolName ?? callToolName;
+  if (name) {
+    const verb = TOOL_VERBS[name.toLowerCase()];
+    if (!verb) return clampLabel(`using ${name}`);
+    if (verb === "reading" || verb === "editing" || verb === "writing") {
+      const target = targetFromArgs(event.args);
+      return clampLabel(target ? `${verb} ${target}` : verb);
+    }
+    return clampLabel(verb);
+  }
+  if (ame?.type === "thinking_delta") return clampLabel("thinking");
+  if (ame?.type === "text_delta") return clampLabel("responding");
+  return undefined;
+}
+
 function renderRunLine(run: DelegationStatusRun, now: number): string {
   const segments: string[] = [`${run.id} ${run.agent}`];
   switch (run.state) {
