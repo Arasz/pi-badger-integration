@@ -47,6 +47,7 @@ import {
   type StartOutcome,
 } from "./delegation-registry.ts";
 import type { DelegationNote, DelegationProgress, SpawnFn } from "./delegation-runner.ts";
+import { registerDelegationStatus } from "./delegation-status.ts";
 import { type AgentToolUpdateCallback, type ExtensionAPI, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -553,6 +554,11 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   pi.on("session_shutdown", () => {
     registry.shutdown();
   });
+
+  // W3 merge wiring (plan §5 interface freeze): the delegations tool, the /delegations command
+  // and the background-run widget are P4's delegation-status.ts, wired here against its
+  // frozen signature — the one instance of the registry this session constructed.
+  registerDelegationStatus(pi, registry);
 
   // T72: the compact card the delegation-result followUp renders through in the transcript.
   pi.registerMessageRenderer(RESULT_CUSTOM_TYPE, (message, options, theme) => {

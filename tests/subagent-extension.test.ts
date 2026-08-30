@@ -46,7 +46,10 @@ interface SentMessage {
 }
 
 interface Harness {
-  handlers: Map<string, (event: unknown, ctx: unknown) => unknown>;
+  /** Real pi.on is pub/sub: many handlers per event, run in registration order. The fake
+   * must dispatch arrays — single-slot storage let P4's session_shutdown (widget cleanup)
+   * silently overwrite P3's (registry kill-all) once the W3 wiring landed. */
+  handlers: Map<string, Array<(event: unknown, ctx: unknown) => unknown>>;
   tools: Map<string, any>;
   commands: Map<string, unknown>;
   renderers: Map<string, (message: any, options: any, theme: any) => unknown>;
@@ -84,7 +87,11 @@ function makeHarness(mode = "tui", deps: Record<string, unknown> = {}): Harness 
     registerTool: (tool: any) => h.tools.set(tool.name, tool),
     registerCommand: (name: string, opts: unknown) => h.commands.set(name, opts),
     registerMessageRenderer: (customType: string, renderer: any) => h.renderers.set(customType, renderer),
-    on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => h.handlers.set(name, handler),
+    on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => {
+      const list = h.handlers.get(name) ?? [];
+      list.push(handler);
+      h.handlers.set(name, list);
+    },
     sendMessage: (message: any, options?: any) => h.sent.push({ message, options }),
     appendEntry: (customType: string, data?: unknown) => h.entries.push({ customType, data }),
     events: {
@@ -150,11 +157,19 @@ function callDelegate(
 }
 
 function fireSessionStart(reason = "startup"): unknown {
-  return h.handlers.get("session_start")?.({ type: "session_start", reason }, makeCtx());
+  let last: unknown;
+  for (const handler of h.handlers.get("session_start") ?? []) {
+    last = handler({ type: "session_start", reason }, makeCtx());
+  }
+  return last;
 }
 
 function fireSessionShutdown(reason = "quit"): unknown {
-  return h.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason }, makeCtx());
+  let last: unknown;
+  for (const handler of h.handlers.get("session_shutdown") ?? []) {
+    last = handler({ type: "session_shutdown", reason }, makeCtx());
+  }
+  return last;
 }
 
 // ------------------------------------------------------------------ log-dir fixtures
