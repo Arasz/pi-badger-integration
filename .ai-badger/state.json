@@ -1,5 +1,32 @@
 {
-  "lastUpdated": null,
+  "lastUpdated": "2026-08-30T20:45:00Z",
   "next": null,
-  "completedTasks": []
+  "completedTasks": [
+    {
+      "taskId": "pbi-interactive-background-subagent-delegation",
+      "title": "Interactive background subagent delegation with progress and logs",
+      "finishedAt": "2026-08-30T20:45:00Z",
+      "summary": "The delegate tool is background-by-default in interactive TUI sessions (auto = ctx.mode === 'tui'; headless stays blocking and byte-compatible plus details.usage): receipt returns immediately, exactly one delegation-result followUp (deliverAs followUp, triggerTurn) lands per terminal transition and wakes the idle agent. New delegations tool (list/log/abort/wait), /delegations command, widget for background/queued runs; children switched to --mode json with one line-buffered parser (usage accumulation, activity, silent-JSON fallback); logs teed to ~/.pi/agent/subagent-logs/<runId>.jsonl (run header with sessionId, 14-day prune, dir cap, per-run byte cap, sink-failure isolation); admission 4 running / 16 queued / loud reject; split kill paths (session_shutdown SIGTERM→5s→SIGKILL, process-exit sync SIGKILL); log-dir-only restart reconstruction, runIds never reused; session-signals gained a tick-defer (no 0-second footer flash) and watches delegations. 332 unit tests + 2 gated real-child smoke rows green; published to user scope, drift zero, fresh-session load functionally verified. Manual-evidence slots M1-M5 (H1 idle-wake, H5 visual, e2e x3) documented in docs/plans/2026-interactive-subagent-delegation.manual-evidence.md for the owner.",
+      "decisions": [
+        "background auto-default keyed on ctx.mode==='tui', NOT ctx.hasUI (rpc also has UI and must not receive wake turns)",
+        "log dir at user scope (~/.pi/agent/subagent-logs): durable across reboots, git-clean in every project — and a de-facto cross-repo contract (ai-badger pi_session_source.delegation_usage will parse it; format changes need coordination)",
+        "fake-pi test harnesses must be pub/sub (handler ARRAYS per event): single-slot maps let a second extension's session_shutdown silently overwrite the first — caught as a W3 join failure, real pi.on fans out",
+        "two review-driven cuts kept the task landable: session-signals pi.events wire → 5-line tick-defer; branch-parsing reconstruction → log-dir-only (the log dir already holds everything)",
+        "cold-start delegation children from fresh dirs take ~62s (one retry cycle): smoke watchdog 120s; headless MoE-panel consumers should pass background:false or use delegations wait",
+        "plan docs live in docs/plans/ (plan + .tests.md contract + .research.md + manual-evidence); the 78-row test table is committed, never regenerate it from transcripts"
+      ]
+    },
+    {
+      "taskId": "pbi-move-extensions-to-dir-packages",
+      "title": "Extensions as directory packages: publish, tests, minimal ai-badger layer",
+      "finishedAt": "2026-08-30T17:20:26Z",
+      "summary": "All five pi extensions became directory packages (manifests + index.ts entries for session-signals and shift-enter-newline); publish.ts rewritten to a generic directory model (recursive targets, node_modules shipped-and-exempt, {problems,warnings} drift, injectable roots; adapter exact-set semantics preserved); test tree mirrors extensions/ with cron+subagent suites ported from ai-badger and new honest pi-mcp-tools coverage (206 tests green, tsc clean); ai-badger reduced to the minimal pi translation layer (adapter only) on its task/pbi-minimal-pi-layer branch \u2014 cron/subagent canonical here, adjust_agents slimmed to persona delivery, adjust_cron deleted; published to user scope, stale flat files + ai-badger-subagent/ cleaned, den-refresh 0.146.0\u21920.147.0 applied, pi smoke-tested clean with delegate + MCP tools registering.",
+      "decisions": [
+        "directory name = install name (subagent/, not ai-badger-subagent/); one-time user-scope cleanup documented in README, never auto-deleted by publish",
+        "node_modules is derived state: shipped at install, warned (never fatal) in --check, exempt from drift",
+        "ai-badger keeps only the adapter; extension installs moved to this repo's publish flow",
+        "project skills path deliberately NOT merged into pi global settings (collides with the ai-badger checkout's path); re-check after every den-refresh"
+      ]
+    }
+  ]
 }
