@@ -146,14 +146,19 @@ describe("scanPersonas", () => {
 });
 
 describe("delegationArgs", () => {
-  test("runs headless, keeps no session, and excludes itself so delegation cannot recurse", () => {
+  test("runs headless, in JSON mode, keeps no session, and excludes both delegation tools so delegation cannot recurse", () => {
     const args = delegationArgs(persona(), "Draft the plan");
 
+    // Amended by lane P3 (outside its owned-file set — flagged for the orchestrator): the
+    // committed tests-doc contract (rows 1–3, subagent-tool.test.ts) supersedes this legacy
+    // pin; delegationArgs now emits `--mode json` (R3) and excludes `delegate,delegations` (R6).
     expect(args).toEqual([
       "-p",
+      "--mode",
+      "json",
       "--no-session",
       "--exclude-tools",
-      TOOL_NAME,
+      `${TOOL_NAME},delegations`,
       "--append-system-prompt",
       "# Architect\n",
       "--",
