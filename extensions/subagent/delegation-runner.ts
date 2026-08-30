@@ -18,6 +18,7 @@ import {
   applyUsage,
   DEFAULT_TEE_CAP_BYTES,
   deriveActivity,
+  applyLiveUsage,
   elideTeeStream,
   emptyUsage,
   extractAnswer,
@@ -200,6 +201,8 @@ interface RunState {
   request: RunRequest;
   record: DelegationRecord;
   usage: DelegationUsage;
+  /** Display floor from message_update cumulative reports; the settled record never uses it. */
+  liveUsage: DelegationUsage;
   events: ChildEvent[];
   activity?: string;
   child: ChildLike | undefined;
@@ -259,6 +262,7 @@ export class DelegationRunner {
       request,
       record,
       usage: emptyUsage(),
+      liveUsage: emptyUsage(),
       events: [],
       child: undefined,
       sawClose: false,
@@ -346,7 +350,8 @@ export class DelegationRunner {
     if (!event) return; // row 30: garbage is skipped from the event stream, the tee kept the raw line
     state.events.push(event);
     applyUsage(state.usage, event);
-    state.record.usage = { ...state.usage }; // live usage for status surfaces
+    applyLiveUsage(state.liveUsage, event); // display floor: cumulative provider reports (see core)
+    state.record.usage = applyLiveUsage({ ...state.usage }, event); // live view — settle overwrites with the sum
     const activity = deriveActivity(event);
     if (activity) state.record.activity = activity;
     if (isProgressEvent(event)) {
@@ -356,7 +361,7 @@ export class DelegationRunner {
         state: "running",
         startedAt: state.record.startedAt,
         ...(state.record.activity !== undefined ? { activity: state.record.activity } : {}),
-        usage: { ...state.usage },
+        usage: { ...state.record.usage }, // live merged view (sum ∨ cumulative floor)
       });
     }
   }

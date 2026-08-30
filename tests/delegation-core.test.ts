@@ -15,6 +15,7 @@ import {
   type LogRunFile,
   admitRequest,
   allocateRunId,
+  applyLiveUsage,
   applyUsage,
   classifyFromLogDir,
   deriveActivity,
@@ -486,5 +487,46 @@ describe("deriveActivity (R9: stable keyword labels, constant length)", () => {
     expect(deriveActivity({ type: "agent_start" })).toBeUndefined();
     expect(deriveActivity({ type: "message_update", assistantMessageEvent: { type: "toolcall_delta", contentIndex: 0 } })).toBeUndefined();
     expect(deriveActivity({ type: "tool_execution_end", toolCallId: "tc-1", toolName: "read", result: {}, isError: false })).toBeUndefined();
+  });
+});
+
+// ------------------------------------------------------------------ applyLiveUsage (live usage fidelity)
+
+describe("applyLiveUsage (message_update cumulative usage → live view)", () => {
+  const msgUpdate = (usage: unknown) => ({ type: "message_update", usage });
+
+  test("mid-turn cumulative input appears in the live view before any message_end", () => {
+    const base = emptyUsage();
+    const live = applyLiveUsage(base, msgUpdate({ input: 14556, output: 982, cacheRead: 27840, totalTokens: 43378 }));
+    expect(live.input).toBe(14556);
+    expect(live.output).toBe(982);
+    expect(live.cacheRead).toBe(27840);
+    expect(live.contextTokens).toBe(43378);
+  });
+
+  test("cumulative reports are a floor: smaller later reports never clobber larger ones", () => {
+    let live = emptyUsage();
+    live = applyLiveUsage(live, msgUpdate({ input: 10000, output: 500 }));
+    live = applyLiveUsage(live, msgUpdate({ input: 20, output: 900 }));
+    expect(live.input).toBe(10000);
+    expect(live.output).toBe(900);
+  });
+
+  test("cost folds from the nested cost.total", () => {
+    const live = applyLiveUsage(emptyUsage(), msgUpdate({ input: 10, cost: { total: 0.5 } }));
+    expect(live.cost).toBeCloseTo(0.5);
+  });
+
+  test("turns are never touched by live reports (message_end counts turns, not this)", () => {
+    const base = emptyUsage();
+    base.turns = 3;
+    expect(applyLiveUsage(base, msgUpdate({ input: 1 })).turns).toBe(3);
+  });
+
+  test("non-message_update events and usage-less updates return the input unchanged", () => {
+    const base = emptyUsage();
+    expect(applyLiveUsage(base, { type: "message_end" })).toBe(base);
+    expect(applyLiveUsage(base, msgUpdate(undefined))).toBe(base);
+    expect(applyLiveUsage(base, msgUpdate("not an object"))).toBe(base);
   });
 });

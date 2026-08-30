@@ -291,6 +291,22 @@ describe("live parse and progress (rows 26–30)", () => {
     handle.killImmediate(); // hygiene: no live child outlives the test
   });
 
+  test("live usage: message_update cumulative input reaches onUpdate before any message_end", () => {
+    const h = makeRunner();
+    const handle = h.runner.run(runRequest());
+
+    h.children[0]!.emitEvent({
+      type: "message_update",
+      usage: { input: 14556, output: 982, cacheRead: 27840, totalTokens: 43378 },
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "hmm" },
+    });
+
+    const latest = h.updates[h.updates.length - 1]!;
+    expect(latest.usage!.input).toBe(14556); // live fidelity: no ↓only lines on long first turns
+    expect(latest.usage!.cacheRead).toBe(27840);
+    handle.killImmediate(); // hygiene: no live child outlives the test
+  });
+
   test("row 27: usage accumulates across turns into the note", async () => {
     const h = makeRunner();
     h.runner.run(runRequest());

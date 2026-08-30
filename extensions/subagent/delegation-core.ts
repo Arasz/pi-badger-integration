@@ -113,6 +113,27 @@ export function applyUsage(acc: DelegationUsage, event: ChildEvent): DelegationU
   return acc;
 }
 
+/**
+ * Live-usage floor from pi's `message_update` top-level usage (cumulative provider-reported
+ * values, json.md) — per-field max into `live`, so long first turns show input/cache/cost
+ * before any `message_end` lands instead of rendering `↓only` for minutes. Monotone: a
+ * smaller later report never clobbers. Display-only — the settled record stays the
+ * `message_end` sum (applyUsage); `turns` is never touched here.
+ */
+export function applyLiveUsage(live: DelegationUsage, event: ChildEvent): DelegationUsage {
+  if (event.type !== "message_update") return live;
+  const usage = event.usage;
+  if (typeof usage !== "object" || usage === null) return live;
+  const u = usage as ChildUsage;
+  live.input = Math.max(live.input, u.input || 0);
+  live.output = Math.max(live.output, u.output || 0);
+  live.cacheRead = Math.max(live.cacheRead, u.cacheRead || 0);
+  live.cacheWrite = Math.max(live.cacheWrite, u.cacheWrite || 0);
+  live.cost = Math.max(live.cost, u.cost?.total || 0);
+  live.contextTokens = Math.max(live.contextTokens, u.totalTokens || 0);
+  return live;
+}
+
 // ------------------------------------------------------------------ lifecycle states
 
 /**

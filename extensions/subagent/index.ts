@@ -639,6 +639,9 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       // ui.notify alone, which is a no-op in print/json.
       const wantsBackground = params.background ?? toolCtx.mode === "tui";
       const degraded = wantsBackground && toolCtx.mode !== "tui";
+      // Mirror of `degraded` (T67): an explicit opt-OUT inside tui blocks a turn that would
+      // have backgrounded by default — make that choice observable in the result (f: 2026-08-30).
+      const blockedInTui = toolCtx.mode === "tui" && params.background === false;
 
       const model = toolCtx.model ? `${toolCtx.model.provider}/${toolCtx.model.id}` : undefined;
       const invocation = piInvocation(delegationArgs(persona, params.task, model));
@@ -675,7 +678,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       if (wantsBackground && !degraded) {
         return receiptResult(outcome, toolCallId);
       }
-      return blockingResult(outcome, { personaName: persona.name, agentsDir, errors: scan.errors, degraded, onUpdate });
+      return blockingResult(outcome, { personaName: persona.name, agentsDir, errors: scan.errors, degraded, blockedInTui, onUpdate });
     },
   });
 
@@ -712,7 +715,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   /** Blocking path: await the run's done; today's result shape + details.usage (AC6). */
   async function blockingResult(
     outcome: DelegationReceipt,
-    context: { personaName: string; agentsDir: string; errors: string[]; degraded: boolean; onUpdate: AgentToolUpdateCallback<unknown> | undefined },
+    context: { personaName: string; agentsDir: string; errors: string[]; degraded: boolean; blockedInTui: boolean; onUpdate: AgentToolUpdateCallback<unknown> | undefined },
   ) {
     const { id } = outcome;
     if (context.onUpdate) {
@@ -739,7 +742,9 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       content: text(
         context.degraded
           ? `[ai-badger] background was requested outside tui mode — running fully blocking instead.\n${body}`
-          : body,
+          : context.blockedInTui
+            ? `[ai-badger] background:false — this delegation ran blocking; the result below is inline, no receipt follows.\n${body}`
+            : body,
       ),
       details: {
         agent: context.personaName,

@@ -302,6 +302,18 @@ describe("T66 — background auto-resolution matrix (auto = background iff mode 
     expect(result.details.degraded).toBeUndefined();
   });
 
+  test("blocking-in-tui is observable: explicit background:false result names itself", async () => {
+    h = makeHarness();
+    const pending = callDelegate({ agent: "architect", task: "t", background: false }, makeCtx("tui"));
+    h.children[0]!.write(`${assistantEnd("sync answer")}\n`);
+    h.children[0]!.exit(0);
+    const result = await pending;
+
+    expect(contentOf(result)).toContain("background:false");
+    expect(contentOf(result)).toContain("blocking");
+    expect(contentOf(result)).toContain("sync answer"); // the inline result still rides below the notice
+  });
+
   test("explicit background:false wins in tui → blocking result", async () => {
     h = makeHarness();
     const pending = callDelegate({ agent: "architect", task: "t", background: false }, makeCtx("tui"));
