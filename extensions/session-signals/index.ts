@@ -105,18 +105,22 @@ export function renderStatus(entries: DelegationEntry[], now: number): string | 
 	return `⏳ ${parts.join(" · ")}`;
 }
 
-/** The delegation tool names to watch, from the env override or the default. */
+/** The delegation tool names to watch, from the env override or the default. Both ai-badger
+ * delegation tools are watched by default: `delegate` (blocking runs) and `delegations`
+ * (whose `wait` action can hold a turn for minutes — R9 keeps it footer-visible). */
 export function parseToolNames(env: Record<string, string | undefined>): string[] {
 	const raw = env.PI_BADGER_DELEGATION_TOOLS?.trim();
-	if (!raw) return ["delegate"];
+	if (!raw) return ["delegate", "delegations"];
 	const names = raw.split(",").map((n) => n.trim()).filter(Boolean);
-	return names.length > 0 ? names : ["delegate"];
+	return names.length > 0 ? names : ["delegate", "delegations"];
 }
 
 // ---------------------------------------------------------------- wiring
 
+/** Footer tick cadence. Exported so tests can wait out the first render honestly. */
+export const TICK_MS = 5000;
+
 const STATUS_KEY = "pi-badger";
-const TICK_MS = 5000;
 
 export default function (pi: ExtensionAPI) {
 	const toolNames = new Set(parseToolNames(process.env));
@@ -161,7 +165,10 @@ export default function (pi: ExtensionAPI) {
 		const input = (event.input ?? {}) as Record<string, unknown>;
 		const label = typeof input.agent === "string" && input.agent ? input.agent : "task";
 		tracker.onCall(event.toolCallId, label);
-		render(ctx);
+		// R9 tick-defer: no immediate render here. A background delegation's receipt lands
+		// sub-second and would flash the footer for a moment; the first render is deferred to
+		// the tick below, so only delegations that actually keep running (blocking ones) are
+		// ever shown. The tool_result handler still clears immediately.
 		ensureTicker(ctx);
 		return undefined;
 	});
