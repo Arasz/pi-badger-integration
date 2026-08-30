@@ -9,14 +9,38 @@ independent of ai-badger's release machinery.
 
 ## What lives here
 
+Every extension installs as a directory package: `extensions/<name>/` →
+`~/.pi/agent/extensions/<name>/`, shipping every file except the `node_modules`
+subtree (pi discovers `~/.pi/agent/extensions/<name>/index.ts` only).
+
 | Extension | Canonical source | Installed to |
 |---|---|---|
 | ai-badger hooks adapter (PreToolUse gates + PostToolUse arms) | `features/pi/adjustments/adapter/` | `~/.pi/agent/extensions/ai-badger/` |
-| shift-enter-newline (Shift+Enter newline for terminals that cannot report it, e.g. JetBrains IDE terminal) | `extensions/shift-enter-newline.ts` | `~/.pi/agent/extensions/shift-enter-newline.ts` |
-| session-signals (marker `!` importance — mid-run abort; delegation working status in the footer) | `extensions/session-signals.ts` | `~/.pi/agent/extensions/session-signals.ts` |
+| pi-cron (cron scheduler: in-process Bun.cron under bun, self-managed launchd agents otherwise) | `extensions/pi-cron/` | `~/.pi/agent/extensions/pi-cron/` |
+| pi-mcp-tools (universal MCP tools extension) | `extensions/pi-mcp-tools/` | `~/.pi/agent/extensions/pi-mcp-tools/` |
+| session-signals (marker `!` importance — mid-run abort; delegation working status in the footer) | `extensions/session-signals/` | `~/.pi/agent/extensions/session-signals/` |
+| shift-enter-newline (Shift+Enter newline for terminals that cannot report it, e.g. JetBrains IDE terminal) | `extensions/shift-enter-newline/` | `~/.pi/agent/extensions/shift-enter-newline/` |
+| subagent (delegation to ai-badger personas scaffolded into `<project>/.pi/agents/`) | `extensions/subagent/` | `~/.pi/agent/extensions/subagent/` |
 
-Out of scope (still ai-badger-owned, vendored + tested in ai-badger's `features/pi/`):
-`ai-badger-subagent`, `pi-cron`.
+Still ai-badger-owned: the adapter is vendored + tested in ai-badger's
+`features/pi/` (see the three-copy model below).
+
+## One-time cleanup after the switch to directory installs (do once, by hand)
+
+The old publish flow installed two flat files, and ai-badger's installer used a
+different directory name for the subagent. After the first directory-model
+publish, remove the stale user-scope leftovers — pi would otherwise load
+duplicates (double hooks and tools):
+
+```bash
+rm ~/.pi/agent/extensions/session-signals.ts
+rm ~/.pi/agent/extensions/shift-enter-newline.ts
+rm -r ~/.pi/agent/extensions/ai-badger-subagent/   # old name; the generic rule installs it as subagent/
+```
+
+publish never deletes anything outside the directories it owns (the
+per-extension dirs and the adapter dir it installs into) — stale neighbours are
+left for you to remove.
 
 ## The three-copy model
 
@@ -35,7 +59,7 @@ fresh pi session.
 
 ## Flow (the reviewed order — do not skip the vendoring step)
 
-1. Edit canonical source here; keep tests green: `bun test` (adapter + shift-enter).
+1. Edit canonical source here; keep tests green: `bun test`.
 2. `bun run publish -- --ai-badger /Users/arasz/RiderProjects/ai-badger` — vendors the
    adapter into that checkout (vendor-ONLY: user scope is not touched in this step; refuses
    if the vendored dir does not exist; cannot be combined with `--check`).
