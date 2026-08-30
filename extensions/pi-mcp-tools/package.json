@@ -1,0 +1,60 @@
+{
+  "name": "@zhafron/pi-mcp-tools",
+  "version": "1.1.6",
+  "type": "module",
+  "description": "Universal MCP tools extension for pi coding agent",
+  "main": "src/index.ts",
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc --noEmit",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\"",
+    "lint": "eslint \"src/**/*.ts\"",
+    "prepare": "husky",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "keywords": [
+    "pi",
+    "coding-agent",
+    "mcp",
+    "extension",
+    "pi-package"
+  ],
+  "author": "zhafron",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tickernelz/pi-mcp-tools.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tickernelz/pi-mcp-tools/issues"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@sinclair/typebox": "^0.34.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.84.3",
+    "@earendil-works/pi-coding-agent": "^0.84.3",
+    "@earendil-works/pi-tui": "^0.84.3",
+    "@types/node": "^22.0.0",
+    "eslint": "^9.0.0",
+    "husky": "^9.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.0.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^3.2.7"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}
