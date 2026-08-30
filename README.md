@@ -20,10 +20,49 @@ subtree (pi discovers `~/.pi/agent/extensions/<name>/index.ts` only).
 | pi-mcp-tools (universal MCP tools extension) | `extensions/pi-mcp-tools/` | `~/.pi/agent/extensions/pi-mcp-tools/` |
 | session-signals (marker `!` importance — mid-run abort; delegation working status in the footer) | `extensions/session-signals/` | `~/.pi/agent/extensions/session-signals/` |
 | shift-enter-newline (Shift+Enter newline for terminals that cannot report it, e.g. JetBrains IDE terminal) | `extensions/shift-enter-newline/` | `~/.pi/agent/extensions/shift-enter-newline/` |
-| subagent (delegation to ai-badger personas scaffolded into `<project>/.pi/agents/`) | `extensions/subagent/` | `~/.pi/agent/extensions/subagent/` |
+| subagent (delegation to ai-badger personas scaffolded into `<project>/.pi/agents/`; background runs, progress and logs — see below) | `extensions/subagent/` | `~/.pi/agent/extensions/subagent/` |
 
 Still ai-badger-owned: the adapter is vendored + tested in ai-badger's
 `features/pi/` (see the three-copy model below).
+
+## The subagent extension: background delegation
+
+The `delegate` tool runs a persona as a separate `pi -p --mode json` child. In an
+interactive TUI session (`ctx.mode === "tui"`) delegation is **background by default**:
+the tool returns immediately with a receipt (`d-<n>`, state running/queued) and the main
+agent loop stays interactive — the user can keep typing, the agent can keep working.
+When the child settles, exactly one `delegation-result` follow-up message lands in the
+session (exit code, answer tail capped at 8 KB, duration, token usage, log path) and wakes
+the agent. In headless modes (`-p`, json, rpc) delegation stays **blocking** — the result
+is the tool result, byte-compatible with the pre-background contract, plus `details.usage`.
+Explicit `background: true/false` always wins; `background: true` outside the TUI degrades
+to blocking with a note in the tool result. There is **no automatic per-run timeout**.
+
+Checking on delegations:
+
+- **`delegations` tool** (LLM-facing): `list` (state, elapsed, current activity, usage),
+  `log <id>` (bounded tail + full path), `abort <id>`, `wait [ids] [timeoutMs ≤ 600s]`
+  (resolves with per-id snapshots; completion messages arrive regardless).
+- **`/delegations [log <id>] [abort <id|all>]`** (human-facing command).
+- **Widget** above the editor: one line per background/queued run (id, agent, elapsed,
+  current activity, tokens), cleared when the session's runs end.
+- **Logs**: every child's raw JSONL event stream is teed to
+  `~/.pi/agent/subagent-logs/<runId>.jsonl` — a `run` header (runId, sessionId, persona,
+  task, argv, cwd, pid, startedAt), the child's events verbatim, stderr as
+  `{"type":"stderr",…}` lines, and a final `exit` line. Byte-capped per run (header + tail
+  kept, middle elided). Logs live at user scope deliberately: they survive reboots and
+  never touch any project's git status. Retention: >14 days pruned at `session_start`,
+  directory capped oldest-first.
+
+Lifecycle: at most 4 children run at once (env `PI_BADGER_SUBAGENT_MAX_CONCURRENT`), 16
+queued FIFO, loud rejection beyond. `session_shutdown` SIGTERMs running children (SIGKILL
+after a 5 s grace); the process-exit path SIGKILLs synchronously. Delegations do not
+outlive the session — after a restart the log dir is the durable truth: finished runs are
+classified from their `exit` line, receipt-only runs report as lost, and no wake-up message
+is injected after a restart. Run ids are never reused (skip-to-next-free over the log
+directory), so `delegations log d-N` stays unambiguous across restarts. One documented
+limitation: `/tree` navigation away from the delegating branch hides that branch's
+receipts — the log directory remains the way to find those runs.
 
 ## One-time cleanup after the switch to directory installs (do once, by hand)
 
