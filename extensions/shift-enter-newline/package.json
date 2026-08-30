@@ -1,0 +1,12 @@
+{
+  "name": "shift-enter-newline",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shift+Enter inserts a newline in terminals whose Shift+Enter bytes would otherwise be consumed as a follow-up submit (JetBrains IDE terminal). pi discovers the entry as ~/.pi/agent/extensions/<name>/index.ts; this manifest records metadata only and does not register the entry.",
+  "main": "index.ts",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}
