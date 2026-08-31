@@ -859,6 +859,132 @@ describe("per-run timeout (T79–T85, deferral pkg P1)", () => {
   });
 });
 
+// ------------------------------------------------------------------ T108–T113: liveness watchdog (pbi-delegation-liveness-watchdog pkg P1)
+
+/**
+ * Liveness rows (docs/work/2026-08-31-delegation-liveness-watchdog-plan.md §3 P1). The
+ * watchdog is an inactivity timer beside the timeout timer (RR2): armed at spawn, reset by
+ * every successfully parsed stream event (S1 — not just message_update), firing only while
+ * unsettled through abortRun (R8's one kill path) and settling aborted + abortReason "lost".
+ * Clamp note (S2/M1): `runWatchdogMs: 1000` rides the 1 s floor verbatim and the drains wait
+ * it out in real time — the same house idiom as the timeout rows above (no fake-timer
+ * library, no injected-now arithmetic).
+ */
+describe("liveness watchdog (T108–T113, pkg P1)", () => {
+  test("T108: inactivity expiry kills via the abort path — SIGTERM then SIGKILL", async () => {
+    const h = makeRunner({ runWatchdogMs: 1000 });
+    h.runner.run(runRequest()); // a silent child: no events, no close
+    const child = h.children[0]!;
+
+    await drainMacrotasks(1100); // past the applied 1000 ms deadline
+
+    expect(child.signals).toEqual(["SIGTERM", "SIGKILL"]); // the R8 kill machinery, not a second implementation
+    expect(h.notes).toHaveLength(1);
+    expect(h.notes[0]!.state).toBe("aborted");
+  }, 20_000);
+
+  test("T109: lost settle carries the marker + watchdogMs, no exitCode, exactly one note", async () => {
+    const h = makeRunner({ runWatchdogMs: 1000 });
+    const handle = h.runner.run(runRequest());
+
+    await drainMacrotasks(1100);
+
+    expect(h.notes).toHaveLength(1);
+    const note = h.notes[0]!;
+    expect(note.state).toBe("aborted");
+    expect(note.abortReason).toBe("lost");
+    expect(note.watchdogMs).toBe(1000); // the applied threshold the verdict will name
+    expect("exitCode" in note).toBe(false); // R5's aborted shape
+    expect(handle.record.state).toBe("aborted");
+    expect(handle.record.abortReason).toBe("lost");
+    expect(handle.record.watchdogMs).toBe(1000); // the record mirrors the note
+  }, 20_000);
+
+  test("T110: parsed events reset the deadline — a streaming run spanning 2× threshold never trips", async () => {
+    const h = makeRunner({ runWatchdogMs: 1000 });
+    h.runner.run(runRequest());
+    const child = h.children[0]!;
+
+    // Burst 1: tool events ONLY — a reset-on-message_update-only implementation misses these (S1).
+    child.emitEvent({ type: "tool_execution_start", toolCallId: "tc-1", toolName: "bash" });
+    child.emitEvent({ type: "tool_execution_update", toolCallId: "tc-1", toolName: "bash" });
+    await drainMacrotasks(700); // t≈0.7 — just under the 1 s deadline
+
+    // Burst 2: mixed types, message_update included.
+    child.emitEvent(sessionHeader);
+    child.emitEvent({
+      type: "message_update",
+      usage: {},
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "hmm" },
+    });
+    await drainMacrotasks(700); // t≈1.4 — an arm-once watchdog would have fired at 1.0
+
+    // Burst 3: tool events only again — the deadline now rests on a non-message_update reset.
+    child.emitEvent({ type: "tool_execution_end", toolCallId: "tc-1", toolName: "bash", result: {} });
+    child.emitEvent(assistantEnd("still alive", { input: 1 }));
+    await drainMacrotasks(700); // t≈2.1 — past a message_update-only deadline of 1.7; > 2× threshold in total
+
+    child.exit(0); // completed normally before any real deadline (2.4)
+    await drainMacrotasks(700); // past 2× threshold — a surviving timer would fire here
+
+    expect(child.signals).toEqual([]);
+    expect(h.notes).toHaveLength(1);
+    expect(h.notes[0]!.state).toBe("completed");
+  }, 20_000);
+
+  test("T111 (PIN): natural close clears the watchdog — completed, never signaled", async () => {
+    const h = makeRunner({ runWatchdogMs: 1000 });
+    h.runner.run(runRequest());
+    const child = h.children[0]!;
+
+    child.exit(0); // before the threshold
+    await drainMacrotasks(1100); // past the deadline — a surviving timer would fire here
+
+    expect(child.signals).toEqual([]);
+    expect(h.notes).toHaveLength(1);
+    expect(h.notes[0]!.state).toBe("completed");
+  }, 20_000);
+
+  test("T112: shutdown with an armed watchdog notifies nothing", async () => {
+    const h = makeRegistry({ runWatchdogMs: 1000 });
+    await h.registry.start(startRequest());
+
+    h.registry.shutdown(); // pre-expiry
+    await drainMacrotasks(1100);
+
+    expect(h.notes).toHaveLength(0); // CR10: shutdown settles notify nothing
+  }, 20_000);
+
+  test("T113: a timeout expiry clears the watchdog — the settle is timeout, never a later lost", async () => {
+    const h = makeRunner({ runWatchdogMs: 1000 });
+    h.runner.run(runRequest({ timeoutMs: 5 })); // applied 1000 — both timers due ≈1.0 s; the timeout armed first
+    const child = h.children[0]!;
+
+    await drainMacrotasks(1100);
+
+    expect(h.notes).toHaveLength(1);
+    expect(h.notes[0]!.state).toBe("aborted");
+    expect(h.notes[0]!.abortReason).toBe("timeout"); // the expiry is terminal (N3: cleared, not reset as activity)
+    expect(child.signals).toEqual(["SIGTERM", "SIGKILL"]); // one escalation, no watchdog second kill
+
+    await drainMacrotasks(1200); // well past any re-armed deadline — no second settle ever
+    expect(h.notes).toHaveLength(1);
+  }, 20_000);
+
+  test("T113 (continued): a watchdog fire with a timeout armed settles exactly once", async () => {
+    const h = makeRunner({ runWatchdogMs: 1000 });
+    h.runner.run(runRequest({ timeoutMs: 50_000 })); // armed, nowhere near firing
+    const child = h.children[0]!;
+
+    await drainMacrotasks(1100); // the watchdog fires first
+
+    expect(h.notes).toHaveLength(1); // once, not twice
+    expect(h.notes[0]!.abortReason).toBe("lost");
+    expect(h.notes[0]!.timeoutMs).toBe(50_000); // the armed timeout still rides the note
+    expect(child.signals).toEqual(["SIGTERM", "SIGKILL"]);
+  }, 20_000);
+});
+
 // ------------------------------------------------------------------ T103: wait + timeout interplay (deferral pkg P4)
 
 describe("wait and timeout interplay (T103, deferral pkg P4)", () => {

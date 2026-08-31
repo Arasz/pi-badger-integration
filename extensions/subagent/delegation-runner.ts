@@ -17,6 +17,7 @@ import { spawn as nodeSpawn } from "node:child_process";
 import {
   applyUsage,
   clampRunTimeoutMs,
+  clampRunWatchdogMs,
   DEFAULT_TEE_CAP_BYTES,
   deriveActivity,
   applyLiveUsage,
@@ -116,10 +117,12 @@ export interface DelegationNote {
   durationMs?: number;
   /** Absent when no sink was configured or the sink failed mid-run (T62). */
   logFile?: string;
-  /** RR2: present only on a timeout settle — the note-level distinguishing marker. */
-  abortReason?: "timeout";
+  /** RR2: present on a timeout settle ("timeout") or a watchdog-lost settle ("lost"). */
+  abortReason?: "timeout" | "lost";
   /** The applied (clamped) per-run timeout; present when the timer armed (RR2/T85). */
   timeoutMs?: number;
+  /** RR2: the applied watchdog threshold, present on a lost settle — the verdict names it. */
+  watchdogMs?: number;
 }
 
 /** Live progress snapshot for `onUpdate` (rows 26); structurally a `DelegationStatusRun`. */
@@ -147,6 +150,9 @@ export interface RunnerDeps {
   /** Injected clock; the only Date.now() boundary in this module. */
   now?: () => number;
   /** Synchronous terminal callback — the registry releases admission and dequeues here (row 39). */
+  /** Liveness watchdog (RR2), ms of stream silence before the run aborts lost. Default
+   * RUN_WATCHDOG_MS (600_000); 0 = off (the test-fixture idiom). Re-clamped at the arm site. */
+  runWatchdogMs?: number;
   onSettle?: (record: DelegationRecord) => void;
 }
 
@@ -221,6 +227,11 @@ interface RunState {
   timeoutTimer: ReturnType<typeof setTimeout> | undefined;
   /** Set when the per-run timeout fired — stamps abortReason "timeout" on the settle (RR2). */
   timedOut: boolean;
+  watchdogTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The applied (clamped) watchdog threshold; undefined = off — nothing arms or resets. */
+  watchdogMs: number | undefined;
+  /** Set when the watchdog fired — stamps abortReason "lost" + watchdogMs on the settle (RR2). */
+  lostByWatchdog: boolean;
   tee: TeeState | undefined;
   stdoutAccum: string;
   rawStderr: string;
@@ -282,6 +293,9 @@ export class DelegationRunner {
       graceTimer: undefined,
       timeoutTimer: undefined,
       timedOut: false,
+      watchdogTimer: undefined,
+      watchdogMs: undefined,
+      lostByWatchdog: false,
       tee: undefined,
       stdoutAccum: "",
       rawStderr: "",
@@ -343,6 +357,15 @@ export class DelegationRunner {
       }, appliedTimeoutMs);
     }
 
+    // RR2: the watchdog arms beside the timeout — no activity (no parsed stream event) for N ms
+    // kills through abortRun (R8's one kill path; the watchdog adds no kill implementation).
+    // 0 = off; the value re-clamps here, never trusting the caller's clamp (S5).
+    const appliedWatchdogMs = clampRunWatchdogMs(this.deps.runWatchdogMs);
+    if (appliedWatchdogMs !== undefined) {
+      state.watchdogMs = appliedWatchdogMs;
+      this.armWatchdog(state);
+    }
+
     if (request.signal) {
       const onAbort = () => this.abortRun(state);
       state.onAbort = onAbort;
@@ -376,6 +399,7 @@ export class DelegationRunner {
   private handleLine(state: RunState, line: string): void {
     const event = parseChildEvent(line);
     if (!event) return; // row 30: garbage is skipped from the event stream, the tee kept the raw line
+    if (!state.settled) this.resetWatchdog(state); // S1: every parsed event is activity; the settled gate keeps the lost-settle close tail-flush path from re-arming an orphan watchdog (RR2)
     state.events.push(event);
     applyUsage(state.usage, event);
     applyLiveUsage(state.liveUsage, event); // display floor: cumulative provider reports (see core)
@@ -403,6 +427,10 @@ export class DelegationRunner {
     if (state.timeoutTimer !== undefined) {
       clearTimeout(state.timeoutTimer); // T81: a natural close beats the timer — no late kill
       state.timeoutTimer = undefined;
+    }
+    if (state.watchdogTimer !== undefined) {
+      clearTimeout(state.watchdogTimer); // T111: a natural close beats the watchdog — no late kill
+      state.watchdogTimer = undefined;
     }
     if (state.buffer.length > 0) {
       // Row 29: a trailing line without its newline is flushed on close.
@@ -441,6 +469,26 @@ export class DelegationRunner {
     } catch {
       // ESRCH / already dead — tolerated (T63, review CR5)
     }
+  }
+
+  // ------------------------------------------------------------------ liveness watchdog (RR2)
+
+  /** (Re)arm the inactivity deadline. Fires only while unsettled: the run is killed through
+   * abortRun (R8's one kill path) and settles aborted + abortReason "lost" with watchdogMs. */
+  private armWatchdog(state: RunState): void {
+    state.watchdogTimer = setTimeout(() => {
+      state.watchdogTimer = undefined;
+      state.lostByWatchdog = true;
+      this.abortRun(state);
+    }, state.watchdogMs!);
+  }
+
+  /** Every parsed stream event pushes the deadline (S1, not just message_update); a no-op
+   * when the watchdog is off or already fired. */
+  private resetWatchdog(state: RunState): void {
+    if (state.watchdogTimer === undefined) return;
+    clearTimeout(state.watchdogTimer);
+    this.armWatchdog(state);
   }
 
   // ------------------------------------------------------------------ log tee (R4)
@@ -531,6 +579,10 @@ export class DelegationRunner {
   private settleAborted(state: RunState): void {
     state.record.state = "aborted"; // no exitCode — R5's aborted shape
     if (state.timedOut) state.record.abortReason = "timeout"; // RR2: the one distinguishing marker
+    else if (state.lostByWatchdog) {
+      state.record.abortReason = "lost"; // RR2: the watchdog's marker
+      if (state.watchdogMs !== undefined) state.record.watchdogMs = state.watchdogMs;
+    }
     this.finishSettle(state, "aborted");
   }
 
@@ -541,6 +593,10 @@ export class DelegationRunner {
     if (state.timeoutTimer !== undefined) {
       clearTimeout(state.timeoutTimer); // RR4: the timer never outlives the settle (T81/T82/T83)
       state.timeoutTimer = undefined;
+    }
+    if (state.watchdogTimer !== undefined) {
+      clearTimeout(state.watchdogTimer); // RR2: any settle clears both timers (T111/T112/T113)
+      state.watchdogTimer = undefined;
     }
     if (state.onAbort && state.signal) {
       state.signal.removeEventListener("abort", state.onAbort);
@@ -572,6 +628,7 @@ export class DelegationRunner {
     if (state.settleKind === "exit") note.exitCode = exitCode;
     if (record.abortReason !== undefined) note.abortReason = record.abortReason;
     if (record.timeoutMs !== undefined) note.timeoutMs = record.timeoutMs;
+    if (record.watchdogMs !== undefined) note.watchdogMs = record.watchdogMs;
     if (record.spawnError !== undefined) note.spawnError = record.spawnError;
     if (answer.kind === "silent") {
       // R3/CR4: the quiet failure gets a loud marker plus the capped raw stdout.

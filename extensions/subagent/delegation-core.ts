@@ -163,10 +163,13 @@ export interface DelegationRecord {
   logFile?: string;
   queuePosition?: number;
   spawnError?: string;
-  /** RR2: "timeout" on a run killed by its per-run timeout; a user abort carries no marker. */
-  abortReason?: "timeout";
+  /** RR2: "timeout" on a run killed by its per-run timeout, "lost" on a run killed by the
+   * liveness watchdog; a user abort carries no marker. */
+  abortReason?: "timeout" | "lost";
   /** The applied (clamped) per-run timeout — observable while running and at settle (T85). */
   timeoutMs?: number;
+  /** RR2: the applied watchdog threshold, stamped on a lost settle — the verdict names it. */
+  watchdogMs?: number;
 }
 
 // ------------------------------------------------------------------ per-run timeout clamp
@@ -182,6 +185,13 @@ export const RUN_TIMEOUT_MAX_MS = 86_400_000;
 export const RUN_TIMEOUT_MIN_MS = 1000;
 
 /**
+ * Default liveness watchdog (RR2): 10 min without a parsed stream event. Generous — thinking
+ * streams continuously and long tool calls still emit events — and also the default stale
+ * threshold (RR4): one number, one meaning, "how long without evidence before a run is dead".
+ */
+export const RUN_WATCHDOG_MS = 600_000;
+
+/**
  * Clamp a per-run `timeoutMs` request (RR1): undefined, non-finite or ≤ 0 means "no timeout"
  * (default behavior unchanged); any positive value is raised to the 1 s floor and capped at
  * 24 h. Clamped, never rejected — the applied value is observable on the record (T85), so a
@@ -191,6 +201,19 @@ export const RUN_TIMEOUT_MIN_MS = 1000;
 export function clampRunTimeoutMs(timeoutMs: number | undefined): number | undefined {
   if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return undefined;
   return Math.min(RUN_TIMEOUT_MAX_MS, Math.max(RUN_TIMEOUT_MIN_MS, timeoutMs));
+}
+
+/**
+ * Resolve a per-run liveness watchdog value (RR2): undefined → the 10 min default; 0 or
+ * negative → off (no timer, the test-fixture idiom); any positive value is raised to the 1 s
+ * floor and capped at 24 h — the same clamp as `timeoutMs`, because the watchdog arms through
+ * the same `setTimeout` whose >2^31−1 ms clamp fires in ~1 ms (M1: an uncapped injectable
+ * "3e9" would instantly abort every run lost). Runs at the runner's timer-creation site (S5:
+ * registry and direct-runner callers must not bypass it).
+ */
+export function clampRunWatchdogMs(runWatchdogMs: number | undefined): number | undefined {
+  if (runWatchdogMs !== undefined && (!Number.isFinite(runWatchdogMs) || runWatchdogMs <= 0)) return undefined;
+  return clampRunTimeoutMs(runWatchdogMs ?? RUN_WATCHDOG_MS);
 }
 
 // ------------------------------------------------------------------ log-dir classification
@@ -296,8 +319,9 @@ export interface DelegationStatusRun {
   usage?: DelegationUsage;
   queuePosition?: number;
   spawnError?: string;
-  /** RR2: "timeout" on a run killed by its per-run timeout; a user abort carries no marker. */
-  abortReason?: "timeout";
+  /** RR2: "timeout" on a run killed by its per-run timeout, "lost" on a watchdog kill; a user
+   * abort carries no marker. */
+  abortReason?: "timeout" | "lost";
 }
 
 /** `92_000` ms → `1m32s`; sub-minute stays bare (`3s`); hours roll into `1h01m32s`. */

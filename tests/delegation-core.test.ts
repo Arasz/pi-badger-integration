@@ -14,10 +14,13 @@ import {
   MAX_ACTIVITY_LEN,
   type LogDirEntry,
   type LogRunFile,
+  RUN_TIMEOUT_MAX_MS,
+  RUN_WATCHDOG_MS,
   admitRequest,
   allocateRunId,
   applyLiveUsage,
   applyUsage,
+  clampRunWatchdogMs,
   classifyFromLogDir,
   deriveActivity,
   elideTeeStream,
@@ -414,6 +417,23 @@ describe("elideTeeStream (T56)", () => {
     // The marker accounts for every dropped byte: header + marker + kept = total.
     const markerChars = outLines[1].length + 1;
     expect(dropped).toBe(stream.length - keptChars);
+  });
+});
+
+// ------------------------------------------------------------------ clampRunWatchdogMs (liveness watchdog, pkg P1)
+
+describe("clampRunWatchdogMs (RR2, pkg P1)", () => {
+  test("undefined → the 10 min default; 0/negative/NaN → off; floor and cap applied", () => {
+    expect(RUN_WATCHDOG_MS).toBe(600_000);
+    expect(clampRunWatchdogMs(undefined)).toBe(600_000); // default arms the watchdog
+    expect(clampRunWatchdogMs(0)).toBeUndefined(); // 0 = off (the test-fixture idiom)
+    expect(clampRunWatchdogMs(-5)).toBeUndefined();
+    expect(clampRunWatchdogMs(Number.NaN)).toBeUndefined();
+    expect(clampRunWatchdogMs(Number.POSITIVE_INFINITY)).toBeUndefined();
+    expect(clampRunWatchdogMs(100)).toBe(1000); // raised to the floor (S2)
+    expect(clampRunWatchdogMs(90_000)).toBe(90_000); // within bounds: verbatim
+    expect(clampRunWatchdogMs(3e9)).toBe(RUN_TIMEOUT_MAX_MS); // M1: setTimeout's >2^31-1 clamp would fire in ~1 ms
+    expect(RUN_TIMEOUT_MAX_MS).toBe(86_400_000);
   });
 });
 
