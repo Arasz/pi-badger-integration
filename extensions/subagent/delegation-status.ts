@@ -33,7 +33,7 @@
 import { readFileSync } from "node:fs";
 import { Type, type Static } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { formatDuration, formatUsage, renderDelegationStatus, type DelegationRecord } from "./delegation-core.ts";
+import { formatDuration, formatUsage, renderDelegationStatus, type DelegationRecord, type LogRunSummary } from "./delegation-core.ts";
 import type { DelegationRegistry } from "./delegation-registry.ts";
 
 // ------------------------------------------------------------------ contract constants
@@ -162,6 +162,10 @@ export function describeRecord(record: DelegationRecord, now: number, probe?: (p
 		case "lost":
 			parts.push("lost");
 			break;
+		case "stale":
+			parts.push("stale");
+			if (record.logFile) parts.push(`log: ${record.logFile}`);
+			break;
 	}
 	parts.push(`task: ${taskExcerpt(record.task)}`);
 	return parts.join(" — ");
@@ -233,6 +237,10 @@ export function registerDelegationStatus(
 		/** Three-way pid liveness probe for the list action (RR3); defaults to the real
 		 * `probePid`. Injectable so tests can stub EPERM-class outcomes. */
 		probePid?: (pid: number) => PidLiveness;
+		/** Reconstructed log-dir summaries (RR4), consulted when the registry is empty: `stale`
+		 * runs are listed with their log paths — the safety net that works even when the runner
+		 * instance is gone. Defaults to none. */
+		staleRuns?: () => LogRunSummary[];
 	},
 ): void {
 	const widgetKey = opts?.widgetKey ?? DEFAULT_WIDGET_KEY;
@@ -348,7 +356,27 @@ export function registerDelegationStatus(
 		switch (params.action) {
 			case "list": {
 				const records = [...registry.list()].sort((a, b) => a.startedAt - b.startedAt);
-				if (records.length === 0) return textResult("registry empty (0 records)", { records: [] }); // RR1: identify emptiness, never a blind "none"
+				if (records.length === 0) {
+					// RR4: an empty registry is not the end of the story — reconstructed stale runs
+					// (pid-dead, terminal-line-less, frozen logs) surface here with their log paths.
+					const stale = (opts?.staleRuns?.() ?? []).filter((summary) => summary.state === "stale");
+					if (stale.length === 0) return textResult("registry empty (0 records)", { records: [] });
+					const staleRecords = stale.map((summary) => ({
+						id: summary.id,
+						agent: summary.agent ?? "?",
+						task: summary.task ?? "",
+						toolCallId: "",
+						state: "stale" as const,
+						// describeRecord's stale branch never renders the clock; the record shape requires the field.
+						startedAt: summary.startedAt ?? 0,
+						...(summary.logFile !== undefined ? { logFile: summary.logFile } : {}),
+					}));
+					const lines = staleRecords.map((record) => describeRecord(record, elapsedNow()));
+					return textResult([`registry empty (0 records) — reconstructed from logs:`, ...lines].join("\n"), {
+						records: [],
+						stale: staleRecords,
+					});
+				}
 				const now = elapsedNow();
 				return textResult(records.map((record) => describeRecord(record, now, probePidFn)).join("\n"), { records });
 			}

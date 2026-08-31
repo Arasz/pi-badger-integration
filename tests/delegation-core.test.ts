@@ -610,6 +610,51 @@ describe("T105 — a timed-out run's log classifies lost (RR5 pin, deferral pkg 
   });
 });
 
+// ------------------------------------------------------------------ T117: stale classification with M2 precedence (pkg P3)
+
+describe("T117 — stale classification with M2 precedence (RR4, pkg P3)", () => {
+  const header = (overrides: Record<string, unknown> = {}): string =>
+    JSON.stringify({ type: "run", runId: "d-1", agent: "architect", task: "t", pid: 4242, startedAt: 1000, ...overrides });
+  const opts = { now: 700_000 }; // default stale threshold: 600_000 (RUN_WATCHDOG_MS)
+
+  test("header-only log, dead pid, mtime older than the threshold → stale", () => {
+    const summaries = classifyFromLogDir([{ id: "d-1", lines: [header()], mtimeMs: 0 }], () => false, opts);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]!.state).toBe("stale");
+    expect(summaries[0]!.agent).toBe("architect");
+    expect(summaries[0]!.task).toBe("t");
+  });
+
+  test("live pid + old mtime → running, NEVER stale (M2: the tee writes only header+tail, so mtime ≈ spawn time)", () => {
+    const summaries = classifyFromLogDir([{ id: "d-1", lines: [header()], mtimeMs: 0 }], () => true, opts);
+    expect(summaries[0]!.state).toBe("running");
+  });
+
+  test("pid-dead + mtime within the threshold → lost (existing behavior pinned)", () => {
+    const summaries = classifyFromLogDir([{ id: "d-1", lines: [header()], mtimeMs: 100_000 }], () => false, opts);
+    expect(summaries[0]!.state).toBe("lost");
+  });
+
+  test("an exit line + old mtime → completed, never stale (terminal lines take precedence)", () => {
+    const lines = [header(), JSON.stringify({ type: "exit", exitCode: 0, endedAt: 2000 })];
+    const summaries = classifyFromLogDir([{ id: "d-1", lines, mtimeMs: 0 }], () => false, opts);
+    expect(summaries[0]!.state).toBe("completed");
+  });
+
+  test("a caller without mtimes or without now is never stale (backward compat with rows 14–17)", () => {
+    expect(classifyFromLogDir([{ id: "d-1", lines: [header()] }], () => false, opts)[0]!.state).toBe("lost");
+    expect(classifyFromLogDir([{ id: "d-1", lines: [header()], mtimeMs: 0 }], () => false)[0]!.state).toBe("lost");
+  });
+
+  test("a custom threshold is honored", () => {
+    const summaries = classifyFromLogDir([{ id: "d-1", lines: [header()], mtimeMs: 0 }], () => false, {
+      now: 700_000,
+      staleThresholdMs: 800_000,
+    });
+    expect(summaries[0]!.state).toBe("lost"); // 700_000 < 800_000 — not stale yet
+  });
+});
+
 describe("deriveActivity target hygiene (R9)", () => {
   const readEvent = (args: unknown): ChildEvent =>
     ({ type: "tool_execution_start", toolName: "read", args }) as unknown as ChildEvent;
