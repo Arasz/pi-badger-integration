@@ -3,6 +3,18 @@
   "next": null,
   "completedTasks": [
     {
+      "taskId": "pbi-delegation-liveness-watchdog",
+      "title": "Delegation liveness monitoring: registry visibility guard + runner watchdog + operator/staleness surfaces",
+      "finishedAt": "2026-08-31T14:30:00Z",
+      "summary": "No delegation child dies unwitnessed anymore (spec docs/plans/2026-delegation-liveness-monitoring-spec.md, born from two silent lane deaths d-28/d-41). Runner watchdog: per-RunState inactivity timer reset on every parsed event (settled-gated), fires only while unsettled -> abortRun (R8 single kill path) -> settles aborted + abortReason:'lost' -> the one R5 notification; clamped 1s..RUN_TIMEOUT_MAX_MS, default 10min, 0=off, composes with timeoutMs (either settle clears both). Operator surfaces: delegations list gains a three-way pid probe (alive/dead/unknown, report-only; boolean pidAlive unchanged) and lost renders 'lost (dead pid)'; empty-registry tool+panel identify themselves with stats instead of blind 'none'. classifyFromLogDir gained 'stale' with M2 precedence (terminal -> pid-alive -> running NEVER stale -> stale-vs-lost by mtime) because the tee writes only header+tail mid-run. Plan authored inline (two silent architect deaths forced reduced rigor); reviews d-44 + d-52 execute-with-folds/merge-ready; T108-T123 rows, 4 mutations witnessed; SHOULD-1 fixed for real (prune-free stale query, T122). Landed on main via convergent parallel landing (the concurrent session merged the same branch; tree-identical modulo newlines); published to user scope @ dc277a4.",
+      "decisions": [
+        "watchdog = inactivity timer, timeout = wall clock: separate RunState timers, either settle clears both \u2014 a timeout expiry is terminal (cleared, never 'reset as activity')",
+        "mtime is NOT activity evidence at HEAD \u2014 the tee writes header+tail only, so stale classification must never outrank a live pid (M2); stale is registry-empty-only in v1",
+        "report-shaped queries must not retire evidence: reconstructFromLogDir gained {prune:false}; pruning stays session_start's policy (d-52 SHOULD-1, fixed not documented)",
+        "R0 outcome B: the delegations visibility mismatch was the stale in-session extension copy \u2014 the code wiring was sound (repro passed); the fix is self-identification (empty-registry wording with record count + startup version log) so a stale instance is identifiable from its own output"
+      ]
+    },
+    {
       "taskId": "pbi-delegation-timeout-and-burst-batching",
       "title": "Deferred ledger: per-run timeoutMs (A12) + followUp burst batching (CR11)",
       "finishedAt": "2026-08-31T13:20:00Z",
