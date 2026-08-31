@@ -413,10 +413,14 @@ function capIntoBudget(text: string, used: number, budget: number = NOTIFICATION
  * The delegation-result card body (R5): verdict line, usage + log path meta line, then the
  * answer tail capped so the WHOLE content stays ≤ NOTIFICATION_CAP_CHARS (T71).
  */
-export function notificationContent(note: DelegationNote, budget: number = NOTIFICATION_CAP_CHARS): string {
+export function notificationContent(
+  note: DelegationNote,
+  budget: number = NOTIFICATION_CAP_CHARS,
+  contextWindow?: number,
+): string {
   const lines: string[] = [notificationVerdict(note)];
   const meta: string[] = [];
-  const usage = formatUsage(note.usage);
+  const usage = formatUsage(note.usage, contextWindow);
   if (usage) meta.push(usage);
   if (note.logFile) meta.push(note.logFile);
   if (meta.length > 0) lines.push(meta.join(" — "));
@@ -443,10 +447,10 @@ export function notificationContent(note: DelegationNote, budget: number = NOTIF
  * to floor((NOTIFICATION_CAP_CHARS - (n-1) * separator) / n) so the WHOLE message stays ≤ 8 KB
  * (T71/T95) for any n within the BATCH_MAX_CARDS count cap.
  */
-export function composeBatchContent(notes: DelegationNote[]): string {
+export function composeBatchContent(notes: DelegationNote[], budget?: number, contextWindow?: number): string {
   const n = notes.length;
-  const budget = Math.floor((NOTIFICATION_CAP_CHARS - (n - 1) * BATCH_SEPARATOR.length) / n);
-  return notes.map((note) => notificationContent(note, budget)).join(BATCH_SEPARATOR);
+  const perCard = budget ?? Math.floor((NOTIFICATION_CAP_CHARS - (n - 1) * BATCH_SEPARATOR.length) / n);
+  return notes.map((note) => notificationContent(note, perCard, contextWindow)).join(BATCH_SEPARATOR);
 }
 
 // ------------------------------------------------------------------ log dir (R4/R10)
@@ -605,7 +609,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     if (cards.length === 1) {
       const note = cards[0]!;
       pi.sendMessage(
-        { customType: RESULT_CUSTOM_TYPE, content: notificationContent(note), display: true, details: { ...note } },
+        { customType: RESULT_CUSTOM_TYPE, content: notificationContent(note, undefined, statusApi.contextWindow()), display: true, details: { ...note } },
         { deliverAs: "followUp", triggerTurn: true },
       );
       return;
@@ -613,7 +617,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     pi.sendMessage(
       {
         customType: RESULT_CUSTOM_TYPE,
-        content: composeBatchContent(cards),
+        content: composeBatchContent(cards, undefined, statusApi.contextWindow()),
         display: true,
         details: { batched: true, notes: cards.map((card) => ({ ...card })) },
       },
@@ -741,7 +745,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   // frozen signature — the one instance of the registry this session constructed. RR4: the
   // status surface consults the log dir through the same reconstruction session_start uses,
   // so an empty registry still surfaces stale runs (the net that survives a dead runner).
-  registerDelegationStatus(pi, registry, { staleRuns: () => reconstructFromLogDir(logDir, now(), { prune: false }) });
+  const statusApi = registerDelegationStatus(pi, registry, { staleRuns: () => reconstructFromLogDir(logDir, now(), { prune: false }) });
 
   // T72: the compact card the delegation-result followUp renders through in the transcript.
   // Batched messages (RR3) render as ONE box whose per-card verdict lines are styled by each

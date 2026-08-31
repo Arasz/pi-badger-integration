@@ -215,7 +215,9 @@ function unknownIdError(id: string): Error {
  *
  * Frozen signature (plan §4 freeze point; the orchestrator wires this after constructing the
  * registry — the registry's `emit` dep must publish `DelegationTransition`s on
- * `DELEGATION_EVENTS_CHANNEL` for transition-driven widget rendering):
+ * `DELEGATION_EVENTS_CHANNEL` for transition-driven widget rendering). The parameters stay
+ * frozen; the return amends additively: a read-only `contextWindow()` accessor so the card
+ * renderer can render `ctx:` as a window share without a second source of model truth.
  *
  * ```ts
  * registerDelegationStatus(pi, registry, opts?: { widgetKey?: string; bytes?: number;
@@ -245,7 +247,7 @@ export function registerDelegationStatus(
 		 * instance is gone. Defaults to none. */
 		staleRuns?: () => LogRunSummary[];
 	},
-): void {
+): { contextWindow(): number | undefined } {
 	const widgetKey = opts?.widgetKey ?? DEFAULT_WIDGET_KEY;
 	const configuredLogBytes = clampLogTailBytes(opts?.bytes ?? DEFAULT_LOG_TAIL_BYTES);
 	const probePidFn = opts?.probePid ?? probePid;
@@ -525,6 +527,13 @@ export function registerDelegationStatus(
 		renderWidget();
 		ensureWidgetTicker();
 	});
+
+	return {
+		/** The delegating session model's context window (undefined when unknown) — the card
+		 * renderer reads it at delivery time so completion cards render `ctx:` as a window
+		 * share, matching the widget/list surfaces instead of absolute tokens. */
+		contextWindow: () => contextWindowOf(),
+	};
 }
 
 export default registerDelegationStatus;
