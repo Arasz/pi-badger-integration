@@ -178,3 +178,20 @@ untouched. T97's uniqueness assertion is the pin for that fix.
 | T98 | P3 | tests/subagent-extension.test.ts | shutdown flushes once, then silence; empty expiry is a no-op | lead + 2 held + 1 live → session_shutdown → one batched flush, further exits silent, no phantom sends after drain; a window expiry over an empty buffer sends nothing | AC-T13 |
 | T99 | P3 | tests/subagent-extension.test.ts | batch renderer + fallback | batch message: failed + completed-exit-1 cards styled error, aborted warning, clean success (single-path classification); details-less message → plain body box | AC-T14 |
 | T100 | P3 | tests/subagent-extension.test.ts | dep overrides | `batchWindowMs: 0` batches same-tick arrivals; `batchMaxCards: 2` → 5-burst → lead + 2 + 2, empty expiry silent | AC-T10 |
+
+### Pkg P4 rows — integration + documentation (committed with the P4 code)
+
+T101–T105 integrate machinery committed in P1–P3 and target no new exports, so the red-first
+rule (rows targeting not-yet-existing exports) does not manufacture a red: T101/T102/T103/T105
+were witnessed green on arrival; T104 was witnessed RED on arrival — its fixture held one note,
+and a flush of one is (correctly) a single card, not a batch — fixed in the fixture (2 held
+cards), not the code. T105 (PIN) mutation-validated: corrupting classifyFromLogDir's lost branch
+turns T105 (and row 14) red.
+
+| id | pkg | file | test | arrange → act → assert | AC |
+|----|-----|------|------|------------------------|-----|
+| T101 | P4 | tests/subagent-extension.test.ts | timeout fires during an open batch window | lead exits; B (`timeoutMs: 1000`) expires inside the window → flush carries B's card with the timeout verdict | AC-T15 |
+| T102 | P4 | tests/subagent-extension.test.ts | mixed 7-run burst with one timeout → 2 messages | 6 exits same tick + one own-`timeoutMs` expiry inside the window → lead + batch of 6; exactly one "timed out" verdict among the 7 cards | AC-T15 |
+| T103 | P4 | tests/delegation-runner.test.ts | wait + timeout interplay | `registry.wait([id])` pending → timeout fires → snapshot aborted + abortReason; a second wait still resolves snapshots on its own timer | AC-T16 |
+| T104 | P4 | tests/subagent-extension.test.ts | shutdown race end-to-end | armed timeout + 2 held + lead → session_shutdown → held batch flushed exactly once, no timeout notes after, no sends post-shutdown | AC-T17 |
+| T105 | P4 | tests/delegation-core.test.ts | timed-out run's log classifies lost (RR5 pin) | header + stream lines, no `exit` line, pid dead → `classifyFromLogDir` → `lost` | AC-T18 |

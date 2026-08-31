@@ -121,4 +121,10 @@ worktree's publish.ts already contains the generic directoryTarget including `su
 2. **`pi_session_source.delegation_usage`** (ai-badger, currently `lambda: None`) — implement
    by parsing `~/.pi/agent/subagent-logs/<runId>.jsonl` usage lines. **Makes R4's log format a
    cross-repo contract: format changes need coordination.**
-3. Deferred: optional per-run `timeoutMs` (A12); followUp burst batching if panels exceed ~6 (CR11).
+3. **Landed** (pbi-delegation-timeout-and-burst-batching, 2026-08-30): optional per-run
+   `timeoutMs` (A12) and followUp burst batching (CR11) — implemented per
+   `docs/work/2026-08-30-delegation-timeout-and-burst-batching-plan.md` (rulings RR1–RR6;
+   tests T79–T105 in the tests doc's deferral section). A timed-out run settles `aborted`
+   with `abortReason: "timeout"`, writes no `exit` line, and is therefore not recorded by
+   `pi_session_source.delegation_usage` — timeout behaves exactly like abort for accounting
+   (RR5).

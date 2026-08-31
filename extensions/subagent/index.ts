@@ -20,6 +20,14 @@
  * Every failure is loud and degrades to a reported result — a missing agents directory, an
  * unreadable or unparseable persona, an unknown agent name, an invalid `cwd`, or a failed child.
  * Silent failure is the defect class this extension exists to end.
+ *
+ * Accounting consequence of a per-run timeout (RR5): a timed-out run is killed through the
+ * runner's abort path, so its log ends with the run header, the tee'd stream and any stderr
+ * lines but NO `exit` line. ai-badger's `pi_session_source.delegation_usage` records a run iff
+ * an `exit` or `agent_settled` line exists — a timed-out run is therefore NOT recorded: timeout
+ * behaves exactly like abort for accounting. The spent tokens remain readable in the log file
+ * itself (the stdout tee is written when the child closes; real children always die to SIGKILL).
+ * This is the contract, not an oversight — pinned by T105 in the tests doc's deferral section.
  */
 
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";

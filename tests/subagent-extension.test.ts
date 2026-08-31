@@ -893,3 +893,68 @@ describe("T92–T100 — burst batching on the notification wire (deferral pkg P
     expect(h.sent).toHaveLength(3);
   });
 });
+
+// ------------------------------------------------------------------ T101/T102/T104: integration (deferral pkg P4)
+
+describe("T101/T102/T104 — timeout × batching integration (deferral pkg P4)", () => {
+  test("T101: a timeout firing inside an open batch window rides the flush with the timeout verdict", async () => {
+    h = makeHarness("tui", { batchWindowMs: 1500 });
+    await callDelegate({ agent: "architect", task: "exits", timeoutMs: 0 }, makeCtx(), undefined, "call-1"); // 0 = off
+    await callDelegate({ agent: "architect", task: "times out", timeoutMs: 1000 }, makeCtx(), undefined, "call-2");
+    h.children[0]!.write(`${assistantEnd("done")}\n`);
+    h.children[0]!.exit(0); // the lead — the window is now open
+
+    expect(h.sent).toHaveLength(1);
+    await new Promise((resolve) => setTimeout(resolve, 1650)); // B's expiry (1000 ms) lands inside the window
+
+    expect(h.sent).toHaveLength(2); // the window-expiry flush carried B's card
+    const flushed = h.sent[1]!.message;
+    expect((flushed.details as Record<string, unknown>).batched).toBeUndefined(); // a flush of one renders a normal card
+    expect((flushed.details as Record<string, unknown>).id).toBe("d-2");
+    expect(String(flushed.content)).toContain("timed out (limit 1s) and was aborted");
+  }, 20_000);
+
+  test("T102: a mixed 7-run burst with one timeout costs 2 messages — exactly one timed-out verdict", async () => {
+    h = makeHarness("tui", { cap: 8 }); // all seven run concurrently
+    for (let i = 1; i <= 6; i++) await callDelegate({ agent: "architect", task: `t${i}` }, makeCtx(), undefined, `call-${i}`);
+    await callDelegate({ agent: "architect", task: "the slow one", timeoutMs: 1000 }, makeCtx(), undefined, "call-7");
+    for (let i = 0; i < 6; i++) {
+      h.children[i]!.write(`${assistantEnd("answer")}\n`);
+      h.children[i]!.exit(0);
+    } // lead + 5 held inside the default 2000 ms window
+
+    expect(h.sent).toHaveLength(1);
+
+    await new Promise((resolve) => setTimeout(resolve, 1150)); // run 7's expiry fires inside the window → capacity flush
+
+    expect(h.sent).toHaveLength(2);
+    const batch = h.sent[1]!.message;
+    expect((batch.details as Record<string, unknown>).batched).toBe(true);
+    expect(sentIds(batch)).toHaveLength(6);
+    const notes = (batch.details as Record<string, unknown>).notes as Array<Record<string, unknown>>;
+    expect(notes.filter((note) => note.abortReason === "timeout")).toHaveLength(1);
+    expect((String(batch.content).match(/timed out \(limit/g) ?? []).length).toBe(1);
+  }, 20_000);
+
+  test("T104: shutdown race end-to-end — armed timeout + pending batch: the held batch flushes exactly once, then silence", async () => {
+    h = makeHarness("tui", { batchWindowMs: 500 });
+    await callDelegate({ agent: "architect", task: "lead" }, makeCtx(), undefined, "call-1");
+    await callDelegate({ agent: "architect", task: "held one" }, makeCtx(), undefined, "call-2");
+    await callDelegate({ agent: "architect", task: "held two" }, makeCtx(), undefined, "call-3");
+    await callDelegate({ agent: "architect", task: "armed", timeoutMs: 1000 }, makeCtx(), undefined, "call-4");
+    h.children[0]!.exit(0); // lead sent, window open
+    h.children[1]!.exit(0); // held
+    h.children[2]!.exit(0); // held (2 cards → the shutdown flush is a real batch)
+
+    expect(h.sent).toHaveLength(1);
+    fireSessionShutdown();
+
+    expect(h.sent).toHaveLength(2); // the held batch rode out exactly once
+    expect((h.sent[1]!.message.details as Record<string, unknown>).batched).toBe(true);
+    expect(sentIds(h.sent[1]!.message)).toEqual(["d-2", "d-3"]);
+
+    h.children[3]!.exit(0); // d-4's settle (aborted by shutdown) must notify nothing
+    await new Promise((resolve) => setTimeout(resolve, 1250)); // past both the window and d-4's expiry
+    expect(h.sent).toHaveLength(2); // no timeout note, no post-shutdown send (CR10)
+  }, 20_000);
+});

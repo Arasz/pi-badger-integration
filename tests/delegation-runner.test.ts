@@ -858,3 +858,28 @@ describe("per-run timeout (T79–T85, deferral pkg P1)", () => {
     expect(h2.notes[0]!.timeoutMs).toBeUndefined(); // the timer never armed
   });
 });
+
+// ------------------------------------------------------------------ T103: wait + timeout interplay (deferral pkg P4)
+
+describe("wait and timeout interplay (T103, deferral pkg P4)", () => {
+  test("T103: wait resolves at a timeout settle with the marker; a second wait still resolves snapshots on its own timer", async () => {
+    const h = makeRegistry();
+    await h.registry.start(startRequest({ task: "one", timeoutMs: 5 })); // applied 1000 ms
+    await h.registry.start(startRequest({ task: "two" }));
+
+    const pending = h.registry.wait(["d-1"], 10_000);
+    await drainMacrotasks(1100); // the timeout fires while the wait is pending
+
+    const snapshots = await pending;
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]!.state).toBe("aborted");
+    expect(snapshots[0]!.abortReason).toBe("timeout");
+
+    // a second wait on a still-running run resolves on its own timer with snapshots (R6), not an error
+    const second = await h.registry.wait(["d-2"], 20);
+    expect(second).toHaveLength(1);
+    expect(second[0]!.id).toBe("d-2");
+    expect(second[0]!.state).toBe("running");
+    h.children[1]!.exit(0); // hygiene
+  }, 20_000);
+});

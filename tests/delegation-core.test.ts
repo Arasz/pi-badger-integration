@@ -547,3 +547,27 @@ describe("T89 — renderRunLine renders a timed-out run (deferral pkg P2)", () =
     expect(line).toBe("d-3 beta — aborted");
   });
 });
+
+// ------------------------------------------------------------------ T105: RR5 accounting pin (deferral pkg P4)
+
+describe("T105 — a timed-out run's log classifies lost (RR5 pin, deferral pkg P4)", () => {
+  test("header + stream lines, no exit line, pid dead → lost — timeout behaves exactly like abort for accounting", () => {
+    const file: LogRunFile = {
+      id: "d-7",
+      lines: [
+        JSON.stringify({
+          type: "run", runId: "d-7", agent: "architect", persona: "architect", task: "do the thing",
+          argv: ["-p"], cwd: "/p", pid: 4242, startedAt: 1000,
+        }),
+        assistantEnd("partial answer before the kill"),
+        '{"type":"stderr","text":"SIGTERM received"}',
+        // NO exit line — abortRun (and therefore the timeout expiry) never writes one (RR5)
+      ],
+    };
+    const summaries = classifyFromLogDir([file], () => false);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]!.state).toBe("lost"); // the documented consequence — not "fixed", pinned
+    expect(summaries[0]!.agent).toBe("architect");
+    expect(summaries[0]!.task).toBe("do the thing");
+  });
+});
