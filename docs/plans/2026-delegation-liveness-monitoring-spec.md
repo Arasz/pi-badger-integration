@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft — queued; task starts after `pbi-delegation-timeout-and-burst-batching` lands |
+| **Status** | Landed 2026-08-31 (pbi-delegation-liveness-watchdog). R0 resolved as **outcome B** per the plan's RR1: the in-code repro passes (the tool sees its session's own runs), so the wiring was sound and the landed fix is the self-identification guard ("registry empty (0 records)" wording, session_start version log); R1–R3 landed per plan. Test rows T108–T121 in `docs/plans/2026-interactive-subagent-delegation.tests.md` (liveness section) |
 | **Date** | 2026-08-31 |
 | **Target repo** | pi-badger-integration (`extensions/subagent/`) |
 | **Origin** | Live witness: lane d-28 died silently 2026-08-31 (pid gone, log frozen, no `exit`/`agent_settled`, no receipt, no followUp, no notification — work lost only because it had committed nothing yet); plus the `delegations` tool reporting "no delegations started" while d-21/26/28 ran from the same session |

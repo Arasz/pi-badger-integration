@@ -197,3 +197,60 @@ turns T105 (and row 14) red.
 | T105 | P4 | tests/delegation-core.test.ts | timed-out run's log classifies lost (RR5 pin) | header + stream lines, no `exit` line, pid dead → `classifyFromLogDir` → `lost` | AC-T18 |
 | T106 | extension suite | batch cap holds for failed cards with stderr tails | 6 failed cards (4 KB stderr + 10 KB answer) -> capacity flush -> content <= 8192 (review SHOULD-1: the degenerate fallback no longer appends beyond the room) | NEW; mutation: restore the fixed fallback string -> 8465 > 8192 -> red |
 | T107 | extension suite | separator-in-answer degrades to the plain box | one batched card's answer contains BATCH_SEPARATOR -> positional split mispairs -> renderer falls back to the single path (review NIT-2) | NEW; mutation: remove the length guard -> fgCalls > 1 -> red |
+
+---
+
+## Liveness rows (pbi-delegation-liveness-watchdog — plan §3, landed per package)
+
+Rows T108–T121 implement the liveness watchdog (RR2), the operator liveness surfaces (RR1/RR3)
+and the staleness classification (RR4) from
+`docs/work/2026-08-31-delegation-liveness-watchdog-plan.md`, which implements
+`docs/plans/2026-delegation-liveness-monitoring-spec.md`. Numbering continues the tables above;
+each package's rows are committed with the code that satisfies them. Clamp note: the watchdog
+value runs through `clampRunWatchdogMs` (default RUN_WATCHDOG_MS 600_000, floor 1 s, cap
+RUN_TIMEOUT_MAX_MS per M1, 0 = off) re-clamped at the runner's arm site, so fixture rows pass
+`runWatchdogMs: 1000` and drain ~1.1 s in real time — the same house idiom as the timeout rows
+(no fake-timer library, no injected-`now` arithmetic, S2).
+
+Red-first: the core-file clamp rows failed to load pre-implementation (`Export named
+'RUN_WATCHDOG_MS' not found`), and T108/T109/T113b were witnessed RED pre-implementation (no
+watchdog existed — run stayed running, notes empty; output in the task record). T110, T111,
+T112 and T113a were vacuously green on arrival — nothing armed a watchdog yet to leak, the
+class of T81/T83 — and their bite is witnessed by the post-implementation mutations below.
+T114's repro clause ("with one run → listed") passed on arrival, so RR1 resolved as **outcome
+B** (the registry wiring is sound in code; the owed fix is the self-identification guard), and
+its wording rows were witnessed red against today's empty-registry text. T115 was witnessed red
+in the core and extension suites (old rendering/verdict live); T116's probe rows failed to load
+pre-implementation (`Export named 'probePid' not found`). T117/T118 were witnessed red (no
+`stale` classification, no stale listing). T119–T121 integrate machinery committed in P1–P3 and
+target no new exports, so the red-first rule does not manufacture a red: they were witnessed
+green on arrival, like T101–T105.
+
+Witnessed mutations: T110 — (a) making `resetWatchdog` a no-op (arm-once-never-reset) turns T110
+red; (b) resetting only on `message_update` (S1 violation) also turns T110 red (burst 3 is
+tool-event-only and must carry the deadline). T111 (PIN) — removing the watchdog-clear
+discipline (both the close site and the settle site) AND the `abortRun` settled guard turns T111
+red; any single removal is absorbed by the remaining defense, the same defense-in-depth symmetry
+recorded for T81. T112 — removing the registry's stopped-notification guard turns T112 red (the
+same guard T83 pins). T116 — rendering `unknown` as `lost (dead pid)` turns T116 red (RR3:
+unknown is never dead). T114's S3 companion pins the boolean `pidAlive` (EPERM → alive) with a
+real EPERM witness for pid 1 where the host permits one (launchd/systemd as non-root); the
+predicate itself is unchanged.
+
+| id | pkg | file | test | arrange → act → assert | AC |
+|----|-----|------|------|------------------------|-----|
+| T108 | P1 | tests/delegation-runner.test.ts | inactivity expiry kills via the abort path | `runWatchdogMs: 1000`, `escalateAfterMs: 0`, silent child, drain 1.1 s → signals `["SIGTERM","SIGKILL"]`, note state aborted | AC-W1 |
+| T109 | P1 | tests/delegation-runner.test.ts | lost settle carries the marker, no exitCode, one note | same setup → note `abortReason: "lost"` + `watchdogMs: 1000`, record mirrors both, no `exitCode` key | AC-W1 |
+| T110 | P1 | tests/delegation-runner.test.ts | activity resets the deadline | three mixed bursts (two tool-event-only, one with message_update) each 0.7 s apart, spanning >2× threshold → completed, `signals: []` | AC-W2 |
+| T111 | P1 | tests/delegation-runner.test.ts | natural close clears the watchdog (PIN) | `exit(0)` before threshold → drain past it → completed, no signals | AC-W3 |
+| T112 | P1 | tests/delegation-runner.test.ts | shutdown with an armed watchdog notifies nothing | registry, `shutdown()` pre-expiry → drain → notes empty | AC-W3 |
+| T113 | P1 | tests/delegation-runner.test.ts | timeout expiry clears the watchdog; both clear on any settle | (a) `timeoutMs: 5` fires → settle is `timeout`, never a later lost, one escalation; (b) watchdog fire with `timeoutMs: 50000` armed → one note, `lost` + armed timeout rides | AC-W4 |
+| — | P1 | tests/delegation-core.test.ts | clampRunWatchdogMs bounds (unnumbered companion) | undefined → 600_000; 0/-5/NaN/Infinity → off; 100 → 1000; 3e9 → RUN_TIMEOUT_MAX_MS | AC-W1 |
+| T114 | P2 | tests/subagent-extension.test.ts | registry empty ≠ blind (tool AND panel) | zero runs → tool and `/delegations` say "registry empty" + "0 records"; one run → listed; session_start logs the extension version | AC-W5 |
+| T115 | P2 | tests/subagent-extension.test.ts + tests/delegation-core.test.ts + tests/subagent-status.test.ts | lost verdict + both render branches | note `{aborted, abortReason "lost", watchdogMs 600000}` → verdict `Delegation d-2 (architect) stopped responding (no output for 10m00s) and was aborted.`; `renderRunLine` and `describeRecord` render `aborted (lost)` (S4) | AC-W6 |
+| T116 | P2 | tests/subagent-status.test.ts | liveness probe | `probePid`: live pid → alive, reaped pid → dead; list renders alive / `lost (dead pid)` / unknown per running record; EPERM stub never renders as dead; settled and queued records skip the probe (N4) | AC-W7 |
+| T117 | P3 | tests/delegation-core.test.ts | stale classification with M2 precedence | header-only + dead pid + old mtime → `stale`; live pid + old mtime → `running`, never stale; fresh mtime → lost; `exit` + old mtime → completed; no mtime/now → never stale; custom threshold honored | AC-W8 |
+| T118 | P3 | tests/subagent-extension.test.ts | empty registry + stale logs → listed with log paths | no runs; log dir with a stale file → tool lists `d-9 architect — stale — log: <path>` under the registry-empty header; a fresh pid-dead log is not listed | AC-W9 |
+| T119 | P4 | tests/subagent-extension.test.ts | lost card rides an open batch | lead exits; second child goes silent → watchdog fires inside a 1500 ms window → flush carries the lost verdict | AC-W10 |
+| T120 | P4 | tests/subagent-extension.test.ts | mixed burst: one lost among completions | 7-run burst (cap 8), six exits + one silent → 2 messages, exactly one `lost` note, one "stopped responding" verdict | AC-W10 |
+| T121 | P4 | tests/subagent-extension.test.ts | shutdown + watchdog + batch race end-to-end | armed watchdog + 2 held + lead → session_shutdown → held batch flushed exactly once, no sends after (CR10) | AC-W10 |

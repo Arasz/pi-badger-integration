@@ -29,6 +29,19 @@
  * behaves exactly like abort for accounting. The spent tokens remain readable in the log file
  * itself (the stdout tee is written when the child closes; real children always die to SIGKILL).
  * This is the contract, not an oversight — pinned by T105 in the tests doc's deferral section.
+ *
+ * Liveness (delegation-liveness plan, RR2/RR3/RR4): every run also arms an inactivity watchdog
+ * beside its optional timeout, 10 minutes of stream silence by default (RUN_WATCHDOG_MS,
+ * injectable via deps.runWatchdogMs, 0 = off). A child that dies without ever closing (the
+ * d-28 class: pid gone, log frozen, no exit line) is killed through the normal abort path and
+ * settles aborted with abortReason "lost"; its card says so plainly ("stopped responding (no
+ * output for 10m00s) and was aborted"). Silent child death is the defect class this extension
+ * exists to end; the watchdog turns it into a normal terminal transition instead of a run that
+ * stays `running` in every surface forever. Around the watchdog: the delegations tool probes
+ * the pid of every running record (alive / unknown / lost (dead pid), report-only, RR3) and,
+ * when the registry is empty, reconstructs stale runs from the log dir so a dead runner
+ * generation still leaves a trace (RR4). A lost run's log has no `exit` line, so it is
+ * unrecorded spend for accounting, exactly like a timeout (the RR5 contract above).
  */
 
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
