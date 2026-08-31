@@ -31,21 +31,26 @@ The `delegate` tool runs a persona as a separate `pi -p --mode json` child. In a
 interactive TUI session (`ctx.mode === "tui"`) delegation is **background by default**:
 the tool returns immediately with a receipt (`d-<n>`, state running/queued) and the main
 agent loop stays interactive — the user can keep typing, the agent can keep working.
-When the child settles, exactly one `delegation-result` follow-up message lands in the
-session (exit code, answer tail capped at 8 KB, duration, token usage, log path) and wakes
-the agent. In headless modes (`-p`, json, rpc) delegation stays **blocking** — the result
+When the child settles, its result lands in exactly one `delegation-result` follow-up
+message (exit code, answer tail capped at 8 KB, duration, token usage, log path) and wakes
+the agent; completions arriving inside a 2 s coalesce window share one batched message
+(lead card immediate, up to 6 cards per batch). In headless modes (`-p`, json, rpc) delegation stays **blocking** — the result
 is the tool result, byte-compatible with the pre-background contract, plus `details.usage`.
 Explicit `background: true/false` always wins; `background: true` outside the TUI degrades
-to blocking with a note in the tool result. There is **no automatic per-run timeout**.
+to blocking with a note in the tool result. There is no automatic wall-clock timeout: runs
+are unbounded unless the `delegate` call passes `timeoutMs` (clamped to 1 s–24 h; on expiry
+the run is aborted and settles as `aborted (timeout)`). The inactivity watchdog is
+automatic: a child that emits no stream events for 10 minutes (default) is aborted and
+settles as `aborted (lost)`.
 
 Checking on delegations:
 
 - **`delegations` tool** (LLM-facing): `list` (state, elapsed, current activity, usage),
-  `log <id>` (bounded tail + full path), `abort <id>`, `wait [ids] [timeoutMs ≤ 600s]`
+  `log <id>` (bounded tail + full path), `abort <id|all>`, `wait [ids] [timeoutMs ≤ 600s]`
   (resolves with per-id snapshots; completion messages arrive regardless).
 - **`/delegations [log <id>] [abort <id|all>]`** (human-facing command).
-- **Widget** above the editor: one line per background/queued run (id, agent, elapsed,
-  current activity, tokens), cleared when the session's runs end.
+- **Widget** above the editor: one line per background running run (id, agent, elapsed,
+  current activity, usage) plus a queued count, cleared when the session's runs end.
 - **Logs**: every child's raw JSONL event stream is teed to
   `~/.pi/agent/subagent-logs/<runId>.jsonl` — a `run` header (runId, sessionId, persona,
   task, argv, cwd, pid, startedAt), the child's events verbatim, stderr as
@@ -56,9 +61,10 @@ Checking on delegations:
 
 Lifecycle: at most 4 children run at once (env `PI_BADGER_SUBAGENT_MAX_CONCURRENT`), 16
 queued FIFO, loud rejection beyond. `session_shutdown` SIGTERMs running children (SIGKILL
-after a 5 s grace); the process-exit path SIGKILLs synchronously. Delegations do not
+after a 5 s grace). Delegations do not
 outlive the session — after a restart the log dir is the durable truth: finished runs are
-classified from their `exit` line, receipt-only runs report as lost, and no wake-up message
+classified from their `exit` line, receipt-only runs report as lost (stale instead once the
+log has been quiet past the 10-minute stale threshold), and no wake-up message
 is injected after a restart. Run ids are never reused (skip-to-next-free over the log
 directory), so `delegations log d-N` stays unambiguous across restarts. One documented
 limitation: `/tree` navigation away from the delegating branch hides that branch's
@@ -90,8 +96,9 @@ left for you to remove.
    against this vendored copy — the artifact its scaffolds actually ship.
 3. **User scope** — `~/.pi/agent/extensions/`, which pi loads into every session.
 
-`--check` compares canonical against user scope (and the vendored copy when `--ai-badger`
-names a checkout). The adapter target enforces **exact file-set equality**: missing, extra
+`--check` compares canonical against user scope only — it never writes, and it cannot be
+combined with `--ai-badger` (checking never writes; vendoring always does). The adapter
+target enforces **exact file-set equality**: missing, extra
 and byte-differing files all fail — ai-badger's installer ships any `.ts`/`.json` with no
 cleanup, so a renamed canonical file would otherwise leave a stale extra that breaks every
 fresh pi session.
