@@ -4,7 +4,7 @@
   "frameworkCommit": "76205c2c84056f8d59ac955763bb7835c40efcfe",
   "frameworkDirty": true,
   "frameworkRoot": "/Users/arasz/RiderProjects/ai-badger",
-  "generatedAt": null,
+  "generatedAt": "2026-08-31T15:22:50Z",
   "agents": [
     "claude",
     "copilot",
@@ -13,7 +13,7 @@
   ],
   "skillScope": "default",
   "pluginScope": "default",
-  "configHash": "4e57ca1f2abe35e0817f5b040a52457a3449413b69c100cf8b4d922a8fe03924",
+  "configHash": "7a53788805a5f3083314c440a18491925612cbc979fd4c628be74f6dee6e0866",
   "generatedConfig": [
     {
       "path": ".claude/settings.json",
@@ -765,6 +765,27 @@
     {
       "feature": "skills",
       "stack": "common",
+      "name": "status-report",
+      "source": "features/common/skills/status-report",
+      "target": ".ai-badger/skills/status-report",
+      "frameworkVersion": "0.150.0",
+      "hash": "2768ba9938b88f97cb60ad574fd080cfcb1fc305d2a99e0130eafe1d3258ab8f",
+      "dirMeta": {
+        "file_count": 2,
+        "dir_count": 1
+      },
+      "sourceHash": "2768ba9938b88f97cb60ad574fd080cfcb1fc305d2a99e0130eafe1d3258ab8f",
+      "sourceMeta": {
+        "file_count": 2,
+        "dir_count": 1
+      },
+      "projectOwned": [
+        "project-local.md"
+      ]
+    },
+    {
+      "feature": "skills",
+      "stack": "common",
       "name": "task",
       "source": "features/common/skills/task",
       "target": ".ai-badger/skills/task",
@@ -853,27 +874,6 @@
       "sourceMeta": {
         "file_count": 21,
         "dir_count": 2
-      },
-      "projectOwned": [
-        "project-local.md"
-      ]
-    },
-    {
-      "feature": "skills",
-      "stack": "common",
-      "name": "status-report",
-      "source": "features/common/skills/status-report",
-      "target": ".ai-badger/skills/status-report",
-      "frameworkVersion": "0.150.0",
-      "hash": "2768ba9938b88f97cb60ad574fd080cfcb1fc305d2a99e0130eafe1d3258ab8f",
-      "dirMeta": {
-        "file_count": 2,
-        "dir_count": 1
-      },
-      "sourceHash": "2768ba9938b88f97cb60ad574fd080cfcb1fc305d2a99e0130eafe1d3258ab8f",
-      "sourceMeta": {
-        "file_count": 2,
-        "dir_count": 1
       },
       "projectOwned": [
         "project-local.md"
@@ -1262,6 +1262,15 @@
     {
       "feature": "adjustments",
       "stack": "claude",
+      "name": "adjustments/.claude/skills/status-report",
+      "source": "features/claude/adjustments/adjust_skills.py",
+      "target": ".claude/skills/status-report",
+      "frameworkVersion": "0.150.0",
+      "hash": "02a4b86fbc983d9fb302f93eb674787a545d65c40204ac9c46bbaa452ce150d5"
+    },
+    {
+      "feature": "adjustments",
+      "stack": "claude",
       "name": "adjustments/.claude/skills/task",
       "source": "features/claude/adjustments/adjust_skills.py",
       "target": ".claude/skills/task",
@@ -1274,15 +1283,6 @@
       "name": "adjustments/.claude/skills/welcome-ai-badger",
       "source": "features/claude/adjustments/adjust_skills.py",
       "target": ".claude/skills/welcome-ai-badger",
-      "frameworkVersion": "0.150.0",
-      "hash": "02a4b86fbc983d9fb302f93eb674787a545d65c40204ac9c46bbaa452ce150d5"
-    },
-    {
-      "feature": "adjustments",
-      "stack": "claude",
-      "name": "adjustments/.claude/skills/status-report",
-      "source": "features/claude/adjustments/adjust_skills.py",
-      "target": ".claude/skills/status-report",
       "frameworkVersion": "0.150.0",
       "hash": "02a4b86fbc983d9fb302f93eb674787a545d65c40204ac9c46bbaa452ce150d5"
     },
@@ -1541,6 +1541,15 @@
     {
       "feature": "adjustments",
       "stack": "copilot",
+      "name": "adjustments/.github/skills/status-report",
+      "source": "features/copilot/adjustments/adjust_skills.py",
+      "target": ".github/skills/status-report",
+      "frameworkVersion": "0.150.0",
+      "hash": "54042cfd8d94054ed08fc1d3f74694f3a35c01c6ddc7930cfff62d71eadcaa1c"
+    },
+    {
+      "feature": "adjustments",
+      "stack": "copilot",
       "name": "adjustments/.github/skills/task",
       "source": "features/copilot/adjustments/adjust_skills.py",
       "target": ".github/skills/task",
@@ -1553,15 +1562,6 @@
       "name": "adjustments/.github/skills/welcome-ai-badger",
       "source": "features/copilot/adjustments/adjust_skills.py",
       "target": ".github/skills/welcome-ai-badger",
-      "frameworkVersion": "0.150.0",
-      "hash": "54042cfd8d94054ed08fc1d3f74694f3a35c01c6ddc7930cfff62d71eadcaa1c"
-    },
-    {
-      "feature": "adjustments",
-      "stack": "copilot",
-      "name": "adjustments/.github/skills/status-report",
-      "source": "features/copilot/adjustments/adjust_skills.py",
-      "target": ".github/skills/status-report",
       "frameworkVersion": "0.150.0",
       "hash": "54042cfd8d94054ed08fc1d3f74694f3a35c01c6ddc7930cfff62d71eadcaa1c"
     },

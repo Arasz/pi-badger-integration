@@ -2,7 +2,7 @@
 
 # pi-badger-integration
 
-Canonical source for pi coding-agent extensions that are not part of ai-badger (the ai-badger hooks adapter, shift-enter-newline, session-signals), plus the publish flow that installs them to pi's user scope and vendors the adapter back into an ai-badger checkout.
+Canonical source for pi coding-agent extensions that are not part of ai-badger (the ai-badger hooks adapter, shift-enter-newline, session-signals, pi-cron, pi-mcp-tools, subagent), plus the publish flow that installs them to pi's user scope and vendors the adapter back into an ai-badger checkout.
 
 > Domain: Developer tooling for coding agents - extension distribution and ai-badger/pi integration
 > Stacks: node, ts, pi
