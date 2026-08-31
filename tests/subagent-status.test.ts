@@ -320,7 +320,7 @@ describe("T75: the widget renders background/queued runs only (review CR17)", ()
 		const content = widget[1]!.join("\n");
 		expect(content).toContain("d-1 architect");
 		expect(content).toContain("running…"); // R9: bash maps to a stable verb label
-		expect(content).toContain("↓1234");
+		expect(content).toContain("↓1.2k");
 	});
 
 	test("queued background runs render as a count line, not per-run lines", async () => {

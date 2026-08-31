@@ -357,9 +357,21 @@ export function formatDuration(ms: number): string {
   return `${rest}s`;
 }
 
-/** Render a fraction (0–1) as e.g. "60.1%" — one decimal, a trailing ".0" trimmed. */
+/** One-decimal with a trailing ".0" trimmed — shared by pct and fmtTokens. */
+function fmt1(x: number): string {
+  return x.toFixed(1).replace(/\.0$/, "");
+}
+
+/** Render a fraction (0–1) as e.g. "60.1%". */
 function pct(fraction: number): string {
-  return `${(fraction * 100).toFixed(1).replace(/\.0$/, "")}%`;
+  return `${fmt1(fraction * 100)}%`;
+}
+
+/** Compact token counts: 18014 → "18k", 1500 → "1.5k", 1_250_400 → "1.3m"; < 1000 verbatim. */
+function fmtTokens(n: number): string {
+  if (n >= 999_950) return `${fmt1(n / 1_000_000)}m`;
+  if (n >= 1000) return `${fmt1(n / 1000)}k`;
+  return String(n);
 }
 
 /**
@@ -372,13 +384,13 @@ function pct(fraction: number): string {
 export function formatUsage(usage: DelegationUsage | undefined, contextWindow?: number): string {
   if (!usage) return "";
   const parts: string[] = [];
-  if (usage.input) parts.push(`↑${usage.input}`);
-  if (usage.output) parts.push(`↓${usage.output}`);
+  if (usage.input) parts.push(`↑${fmtTokens(usage.input)}`);
+  if (usage.output) parts.push(`↓${fmtTokens(usage.output)}`);
   const promptTokens = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
   if (usage.cacheRead && promptTokens > 0) parts.push(`CR${pct(usage.cacheRead / promptTokens)}`);
-  if (usage.cacheWrite) parts.push(`W${usage.cacheWrite}`);
+  if (usage.cacheWrite) parts.push(`W${fmtTokens(usage.cacheWrite)}`);
   if (usage.contextTokens) {
-    parts.push(contextWindow ? `ctx:${pct(usage.contextTokens / contextWindow)}` : `ctx:${usage.contextTokens}`);
+    parts.push(contextWindow ? `ctx:${pct(usage.contextTokens / contextWindow)}` : `ctx:${fmtTokens(usage.contextTokens)}`);
   }
   if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
   return parts.join(" ");

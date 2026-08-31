@@ -27,6 +27,7 @@ import {
   emptyAdmission,
   emptyUsage,
   extractAnswer,
+  formatUsage,
   parseChildEvent,
   pruneLogFiles,
   releaseRun,
@@ -246,6 +247,29 @@ describe("renderDelegationStatus (rows 18–21)", () => {
     expect(line).toContain("CR21.4%"); // 3 of 14 prompt tokens cached
     expect(line).toContain("ctx:9.9%"); // 99 of a 1000-token window
     expect(line).not.toContain("R3"); // the raw cached-token glyph is gone
+  });
+
+  test("formatUsage compiles token counts: k under a million, m above; sub-k verbatim", () => {
+    expect(
+      formatUsage(
+        { input: 18014, output: 587, cacheRead: 0, cacheWrite: 0, cost: 0.0015, contextTokens: 18583, turns: 1 },
+        1_000_000,
+      ),
+    ).toBe("↑18k ↓587 ctx:1.9% $0.0015");
+    expect(
+      formatUsage({
+        input: 18014,
+        output: 1_250_400,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0,
+        contextTokens: 1_250_400,
+        turns: 1,
+      }),
+    ).toBe("↑18k ↓1.3m ctx:1.3m"); // absolute-ctx fallback is formatted too
+    expect(
+      formatUsage({ input: 999, output: 20, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 }),
+    ).toBe("↑999 ↓20"); // sub-k verbatim
   });
 
   test("row 19: three runs sort by start; queued shows phase not clock", () => {
