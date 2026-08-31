@@ -530,3 +530,20 @@ describe("applyLiveUsage (message_update cumulative usage → live view)", () =>
     expect(applyLiveUsage(base, msgUpdate("not an object"))).toBe(base);
   });
 });
+
+// ------------------------------------------------------------------ T89: timeout rendering (deferral pkg P2)
+
+describe("T89 — renderRunLine renders a timed-out run (deferral pkg P2)", () => {
+  test("an aborted run with abortReason 'timeout' renders 'aborted (timeout)' (panel + reconstruction path)", () => {
+    const line = renderDelegationStatus(
+      [{ id: "d-2", agent: "architect", state: "aborted", abortReason: "timeout", startedAt: NOW - 60_000 }],
+      NOW,
+    );
+    expect(line).toBe("d-2 architect — aborted (timeout)");
+  });
+
+  test("a user-aborted run renders plain 'aborted'", () => {
+    const line = renderDelegationStatus([{ id: "d-3", agent: "beta", state: "aborted", startedAt: NOW }], NOW);
+    expect(line).toBe("d-3 beta — aborted");
+  });
+});

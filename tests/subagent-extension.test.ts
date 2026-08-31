@@ -26,6 +26,13 @@ import { join } from "node:path";
 import { FakeChild } from "./helpers/fake-child.ts";
 import { AGENTS_DIR } from "../extensions/subagent/index.ts";
 import subagent from "../extensions/subagent/index.ts";
+import {
+  clampRunTimeoutMs,
+  notificationVerdict,
+  RUN_TIMEOUT_MAX_MS,
+} from "../extensions/subagent/index.ts";
+import type { DelegationNote } from "../extensions/subagent/delegation-runner.ts";
+
 
 const NOW = 1_700_000_000_000;
 
@@ -601,5 +608,79 @@ describe("T74 — cwd validation (personas from ctx.cwd, child in params.cwd)", 
     } finally {
       rmSync(childCwd, { recursive: true, force: true });
     }
+  });
+});
+
+// ------------------------------------------------------------------ T86–T91: timeout surfaces (deferral pkg P2)
+
+/** Let the applied (floored, 1 s) per-run timeout fire and the followUp flush. */
+const drainTimeout = () => new Promise((resolve) => setTimeout(resolve, 1100));
+
+describe("T86–T91 — per-run timeout surfaces (deferral pkg P2)", () => {
+  test("T86: clampRunTimeoutMs bounds — undefined/NaN/Infinity/0/negative = off; floor and cap applied", () => {
+    expect(clampRunTimeoutMs(undefined)).toBeUndefined();
+    expect(clampRunTimeoutMs(Number.NaN)).toBeUndefined();
+    expect(clampRunTimeoutMs(Number.POSITIVE_INFINITY)).toBeUndefined();
+    expect(clampRunTimeoutMs(0)).toBeUndefined();
+    expect(clampRunTimeoutMs(-5)).toBeUndefined();
+    expect(clampRunTimeoutMs(100)).toBe(1000); // raised to the floor
+    expect(clampRunTimeoutMs(90_000)).toBe(90_000); // within bounds: verbatim
+    expect(clampRunTimeoutMs(2 ** 32)).toBe(RUN_TIMEOUT_MAX_MS); // timer-overflow guard (review M1)
+    expect(RUN_TIMEOUT_MAX_MS).toBe(86_400_000); // 24 h
+  });
+
+  test("T87: the schema accepts timeoutMs and clamps at the boundary — registry receives 1000", async () => {
+    h = makeHarness();
+    const result = await callDelegate({ agent: "architect", task: "t", timeoutMs: 100 }, makeCtx());
+
+    expect(result.details.state).toBe("running");
+    expect(h.api!.registry.get("d-1")?.timeoutMs).toBe(1000); // the applied, clamped value on the record
+    h.children[0]!.exit(0); // hygiene: settle before the timer can fire
+  });
+
+  test("T88: the timeout verdict names the applied limit, not the elapsed runtime", () => {
+    const note = {
+      id: "d-2",
+      agent: "architect",
+      task: "t",
+      state: "aborted",
+      abortReason: "timeout",
+      timeoutMs: 60_000,
+      durationMs: 610_000, // includes queue wait — must not appear (durationMs is request-time based)
+      answer: "",
+    } as DelegationNote;
+    expect(notificationVerdict(note)).toBe("Delegation d-2 (architect) timed out (limit 1m00s) and was aborted.");
+
+    // a user abort still renders the plain verdict (no marker, no limit)
+    const userAbort = { id: "d-3", agent: "architect", task: "t", state: "aborted", durationMs: 5000, answer: "" } as DelegationNote;
+    expect(notificationVerdict(userAbort)).toBe("Delegation d-3 (architect) aborted in 5s.");
+  });
+
+  test("T90: the blocking result names the timeout", async () => {
+    h = makeHarness();
+    // timeoutMs 1000 is applied verbatim → the limit renders "1s"; the "1m00s" zero-pad shape is
+    // pinned exactly by T88 (a 60 s limit would cost a 60 s real wait here — the row's intent is
+    // that the blocking result names the timeout, which this drives end-to-end).
+    const pending = callDelegate({ agent: "architect", task: "t", background: false, timeoutMs: 1000 }, makeCtx("print"));
+    await drainTimeout(); // expiry aborts the child through the kill path
+    const result = await pending;
+
+    expect(contentOf(result)).toContain("timed out (limit 1s) and was aborted");
+    expect(result.details.exitCode).toBeNull(); // R5's aborted shape, no exit code
+  }, 20_000);
+
+  test("T91 (delegate side): the no-automatic-timeout claims are gone; the param describes the real semantics", () => {
+    h = makeHarness();
+    const tool = h.tools.get("delegate")!;
+    const params = tool.parameters as { properties: Record<string, { description?: string }> };
+
+    expect(String(tool.description)).not.toContain("no automatic per-run timeout");
+    expect(String(tool.description)).toContain("timeoutMs");
+    expect(params.properties.background?.description ?? "").not.toContain("no automatic per-run timeout");
+    const timeoutDescription = params.properties.timeoutMs?.description ?? "";
+    expect(timeoutDescription).toContain("1000 ms"); // the floor
+    expect(timeoutDescription).toContain("86400000"); // the cap
+    expect(timeoutDescription).toContain("SIGTERM"); // the kill path
+    expect(timeoutDescription).toContain("spawn"); // the clock starts at spawn, queue wait does not count
   });
 });

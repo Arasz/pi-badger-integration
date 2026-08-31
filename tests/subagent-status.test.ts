@@ -574,3 +574,41 @@ describe("T78: the /delegations command shares the registry path with the tool",
 		expect(completions("bogus")).toBeNull();
 	});
 });
+
+// ------------------------------------------------------------------ T89/T91: timeout surfaces (deferral pkg P2)
+
+describe("T89/T91 — timeout surfaces on the delegations tool (deferral pkg P2)", () => {
+	test("T89: list/wait renders a timed-out run as 'aborted (timeout)'", async () => {
+		const fx = makeFixture();
+		await fx.registry.start(startRequest({ id: "d-1", toolCallId: "tc-1", timeoutMs: 5 }));
+		await drainRegistryTimers();
+
+		// drive the expiry through the real registry (fake-pi style: no awaits on ticks)
+		const list = await delegationsTool(fx).execute({ action: "list" });
+		expect(String(list.content[0]!.text)).toContain("d-1 architect — aborted (timeout) —");
+	});
+
+	test("T89: a user-aborted run still renders plain 'aborted'", async () => {
+		const fx = makeFixture();
+		await fx.registry.start(startRequest({ id: "d-1", toolCallId: "tc-1" }));
+		fx.registry.abort("d-1");
+
+		const list = await delegationsTool(fx).execute({ action: "list" });
+		expect(String(list.content[0]!.text)).toContain("d-1 architect — aborted —");
+		expect(String(list.content[0]!.text)).not.toContain("(timeout)");
+	});
+
+	test("T91 (delegations side): the description drops the no-automatic-timeout claim and names timeoutMs", () => {
+		const fx = makeFixture();
+		const tool = fx.harness.tools.get(DELEGATIONS_TOOL_NAME)!;
+		const description = String((tool as unknown as { description: string }).description);
+
+		expect(description).not.toContain("no automatic per-run timeout");
+		expect(description).toContain("timeoutMs");
+	});
+});
+
+/** Drain past the 1 s floored timeout used by the fixtures above. */
+function drainRegistryTimers(): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, 1100));
+}

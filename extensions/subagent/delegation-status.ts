@@ -125,7 +125,7 @@ export function describeRecord(record: DelegationRecord, now: number): string {
 			parts.push(record.spawnError ? `failed (${record.spawnError})` : "failed");
 			break;
 		case "aborted":
-			parts.push("aborted");
+			parts.push(record.abortReason === "timeout" ? "aborted (timeout)" : "aborted");
 			break;
 		case "lost":
 			parts.push("lost");
@@ -347,7 +347,7 @@ export function registerDelegationStatus(
 			"log id (bounded tail of a run's log file plus the full log path),",
 			'abort id|"all" (stop one delegation or every live one),',
 			`wait ids? timeoutMs? (block until the named delegations settle; the timeout resolves with per-id state snapshots, never an error; default ${WAIT_DEFAULT_MS / 1000} s, max ${WAIT_MAX_MS / 1000} s).`,
-			"There is no automatic per-run timeout: a delegation runs as long as its child process runs — use abort to stop one.",
+			'A run is unbounded unless the delegate call passes timeoutMs: on expiry the run is aborted through the normal kill path and settles aborted (timeout) — use abort to stop one yourself.',
 		].join(" "),
 		parameters: DelegationsParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

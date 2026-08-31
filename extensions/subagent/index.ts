@@ -29,10 +29,12 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import {
   allocateRunId,
   classifyFromLogDir,
+  clampRunTimeoutMs,
   formatDuration,
   formatUsage,
   pruneLogFiles,
   renderDelegationStatus,
+  RUN_TIMEOUT_MAX_MS,
   type DelegationState,
   type DelegationUsage,
   type LogDirEntry,
@@ -83,6 +85,9 @@ export const TRANSITION_CHANNEL = "delegation-transition";
 
 /** R7: env override for the running cap (queue cap stays at the P1 default). */
 export const MAX_CONCURRENT_ENV = "PI_BADGER_SUBAGENT_MAX_CONCURRENT";
+
+/** RR1: the per-run timeout clamp lives next to the schema it serves (pure impl in the core). */
+export { clampRunTimeoutMs, RUN_TIMEOUT_MAX_MS } from "./delegation-core.ts";
 
 export interface Persona {
   name: string;
@@ -289,6 +294,11 @@ export function notificationVerdict(note: DelegationNote): string {
   const duration = note.durationMs !== undefined ? ` in ${formatDuration(note.durationMs)}` : "";
   switch (note.state) {
     case "aborted":
+      // RR2: the timeout verdict names the applied LIMIT, never the elapsed runtime —
+      // durationMs counts from the request, so it includes queue wait.
+      if (note.abortReason === "timeout") {
+        return `Delegation ${note.id} (${note.agent}) timed out (limit ${formatDuration(note.timeoutMs ?? 0)}) and was aborted.`;
+      }
       return `Delegation ${note.id} (${note.agent}) aborted${duration}.`;
     case "failed":
       return `Delegation ${note.id} (${note.agent}) failed to start${duration}: ${note.spawnError ?? "unknown error"}.`;
@@ -408,7 +418,13 @@ const DelegateParams = Type.Object({
   background: Type.Optional(
     Type.Boolean({
       description:
-        "Run in the background: the tool returns a receipt immediately and the completion arrives as a followUp message. Default: true in the TUI, false otherwise. There is no automatic per-run timeout.",
+        "Run in the background: the tool returns a receipt immediately and the completion arrives as a followUp message. Default: true in the TUI, false otherwise.",
+    }),
+  ),
+  timeoutMs: Type.Optional(
+    Type.Number({
+      description:
+        "Optional per-run timeout in ms. The clock starts when the child spawns — queue wait does not count. Values are clamped: below 1 s raised to 1000 ms, above 24 h capped at 86400000 ms; 0 or omitted means no timeout. On expiry the run is aborted through the normal kill path (SIGTERM, then SIGKILL if the child ignores it) and settles as aborted with abortReason 'timeout'; the result surfaces say 'timed out (limit …)'.",
     }),
   ),
   cwd: Type.Optional(
@@ -582,8 +598,9 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       "call this with an unknown agent name to get the list of available ones.",
       "In the TUI this runs in the background by default: it returns a receipt immediately and",
       'the result arrives as a followUp message when the delegation finishes; pass background:',
-      "false to block instead. There is no automatic per-run timeout — use the delegations tool",
-      "to inspect or abort running delegations.",
+      "false to block instead. A run is unbounded unless you pass timeoutMs, which bounds the",
+      "run's wall-clock time and aborts it on expiry; use the delegations tool to inspect or",
+      "abort running delegations.",
     ].join(" "),
     parameters: DelegateParams,
 
@@ -663,6 +680,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         // The execute signal is the turn's own; ctx.signal is the fallback for a build that only
         // populates the context. Either one aborting kills the child rather than orphaning it.
         signal: signal ?? toolCtx.signal,
+        ...(params.timeoutMs !== undefined ? { timeoutMs: clampRunTimeoutMs(params.timeoutMs) } : {}),
       });
 
       if (!outcome.ok) {
@@ -769,7 +787,13 @@ function progressLine(progress: DelegationProgress, nowMs: number): string {
  * with the partial answer tail and stderr.
  */
 function blockingContent(
-  record: { state: DelegationState; exitCode?: number | null; spawnError?: string },
+  record: {
+    state: DelegationState;
+    exitCode?: number | null;
+    spawnError?: string;
+    abortReason?: "timeout";
+    timeoutMs?: number;
+  },
   note: DelegationNote | undefined,
   personaName: string,
 ): string {
@@ -777,6 +801,9 @@ function blockingContent(
     return `ai-badger: delegation to "${personaName}" could not run (${record.spawnError})`;
   }
   if (record.state === "aborted") {
+    if (record.abortReason === "timeout") {
+      return `ai-badger: delegation to "${personaName}" timed out (limit ${formatDuration(record.timeoutMs ?? 0)}) and was aborted`;
+    }
     return `ai-badger: delegation to "${personaName}" was aborted before it finished`;
   }
   const exitCode = record.exitCode ?? null;

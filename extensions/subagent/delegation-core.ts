@@ -296,6 +296,8 @@ export interface DelegationStatusRun {
   usage?: DelegationUsage;
   queuePosition?: number;
   spawnError?: string;
+  /** RR2: "timeout" on a run killed by its per-run timeout; a user abort carries no marker. */
+  abortReason?: "timeout";
 }
 
 /** `92_000` ms → `1m32s`; sub-minute stays bare (`3s`); hours roll into `1h01m32s`. */
@@ -423,7 +425,7 @@ function renderRunLine(run: DelegationStatusRun, now: number): string {
       segments.push(run.spawnError ? `failed (${run.spawnError})` : "failed");
       break;
     case "aborted":
-      segments.push("aborted");
+      segments.push(run.abortReason === "timeout" ? "aborted (timeout)" : "aborted");
       break;
     case "lost":
       segments.push("lost");

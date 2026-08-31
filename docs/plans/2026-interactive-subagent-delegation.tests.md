@@ -137,3 +137,20 @@ stopped guard turns T83 (and row 38) red.
 | T83 | P1 | tests/delegation-runner.test.ts | shutdown with an armed timeout notifies nothing | registry, start `timeoutMs: 5`, `shutdown()` pre-expiry → drain → notes empty | AC-T4 |
 | T84 | P1 | tests/delegation-runner.test.ts | queued run inherits timeout; clock starts at spawn | cap 1; second request `timeoutMs: 5` queued; drain (still queued) → settle first → second spawns → drain → second aborted with marker; first child never signaled; exactly one note | AC-T5 |
 | T85 | P1 | tests/delegation-runner.test.ts | record carries the applied timeout; pre-aborted signal arms nothing | running `record.timeoutMs` equals the request value; already-aborted signal + `timeoutMs` → aborted note, spawnFn never called, no marker, no `timeoutMs` | AC-T5 |
+
+### Pkg P2 rows — timeout surfaces (committed with the P2 code)
+
+Witnessed red: T86–T91 failed to even load the extension suite pre-implementation
+(`Export named 'clampRunTimeoutMs' not found`); T89/T91 witnessed red in the status and core
+suites (old rendering/claim live). T90 deviation: the row's literal "limit 1m00s" would cost a
+60 s real wait, so T90 drives `timeoutMs: 1000` and asserts "timed out (limit 1s) and was
+aborted" — the 1m00s zero-pad shape stays pinned exactly by T88 at the pure-function level.
+
+| id | pkg | file | test | arrange → act → assert | AC |
+|----|-----|------|------|------------------------|-----|
+| T86 | P2 | tests/subagent-extension.test.ts | clamp bounds (pure) | undefined/NaN/Infinity/0/(-5) → undefined; 100 → 1000; 90000 → 90000; 2**32 → RUN_TIMEOUT_MAX_MS | AC-T6 |
+| T87 | P2 | tests/subagent-extension.test.ts | schema accepts and clamps at the boundary | execute `timeoutMs: 100` → `record.timeoutMs` = 1000 | AC-T6 |
+| T88 | P2 | tests/subagent-extension.test.ts | timeout verdict line (pure) | note `{aborted, abortReason "timeout", timeoutMs 60000, durationMs 610000}` → exactly `Delegation d-2 (architect) timed out (limit 1m00s) and was aborted.` (limit, not elapsed); user abort keeps the plain verdict | AC-T7 |
+| T89 | P2 | tests/subagent-status.test.ts + tests/delegation-core.test.ts | list/wait and panel render the timeout | record with `abortReason "timeout"` → describeRecord `aborted (timeout)`; renderRunLine renders the same; user-aborted runs render plain `aborted` | AC-T7 |
+| T90 | P2 | tests/subagent-extension.test.ts | blocking result names the timeout | `background:false`, `timeoutMs: 1000`, drive expiry → content contains `timed out (limit 1s) and was aborted`, `details.exitCode` null | AC-T7 |
+| T91 | P2 | tests/subagent-extension.test.ts + tests/subagent-status.test.ts | description text updated | delegate + delegations descriptions drop "no automatic per-run timeout", both name `timeoutMs`; background param sentence gone; param description states floor (1000 ms), cap (86400000), kill path (SIGTERM), spawn-started clock | AC-T8 |
