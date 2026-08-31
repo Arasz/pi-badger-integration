@@ -108,3 +108,32 @@ background delegations while the user keeps typing; followUps land; mid-run abor
 restart scenario, e2e MoE-panel-style run in TUI — each with exact command, observable pass
 condition, and an evidence slot (transcript path/screenshot). The task cannot finish with an
 empty evidence slot.
+
+---
+
+## Deferral rows (pbi-delegation-timeout-and-burst-batching — plan §4, landed per package)
+
+Rows T79–T105 implement the two deferred items (per-run `timeoutMs`, review A12; followUp burst
+batching, review CR11) from `docs/work/2026-08-30-delegation-timeout-and-burst-batching-plan.md`.
+Numbering continues the committed table; each package's rows are committed with the code that
+satisfies them. Clamp note: the 1 s floor / 24 h cap re-clamps at the runner's timer site (S5),
+so a fixture's small `timeoutMs: 5` is applied as 1000 ms and the drains wait it out in real time
+(no fake-timer library). Red-first: T79/T80/T84/T85 witnessed RED pre-implementation (no timer
+existed); T81/T83 were vacuously green pre-implementation — nothing arms a timer yet to leak —
+and their bite is witnessed by the post-implementation mutations below; T82 and T105 are PIN rows
+(validated green-then-mutation-checked). Witnessed mutations: T81 — removing the clearTimeout
+discipline AND the settled guard turns T81 (and T82) red; either single removal is absorbed by
+the other defense, so the plan's "one at a time" red is unreachable in any implementation that
+also passes T82 (defense-in-depth symmetry, recorded here instead of weakening a defense). T82 —
+stamping `abortReason` on every abort turns T82 (and T85) red. T83 — removing the registry's
+stopped guard turns T83 (and row 38) red.
+
+| id | pkg | file | test | arrange → act → assert | AC |
+|----|-----|------|------|------------------------|-----|
+| T79 | P1 | tests/delegation-runner.test.ts | timeout expiry kills through the abort path | run `timeoutMs: 5`, `escalateAfterMs: 0`, child ignores kills → drain → signals `["SIGTERM","SIGKILL"]`, note state aborted | AC-T1 |
+| T80 | P1 | tests/delegation-runner.test.ts | timeout settles aborted with marker, no exitCode, one note | `timeoutMs: 5` → drain → one note, state aborted, `abortReason "timeout"`, no `exitCode` key, `timeoutMs` = applied 1000; record mirrors both fields | AC-T2 |
+| T81 | P1 | tests/delegation-runner.test.ts | natural close clears the timer | `exit(0)` before expiry → drain past expiry → completed note, `signals: []` | AC-T3 |
+| T82 | P1 | tests/delegation-runner.test.ts | user abort wins; late timeout fire is a no-op (PIN) | `abort()` first, `timeoutMs: 5` → drain → one aborted note without `abortReason`, SIGTERM once | AC-T2 |
+| T83 | P1 | tests/delegation-runner.test.ts | shutdown with an armed timeout notifies nothing | registry, start `timeoutMs: 5`, `shutdown()` pre-expiry → drain → notes empty | AC-T4 |
+| T84 | P1 | tests/delegation-runner.test.ts | queued run inherits timeout; clock starts at spawn | cap 1; second request `timeoutMs: 5` queued; drain (still queued) → settle first → second spawns → drain → second aborted with marker; first child never signaled; exactly one note | AC-T5 |
+| T85 | P1 | tests/delegation-runner.test.ts | record carries the applied timeout; pre-aborted signal arms nothing | running `record.timeoutMs` equals the request value; already-aborted signal + `timeoutMs` → aborted note, spawnFn never called, no marker, no `timeoutMs` | AC-T5 |

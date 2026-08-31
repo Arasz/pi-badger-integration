@@ -16,6 +16,7 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import {
   applyUsage,
+  clampRunTimeoutMs,
   DEFAULT_TEE_CAP_BYTES,
   deriveActivity,
   applyLiveUsage,
@@ -115,6 +116,10 @@ export interface DelegationNote {
   durationMs?: number;
   /** Absent when no sink was configured or the sink failed mid-run (T62). */
   logFile?: string;
+  /** RR2: present only on a timeout settle — the note-level distinguishing marker. */
+  abortReason?: "timeout";
+  /** The applied (clamped) per-run timeout; present when the timer armed (RR2/T85). */
+  timeoutMs?: number;
 }
 
 /** Live progress snapshot for `onUpdate` (rows 26); structurally a `DelegationStatusRun`. */
@@ -162,6 +167,9 @@ export interface RunRequest {
   startedAt: number;
   /** Caller's abort signal; already-aborted → the run settles aborted without spawning (row 37). */
   signal?: AbortSignal;
+  /** Per-run timeout request, ms (RR1): re-clamped at the timer site; undefined/0 = no timeout.
+   * The clock starts at spawn — queue wait is admission's business (RR4). */
+  timeoutMs?: number;
 }
 
 export interface RunHandle {
@@ -210,6 +218,9 @@ interface RunState {
   settled: boolean;
   settleKind: "exit" | "spawnError" | "aborted" | undefined;
   graceTimer: ReturnType<typeof setTimeout> | undefined;
+  timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Set when the per-run timeout fired — stamps abortReason "timeout" on the settle (RR2). */
+  timedOut: boolean;
   tee: TeeState | undefined;
   stdoutAccum: string;
   rawStderr: string;
@@ -269,6 +280,8 @@ export class DelegationRunner {
       settled: false,
       settleKind: undefined,
       graceTimer: undefined,
+      timeoutTimer: undefined,
+      timedOut: false,
       tee: undefined,
       stdoutAccum: "",
       rawStderr: "",
@@ -314,6 +327,21 @@ export class DelegationRunner {
     child.stderr?.on("data", (chunk) => this.feedStderr(state, chunk));
     child.on("close", (code, signal) => this.onClose(state, code, signal));
     child.on("error", (error) => this.onChildError(state, error));
+
+    // RR4/S5: the timeout arms here, after a successful spawn — the value is re-clamped (never
+    // trust the caller's clamp: registry and direct-runner paths both land here), the clock
+    // starts at spawn, and expiry rides abortRun (R8's one kill path — no second kill
+    // implementation). finishSettle and onClose clear it; abortRun's settled guard absorbs a
+    // late fire (T81/T82).
+    const appliedTimeoutMs = clampRunTimeoutMs(request.timeoutMs);
+    if (appliedTimeoutMs !== undefined) {
+      state.record.timeoutMs = appliedTimeoutMs; // observable while running (T85)
+      state.timeoutTimer = setTimeout(() => {
+        state.timeoutTimer = undefined;
+        state.timedOut = true;
+        this.abortRun(state);
+      }, appliedTimeoutMs);
+    }
 
     if (request.signal) {
       const onAbort = () => this.abortRun(state);
@@ -371,6 +399,10 @@ export class DelegationRunner {
     if (state.graceTimer !== undefined) {
       clearTimeout(state.graceTimer);
       state.graceTimer = undefined;
+    }
+    if (state.timeoutTimer !== undefined) {
+      clearTimeout(state.timeoutTimer); // T81: a natural close beats the timer — no late kill
+      state.timeoutTimer = undefined;
     }
     if (state.buffer.length > 0) {
       // Row 29: a trailing line without its newline is flushed on close.
@@ -498,6 +530,7 @@ export class DelegationRunner {
 
   private settleAborted(state: RunState): void {
     state.record.state = "aborted"; // no exitCode — R5's aborted shape
+    if (state.timedOut) state.record.abortReason = "timeout"; // RR2: the one distinguishing marker
     this.finishSettle(state, "aborted");
   }
 
@@ -505,6 +538,10 @@ export class DelegationRunner {
     if (state.settled) return; // exactly one settle per run (double-close, late close after abort)
     state.settled = true;
     state.settleKind = kind;
+    if (state.timeoutTimer !== undefined) {
+      clearTimeout(state.timeoutTimer); // RR4: the timer never outlives the settle (T81/T82/T83)
+      state.timeoutTimer = undefined;
+    }
     if (state.onAbort && state.signal) {
       state.signal.removeEventListener("abort", state.onAbort);
       state.onAbort = undefined;
@@ -533,6 +570,8 @@ export class DelegationRunner {
       ...(record.logFile !== undefined ? { logFile: record.logFile } : {}),
     };
     if (state.settleKind === "exit") note.exitCode = exitCode;
+    if (record.abortReason !== undefined) note.abortReason = record.abortReason;
+    if (record.timeoutMs !== undefined) note.timeoutMs = record.timeoutMs;
     if (record.spawnError !== undefined) note.spawnError = record.spawnError;
     if (answer.kind === "silent") {
       // R3/CR4: the quiet failure gets a loud marker plus the capped raw stdout.

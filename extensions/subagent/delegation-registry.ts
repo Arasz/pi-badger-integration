@@ -62,6 +62,9 @@ export interface StartRequest {
   sessionId?: string;
   /** Caller's abort signal (the tool execute signal; row 37). */
   signal?: AbortSignal;
+  /** Per-run timeout request, ms (RR1): pass-through — the runner re-clamps at the timer site;
+   * the clock starts when the child spawns, not while queued. */
+  timeoutMs?: number;
   /** Explicit run id (P3 allocates over the log dir); default is registry-allocated. */
   id?: string;
 }
@@ -280,6 +283,7 @@ export class DelegationRegistry {
       ...(request.sessionId !== undefined ? { sessionId: request.sessionId } : {}),
       startedAt: startedAt ?? this.now(),
       ...(request.signal !== undefined ? { signal: request.signal } : {}),
+      ...(request.timeoutMs !== undefined ? { timeoutMs: request.timeoutMs } : {}),
     });
     this.records.set(id, handle.record);
     this.handles.set(id, handle);

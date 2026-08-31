@@ -737,3 +737,124 @@ describe("registry transition events and wait (T60, T65)", () => {
     expect(resolved[0]!.state).toBe("aborted");
   });
 });
+
+// ------------------------------------------------------------------ T79–T85: per-run timeout (deferral pkg P1)
+
+/**
+ * Deferral rows (docs/work/2026-08-30-delegation-timeout-and-burst-batching-plan.md §4 P1).
+ * The clamp (1 s floor / 24 h cap) re-runs at the runner's timer-creation site (S5), so a
+ * fixture's small `timeoutMs: 5` is applied as 1000 ms — the drains below wait it out in real
+ * time (flake conventions: no fake-timer library). Expiry rides abortRun — R8's one kill path.
+ */
+describe("per-run timeout (T79–T85, deferral pkg P1)", () => {
+  test("T79: timeout expiry kills through the abort path — SIGTERM then SIGKILL", async () => {
+    const h = makeRunner(); // escalateAfterMs 0
+    h.runner.run(runRequest({ timeoutMs: 5 }));
+    const child = h.children[0]!;
+
+    await drainMacrotasks(1100); // past the applied 1000 ms expiry
+
+    expect(child.signals).toEqual(["SIGTERM", "SIGKILL"]); // the R8 kill machinery, not a second implementation
+    expect(h.notes).toHaveLength(1);
+    expect(h.notes[0]!.state).toBe("aborted");
+  }, 20_000);
+
+  test("T80: timeout settles aborted with the marker, no exitCode, exactly one note; record mirrors", async () => {
+    const h = makeRunner();
+    const handle = h.runner.run(runRequest({ timeoutMs: 5 }));
+
+    await drainMacrotasks(1100);
+
+    expect(h.notes).toHaveLength(1);
+    const note = h.notes[0]!;
+    expect(note.state).toBe("aborted");
+    expect(note.abortReason).toBe("timeout");
+    expect("exitCode" in note).toBe(false); // R5's aborted shape
+    expect(note.timeoutMs).toBe(1000); // the applied, clamped value — the floor raised 5 → 1000, observably
+    expect(handle.record.state).toBe("aborted");
+    expect(handle.record.abortReason).toBe("timeout");
+    expect(handle.record.timeoutMs).toBe(1000);
+  }, 20_000);
+
+  test("T81: natural close clears the timer — completed, never signaled", async () => {
+    const h = makeRunner();
+    h.runner.run(runRequest({ timeoutMs: 5 }));
+    const child = h.children[0]!;
+
+    child.exit(0); // before expiry
+    await drainMacrotasks(1100); // past expiry — a surviving timer would fire here
+
+    expect(child.signals).toEqual([]);
+    expect(h.notes).toHaveLength(1);
+    expect(h.notes[0]!.state).toBe("completed");
+  }, 20_000);
+
+  test("T82 (PIN): user abort wins; the late timeout fire is a no-op", async () => {
+    const h = makeRunner();
+    const controller = new AbortController();
+    h.runner.run(runRequest({ signal: controller.signal, timeoutMs: 5 }));
+    const child = h.children[0]!;
+
+    controller.abort(); // the abort beats the timer
+    await new Promise<void>((resolve) => child.once("kill", () => resolve())); // grace escalation fired
+    await drainMacrotasks(1100); // past expiry — the late fire must add nothing
+
+    expect(h.notes).toHaveLength(1);
+    expect(h.notes[0]!.state).toBe("aborted");
+    expect(h.notes[0]!.abortReason).toBeUndefined(); // a user abort carries no marker
+    expect(child.signals.filter((signal) => signal === "SIGTERM")).toHaveLength(1); // SIGTERM once
+  }, 20_000);
+
+  test("T83: shutdown with an armed timeout notifies nothing", async () => {
+    const h = makeRegistry();
+    await h.registry.start(startRequest({ timeoutMs: 5 }));
+
+    h.registry.shutdown(); // pre-expiry
+    await drainMacrotasks(1100);
+
+    expect(h.notes).toHaveLength(0); // CR10: shutdown settles notify nothing
+  }, 20_000);
+
+  test("T84: a queued run inherits the timeout; the clock starts at spawn, not while queued", async () => {
+    const h = makeRegistry({ cap: 1, queueCap: 16 });
+    await h.registry.start(startRequest({ task: "first" }));
+    const queued = await h.registry.start(startRequest({ task: "second", timeoutMs: 5 }));
+    expect(queued.ok).toBe(true);
+    const secondId = queued.ok ? queued.id : "";
+
+    await drainMacrotasks(1100); // longer than the applied timeout: a start()-armed timer would have fired
+    expect(h.registry.get(secondId)?.state).toBe("queued"); // queue wait is admission's business
+
+    h.children[0]!.exit(0); // settle the first → the second spawns
+    expect(h.children).toHaveLength(2);
+    expect(h.registry.get(secondId)?.state).toBe("running");
+
+    await drainMacrotasks(1100); // the spawn-armed expiry
+    expect(h.registry.get(secondId)?.state).toBe("aborted");
+    expect(h.registry.get(secondId)?.abortReason).toBe("timeout");
+    expect(h.children[0]!.signals).toEqual([]); // the first child was never signaled
+    const secondNotes = h.notes.filter((note) => note.id === secondId);
+    expect(secondNotes).toHaveLength(1); // exactly one note for the timed-out run
+    expect(secondNotes[0]!.abortReason).toBe("timeout");
+  }, 30_000);
+
+  test("T85: the record carries the applied timeout; a pre-aborted signal arms nothing", async () => {
+    const h = makeRunner();
+    const handle = h.runner.run(runRequest({ timeoutMs: 50_000 }));
+    expect(handle.record.state).toBe("running");
+    expect(handle.record.timeoutMs).toBe(50_000); // observable while running
+    handle.killImmediate(); // hygiene: no live child outlives the test
+
+    const h2 = makeRunner();
+    const controller = new AbortController();
+    controller.abort();
+    h2.runner.run(runRequest({ signal: controller.signal, timeoutMs: 50_000 }));
+    await drainMacrotasks();
+
+    expect(h2.children).toHaveLength(0); // spawnFn never called (row 37 path)
+    expect(h2.notes).toHaveLength(1);
+    expect(h2.notes[0]!.state).toBe("aborted");
+    expect(h2.notes[0]!.abortReason).toBeUndefined(); // user abort, not a timeout — no marker
+    expect(h2.notes[0]!.timeoutMs).toBeUndefined(); // the timer never armed
+  });
+});

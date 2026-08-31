@@ -163,6 +163,34 @@ export interface DelegationRecord {
   logFile?: string;
   queuePosition?: number;
   spawnError?: string;
+  /** RR2: "timeout" on a run killed by its per-run timeout; a user abort carries no marker. */
+  abortReason?: "timeout";
+  /** The applied (clamped) per-run timeout — observable while running and at settle (T85). */
+  timeoutMs?: number;
+}
+
+// ------------------------------------------------------------------ per-run timeout clamp
+
+/**
+ * Upper bound of a per-run timeout: 24 h. `setTimeout` clamps delays above 2^31-1 ms to 1 ms,
+ * so an uncapped "5e9 ms" request would miskill the child instantly — the cap is mandatory,
+ * not cosmetic (review M1).
+ */
+export const RUN_TIMEOUT_MAX_MS = 86_400_000;
+
+/** Floor of a per-run timeout: 1 s — a positive request is never a near-instant kill. */
+export const RUN_TIMEOUT_MIN_MS = 1000;
+
+/**
+ * Clamp a per-run `timeoutMs` request (RR1): undefined, non-finite or ≤ 0 means "no timeout"
+ * (default behavior unchanged); any positive value is raised to the 1 s floor and capped at
+ * 24 h. Clamped, never rejected — the applied value is observable on the record (T85), so a
+ * raised floor or capped value is never silent. Runs at the tool-schema boundary AND at the
+ * runner's timer-creation site (S5: registry and direct-runner callers must not bypass it).
+ */
+export function clampRunTimeoutMs(timeoutMs: number | undefined): number | undefined {
+  if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return undefined;
+  return Math.min(RUN_TIMEOUT_MAX_MS, Math.max(RUN_TIMEOUT_MIN_MS, timeoutMs));
 }
 
 // ------------------------------------------------------------------ log-dir classification
