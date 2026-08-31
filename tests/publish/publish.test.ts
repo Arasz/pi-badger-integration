@@ -15,7 +15,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ADAPTER_FILES, directoryTarget, drifts, main } from "../../publish.ts";
+import { ADAPTER_FILES, directoryTarget, drifts, main, type InstallDeps } from "../../publish.ts";
 
 /** The repo root — for reading canonical SOURCE trees only (never a destination). */
 function rootDir(): string {
@@ -280,6 +280,120 @@ describe("install (into injected temp targets)", () => {
 		}
 		expect(code).toBe(0);
 		expect(captured.lines.join("\n")).toContain("WITHOUT node_modules");
+	});
+});
+
+// Auto-install model: a source dir with a package.json but no node_modules gets one
+// automatic `bun install` on the install path only. Every test stubs the runner —
+// none of these may hit the network — and the --check test pins that the read-only
+// contract survives the new phase.
+describe("auto-install: a missing node_modules gets one bun install before shipping", () => {
+	test("runs the installer in the source dir when package.json is present, then ships the fresh deps", () => {
+		const { root, userDir } = fixture();
+		const src = extensionSource(root, "pi-cron");
+		writeTree(src, { "index.ts": "A;", "package.json": '{ "dependencies": { "x": "*" } }' });
+		const installedIn: string[] = [];
+		const runInstall: InstallDeps = (dir) => {
+			installedIn.push(dir);
+			writeTree(join(dir, "node_modules/x"), { "index.js": "dep bytes" });
+		};
+		const captured = captureConsole();
+		let code: number;
+		try {
+			code = main([], { targets: [directoryTarget("pi-cron", { root, userDir })], runInstall });
+		} finally {
+			captured.restore();
+		}
+
+		expect(code).toBe(0);
+		expect(installedIn).toEqual([src]);
+		// installTarget re-lists node_modules at copy time, so post-install deps ship
+		expect(readFileSync(join(userDir, "pi-cron/node_modules/x/index.js"), "utf8")).toBe("dep bytes");
+		expect(captured.lines.join("\n")).toContain("running bun install automatically");
+	});
+
+	test("skips the installer without a package.json — nothing to install, loud warning remains", () => {
+		const { root, userDir } = fixture();
+		writeTree(extensionSource(root, "pi-cron"), { "index.ts": "A;" });
+		let called = 0;
+		const runInstall: InstallDeps = () => {
+			called += 1;
+		};
+		const captured = captureConsole();
+		let code: number;
+		try {
+			code = main([], { targets: [directoryTarget("pi-cron", { root, userDir })], runInstall });
+		} finally {
+			captured.restore();
+		}
+
+		expect(code).toBe(0);
+		expect(called).toBe(0);
+		expect(captured.lines.join("\n")).toContain("WITHOUT node_modules");
+	});
+
+	test("a failed install is never fatal — degrades to the loud shipping warning", () => {
+		const { root, userDir } = fixture();
+		writeTree(extensionSource(root, "pi-cron"), { "index.ts": "A;", "package.json": "{}" });
+		const runInstall: InstallDeps = () => {
+			throw new Error("offline");
+		};
+		const captured = captureConsole();
+		let code: number;
+		try {
+			code = main([], { targets: [directoryTarget("pi-cron", { root, userDir })], runInstall });
+		} finally {
+			captured.restore();
+		}
+
+		expect(code).toBe(0);
+		const out = captured.lines.join("\n");
+		expect(out).toContain("automatic bun install failed");
+		expect(out).toContain("offline");
+		expect(out).toContain("WITHOUT node_modules");
+	});
+
+	test("node_modules already present → the installer is not called and existing deps ship", () => {
+		const { root, userDir } = fixture();
+		writeTree(extensionSource(root, "pi-cron"), {
+			"index.ts": "A;",
+			"package.json": "{}",
+			"node_modules/dep/index.js": "existing dep",
+		});
+		let called = 0;
+		const runInstall: InstallDeps = () => {
+			called += 1;
+		};
+		const captured = captureConsole();
+		let code: number;
+		try {
+			code = main([], { targets: [directoryTarget("pi-cron", { root, userDir })], runInstall });
+		} finally {
+			captured.restore();
+		}
+
+		expect(code).toBe(0);
+		expect(called).toBe(0);
+		expect(readFileSync(join(userDir, "pi-cron/node_modules/dep/index.js"), "utf8")).toBe("existing dep");
+	});
+
+	test("--check never runs the installer (read-only contract holds under the new phase)", () => {
+		const { root, userDir } = fixture();
+		const src = extensionSource(root, "pi-cron");
+		writeTree(src, { "index.ts": "A;", "package.json": "{}" });
+		writeTree(join(userDir, "pi-cron"), { "index.ts": "A;" }); // package.json missing at dest → fatal problem
+		const runInstall: InstallDeps = () => {
+			throw new Error("--check must never install");
+		};
+		const captured = captureConsole();
+		try {
+			expect(main(["--check"], { targets: [directoryTarget("pi-cron", { root, userDir })], runInstall })).toBe(1);
+		} finally {
+			captured.restore();
+		}
+
+		expect(captured.lines.join("\n")).not.toContain("--check must never install");
+		expect(readdirSync(src).sort()).toEqual(["index.ts", "package.json"]); // source gained no node_modules
 	});
 });
 

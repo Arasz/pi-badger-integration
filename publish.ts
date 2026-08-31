@@ -27,16 +27,24 @@
  *     package.json + bun.lock): it is exempt from the extra-file check and never
  *     byte-compared. --check reports a missing destination node_modules as a
  *     WARNING (exit 0); only problems (missing/extra/byte-differing canonical
- *     files) exit 1. Install copies the local node_modules recursively when
- *     present and warns loudly when absent — pi-mcp-tools needs
- *     @modelcontextprotocol/sdk at runtime, so shipping without deps must never
- *     be silent.
+ *     files) exit 1.
+ *   - Install auto-installs deps (2026-09-02; auto-install model): an extension
+ *     dir whose node_modules is absent but which has a package.json gets one
+ *     automatic `bun install` BEFORE canonical pairs are computed, so the
+ *     bun.lock it writes ships in the same run and a fresh clone publishes
+ *     complete extensions with no manual step. Best-effort, never fatal:
+ *     failure (no bun, offline, no package.json) degrades to the loud shipping
+ *     warning — host-provided imports (pi-coding-agent, typebox, pi-tui) need
+ *     no node_modules at all. The local node_modules then copies recursively;
+ *     shipping without deps still warns loudly — pi-mcp-tools needs
+ *     @modelcontextprotocol/sdk at runtime, so that must never be silent.
  *   - installs write to a temp file then rename, so a pi session starting
  *     mid-publish cannot load a partially written file (running sessions are
  *     unaffected — jiti has already loaded their modules). Per-file atomicity,
  *     not per-set: a session starting between two renames can observe a mixed
  *     set — sub-millisecond window.
  */
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
@@ -171,6 +179,42 @@ export function drifts(target: Target): DriftReport {
 	return { problems, warnings };
 }
 
+/** Runs the dependency install for one extension source dir. Throws on failure. */
+export type InstallDeps = (sourceDir: string) => void;
+
+/** Default runner: `bun install` in the extension dir, output inherited so the operator
+ * sees exactly what ran (loud, never silent). process.execPath under `bun publish.ts`
+ * IS the bun binary — dodges PATH issues; under a node runtime the spawn fails and the
+ * caller degrades to the loud warning, which is the pre-auto-install behavior. */
+function bunInstall(sourceDir: string): void {
+	execFileSync(process.execPath, ["install"], { cwd: sourceDir, stdio: "inherit" });
+}
+
+/** Fresh-clone gap filler: an extension dir that declares deps (package.json) but has no
+ * node_modules gets one automatic install before anything is computed or copied. On the
+ * default path this runs BEFORE directoryTarget listing so the bun.lock it writes lands
+ * in the canonical pair set on the same run — otherwise --check would call bun.lock
+ * `not installed` until a second publish. Best-effort: a failed install only logs; the
+ * per-target shipping warning in installTarget stays the single loud signal that deps
+ * are missing. (Injected targets were constructed by the caller before this runs, so
+ * their pairs cannot pick up a new bun.lock — irrelevant for stub fixtures, which write
+ * only node_modules files, and installTarget re-lists node_modules at copy time.) */
+function ensureDependencies(sourceDirs: string[], runInstall: InstallDeps): void {
+	for (const dir of sourceDirs) {
+		if (existsSync(join(dir, "node_modules"))) continue;
+		if (!existsSync(join(dir, "package.json"))) continue;
+		console.log(`node_modules missing in ${dir} — running bun install automatically…`);
+		try {
+			runInstall(dir);
+		} catch (error) {
+			console.warn(
+				`WARNING: automatic bun install failed in ${dir}: ` +
+					`${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+}
+
 /** Install one file atomically (no partially written file ever appears at the
  * destination; a crashed publish leaves only a `.publishing-<pid>` stray that --check
  * names). Note this is per-file atomicity, not per-set: a session starting between two
@@ -195,9 +239,11 @@ function installTarget(target: Target): void {
 		if (!existsSync(nm.source)) {
 			// Loud, never silent: shipping an extension that declares runtime deps
 			// (pi-mcp-tools → @modelcontextprotocol/sdk) without them breaks it at load.
+			// ensureDependencies has already tried one automatic bun install; reaching
+			// here means it was skipped (no package.json) or failed (logged above).
 			console.error(
 				`WARNING: ${nm.source} does not exist — publishing ${target.name} WITHOUT node_modules. ` +
-					`If this extension needs runtime deps, run bun install in its directory first.`,
+					`Automatic bun install was skipped or failed; if this extension needs runtime deps, fix that and re-run.`,
 			);
 		} else {
 			const files = listFiles(nm.source, false);
@@ -225,8 +271,10 @@ function vendorAdapter(aiBadgerPath: string): void {
 /**
  * `targets` is injectable so tests can run the --check CLI path against temp fixture
  * targets; without it the default owned set (adapter + every extension dir) is used.
+ * `runInstall` is injectable so auto-install tests stub `bun install` instead of
+ * hitting the network.
  */
-export function main(argv: string[], inject?: { targets?: Target[] }): number {
+export function main(argv: string[], inject?: { targets?: Target[]; runInstall?: InstallDeps }): number {
 	const check = argv.includes("--check");
 	const aiBadgerFlag = argv.indexOf("--ai-badger");
 	const aiBadgerPath = aiBadgerFlag >= 0 ? argv[aiBadgerFlag + 1] : undefined;
@@ -241,10 +289,13 @@ export function main(argv: string[], inject?: { targets?: Target[] }): number {
 		return 1;
 	}
 
-	const targets =
-		inject?.targets ?? [adapterTarget(ADAPTER_USER_DIR), ...EXTENSION_DIRS.map((name) => directoryTarget(name))];
+	const defaultTargets = () => [
+		adapterTarget(ADAPTER_USER_DIR),
+		...EXTENSION_DIRS.map((name) => directoryTarget(name)),
+	];
 
 	if (check) {
+		const targets = inject?.targets ?? defaultTargets();
 		const reports = targets.map((target) => ({ target, ...drifts(target) }));
 		// Warnings print unconditionally and never decide the exit code (review F4:
 		// the old string[] shape had no non-fatal channel); only problems are fatal.
@@ -267,8 +318,26 @@ export function main(argv: string[], inject?: { targets?: Target[] }): number {
 	// --ai-badger is VENDOR-ONLY (review m1): the README flow runs ai-badger's tests
 	// between vendoring and the user-scope install, so propagation to user scope is a
 	// deliberate separate step.
-	if (aiBadgerPath) vendorAdapter(aiBadgerPath);
-	else for (const target of targets) installTarget(target);
+	if (aiBadgerPath) {
+		vendorAdapter(aiBadgerPath);
+		return 0;
+	}
+
+	// Auto-install BEFORE target construction (default path) so a freshly written
+	// bun.lock is canonical on the same run. --check never reaches this (read-only);
+	// --ai-badger never reaches this (the adapter declares no deps).
+	const runInstall = inject?.runInstall ?? bunInstall;
+	// The extension dir is the PARENT of its node_modules entry (adapter targets have
+	// none and are filtered out).
+	ensureDependencies(
+		inject?.targets
+			? inject.targets
+					.map((t) => (t.nodeModules ? dirname(t.nodeModules.source) : undefined))
+					.filter((d): d is string => d !== undefined)
+			: EXTENSION_DIRS.map((name) => join(ROOT, "extensions", name)),
+		runInstall,
+	);
+	for (const target of inject?.targets ?? defaultTargets()) installTarget(target);
 	return 0;
 }
 

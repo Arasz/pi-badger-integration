@@ -9,6 +9,7 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  type ChildEvent,
   type AdmissionCaps,
   MAX_ACTIVITY_LEN,
   type LogDirEntry,
@@ -569,5 +570,22 @@ describe("T105 — a timed-out run's log classifies lost (RR5 pin, deferral pkg 
     expect(summaries[0]!.state).toBe("lost"); // the documented consequence — not "fixed", pinned
     expect(summaries[0]!.agent).toBe("architect");
     expect(summaries[0]!.task).toBe("do the thing");
+  });
+});
+
+describe("deriveActivity target hygiene (R9)", () => {
+  const readEvent = (args: unknown): ChildEvent =>
+    ({ type: "tool_execution_start", toolName: "read", args }) as unknown as ChildEvent;
+
+  test("keeps path-like targets", () => {
+    expect(deriveActivity(readEvent({ path: "/a/b/c.md" }))).toBe("reading c.md…");
+    expect(deriveActivity(readEvent({ path: "./src/util.ts" }))).toBe("reading util.ts…");
+    expect(deriveActivity(readEvent({ path: "README.md" }))).toBe("reading README.md…");
+  });
+
+  test("drops non-path words — a bare word must never become the label", () => {
+    expect(deriveActivity(readEvent({ path: "them" }))).toBe("reading…");
+    expect(deriveActivity(readEvent({ path: "the settings" }))).toBe("reading…");
+    expect(deriveActivity(readEvent({ path: "  " }))).toBe("reading…");
   });
 });
