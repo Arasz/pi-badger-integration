@@ -684,3 +684,212 @@ describe("T86–T91 — per-run timeout surfaces (deferral pkg P2)", () => {
     expect(timeoutDescription).toContain("spawn"); // the clock starts at spawn, queue wait does not count
   });
 });
+
+// ------------------------------------------------------------------ T92–T100: burst batching (deferral pkg P3)
+
+/** Drain past an injected batch window (the fixtures inject small windows; 0 ms is legal too). */
+const drainBatchWindow = () => new Promise((resolve) => setTimeout(resolve, 250));
+
+/** Exit every named child in the same synchronous stack (a "same-tick burst"). */
+function burst(children: FakeChild[], code = 0): void {
+  for (const child of children) {
+    child.write(`${assistantEnd("answer")}\n`);
+    child.exit(code);
+  }
+}
+
+function sentIds(message: Record<string, unknown>): string[] {
+  const details = message.details as Record<string, unknown>;
+  if (details.batched) return (details.notes as Array<{ id: string }>).map((note) => note.id);
+  return [details.id as string];
+}
+
+describe("T92–T100 — burst batching on the notification wire (deferral pkg P3)", () => {
+  test("T92 (PIN): an isolated completion behaves exactly as v1 — lead sent immediately, no batch flag", async () => {
+    h = makeHarness();
+    await callDelegate({ agent: "architect", task: "t" }, makeCtx());
+    h.children[0]!.write(`${assistantEnd("solo answer")}\n`);
+    h.children[0]!.exit(0);
+
+    expect(h.sent).toHaveLength(1); // zero added latency — the lead does not wait for the window
+    const { message, options } = h.sent[0]!;
+    expect(message.customType).toBe("delegation-result");
+    expect(String(message.content)).toContain("completed");
+    expect(String(message.content)).toContain("solo answer");
+    expect(message.display).toBe(true);
+    expect((message.details as Record<string, unknown>).batched).toBeUndefined();
+    expect((message.details as Record<string, unknown>).id).toBe("d-1");
+    expect(options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+  });
+
+  test("T93: a second same-tick completion is held, then flushed as a normal single card", async () => {
+    h = makeHarness("tui", { batchWindowMs: 100 });
+    await callDelegate({ agent: "architect", task: "one" }, makeCtx(), undefined, "call-1");
+    await callDelegate({ agent: "architect", task: "two" }, makeCtx(), undefined, "call-2");
+    burst(h.children);
+
+    expect(h.sent).toHaveLength(1); // the lead; the second arrival is held inside the window
+
+    await drainBatchWindow(); // window expiry flushes the held note
+
+    expect(h.sent).toHaveLength(2);
+    const second = h.sent[1]!.message;
+    expect((second.details as Record<string, unknown>).batched).toBeUndefined(); // a flush of one = a normal card
+    expect((second.details as Record<string, unknown>).id).toBe("d-2");
+    expect(String(second.content)).toContain("completed");
+  });
+
+  test("T94: a three-note burst collapses to lead + one batched message in settle order", async () => {
+    h = makeHarness("tui", { batchWindowMs: 100 });
+    for (let i = 1; i <= 3; i++) await callDelegate({ agent: "architect", task: `t${i}` }, makeCtx(), undefined, `call-${i}`);
+    burst(h.children);
+
+    expect(h.sent).toHaveLength(1);
+
+    await drainBatchWindow();
+
+    expect(h.sent).toHaveLength(2);
+    const batch = h.sent[1]!.message;
+    expect((batch.details as Record<string, unknown>).batched).toBe(true);
+    expect(sentIds(batch)).toEqual(["d-2", "d-3"]); // settle order, never the lead again
+    expect(String(batch.content)).toContain("———"); // the card divider
+  });
+
+  test("T95: a full 6-card batch never exceeds 8 KB — every card capped with a drop marker", async () => {
+    h = makeHarness(); // default window (2000 ms) — the capacity flush lands synchronously
+    for (let i = 1; i <= 7; i++) await callDelegate({ agent: "architect", task: `t${i}` }, makeCtx(), undefined, `call-${i}`);
+    for (const child of h.children) {
+      child.write(`${assistantEnd("x".repeat(10 * 1024))}\n`);
+      child.exit(0);
+    }
+
+    expect(h.sent).toHaveLength(2); // lead + capacity flush of 6 — no window wait needed
+    const batch = h.sent[1]!.message;
+    const content = String(batch.content);
+    expect(content.length).toBeLessThanOrEqual(8192); // T71's whole-message cap, now under batching
+    expect((batch.details as Record<string, unknown>).batched).toBe(true);
+    expect((batch.details as Record<string, unknown>).notes).toHaveLength(6);
+    expect((content.match(/earlier characters dropped/g) ?? []).length).toBe(6); // every card capped
+    expect((content.match(/Delegation d-\d+ \(architect\)/g) ?? []).length).toBe(6); // one verdict per card
+  });
+
+  test("T96: an 8-note burst costs 3 sends — lead, batch of 6, single tail (capacity flush keeps the window)", async () => {
+    h = makeHarness("tui", { batchWindowMs: 100 });
+    for (let i = 1; i <= 8; i++) await callDelegate({ agent: "architect", task: `t${i}` }, makeCtx(), undefined, `call-${i}`);
+    burst(h.children);
+
+    expect(h.sent).toHaveLength(2); // lead + the capacity flush of 6, synchronously
+
+    await drainBatchWindow(); // the window stayed open through the capacity flush → the tail rides out
+
+    expect(h.sent).toHaveLength(3);
+    expect((h.sent[1]!.message.details as Record<string, unknown>).batched).toBe(true);
+    expect(sentIds(h.sent[1]!.message)).toHaveLength(6);
+    expect((h.sent[2]!.message.details as Record<string, unknown>).batched).toBeUndefined(); // single tail card
+    expect((h.sent[2]!.message.details as Record<string, unknown>).id).toBe("d-8");
+  });
+
+  test("T97: per-run uniqueness across lead and batches — every id delivered exactly once", async () => {
+    h = makeHarness("tui", { batchWindowMs: 100 });
+    for (let i = 1; i <= 8; i++) await callDelegate({ agent: "architect", task: `t${i}` }, makeCtx(), undefined, `call-${i}`);
+    burst(h.children);
+    await drainBatchWindow();
+
+    const ids = h.sent.flatMap((send) => sentIds(send.message as Record<string, unknown>));
+    expect(ids).toHaveLength(8);
+    expect(new Set(ids).size).toBe(8); // R5/T70 uniqueness survives batching (RR6)
+  });
+
+  test("T98: shutdown flushes the held batch exactly once, then silence; an empty expiry sends nothing", async () => {
+    h = makeHarness("tui", { batchWindowMs: 100 });
+    for (let i = 1; i <= 4; i++) await callDelegate({ agent: "architect", task: `t${i}` }, makeCtx(), undefined, `call-${i}`);
+    h.children[0]!.exit(0); // lead
+    h.children[1]!.exit(0); // held
+    h.children[2]!.exit(0); // held (2 cards → the shutdown flush is a real batch)
+    expect(h.sent).toHaveLength(1);
+
+    fireSessionShutdown();
+
+    expect(h.sent).toHaveLength(2); // the held batch rode out exactly once
+    const flushed = h.sent[1]!.message;
+    expect((flushed.details as Record<string, unknown>).batched).toBe(true);
+    expect(sentIds(flushed)).toEqual(["d-2", "d-3"]);
+
+    h.children[3]!.exit(0); // further settle after shutdown → the stopped wire drops it
+    await drainBatchWindow(); // the window timer was cleaned — no expiry work, no phantom sends
+    expect(h.sent).toHaveLength(2);
+  });
+
+  test("T98 (continued): a window expiry over an empty buffer sends nothing", async () => {
+    h = makeHarness("tui", { batchWindowMs: 100 });
+    await callDelegate({ agent: "architect", task: "t" }, makeCtx());
+    h.children[0]!.exit(0); // the lead alone
+
+    await drainBatchWindow();
+
+    expect(h.sent).toHaveLength(1); // no empty batch message ever
+  });
+
+  test("T99: the renderer styles each batch card by its own state; a details-less message falls back", () => {
+    h = makeHarness();
+    const renderer = h.renderers.get("delegation-result")!;
+    const fgCalls: Array<[string, string]> = [];
+    const recordingTheme = {
+      fg: (color: string, text: string) => {
+        fgCalls.push([color, text]);
+        return text;
+      },
+      bg: (_color: string, text: string) => text,
+    };
+    const failed = { id: "d-1", agent: "architect", task: "t", state: "failed", spawnError: "spawn ENOENT", answer: "" } as DelegationNote;
+    const exited = { id: "d-2", agent: "architect", task: "t", state: "completed", exitCode: 1, answer: "" } as DelegationNote;
+    const aborted = { id: "d-3", agent: "architect", task: "t", state: "aborted", answer: "" } as DelegationNote;
+    const clean = { id: "d-4", agent: "architect", task: "t", state: "completed", exitCode: 0, answer: "fine" } as DelegationNote;
+    const cards = [failed, exited, aborted, clean];
+
+    const component = renderer(
+      {
+        customType: "delegation-result",
+        content: cards.map((card) => notificationVerdict(card)).join("\n\n———\n\n"),
+        display: true,
+        details: { batched: true, notes: cards },
+      },
+      { expanded: false, outputPad: 0 },
+      recordingTheme,
+    ) as { render(width: number): string[] };
+
+    expect(component).toBeDefined();
+    const rendered = component.render(120).join("\n");
+    expect(rendered).toContain("Delegation d-1 (architect) failed to start");
+    expect(rendered).toContain("Delegation d-2 (architect) exited 1");
+    expect(rendered).toContain("Delegation d-3 (architect) aborted");
+    expect(rendered).toContain("Delegation d-4 (architect) completed");
+    // the single-path classification, per card: failed AND exited-N → error; aborted → warning; clean → success
+    expect(fgCalls.map(([color]) => color)).toEqual(["error", "error", "warning", "success"]);
+
+    // fallback: a message without batch details renders the plain body box (single path)
+    fgCalls.length = 0;
+    const plain = renderer(
+      { customType: "delegation-result", content: "Delegation d-9 (architect) completed.\nbody", display: true, details: { id: "d-9" } },
+      { expanded: false, outputPad: 0 },
+      recordingTheme,
+    ) as { render(width: number): string[] };
+    expect(plain.render(80).join("\n")).toContain("body");
+    expect(fgCalls.map(([color]) => color)).toEqual(["success"]);
+  });
+
+  test("T100: dep overrides — batchWindowMs 0 batches same-tick arrivals; batchMaxCards 2 splits a 5-burst", async () => {
+    h = makeHarness("tui", { batchWindowMs: 0, batchMaxCards: 2 });
+    for (let i = 1; i <= 5; i++) await callDelegate({ agent: "architect", task: `t${i}` }, makeCtx(), undefined, `call-${i}`);
+    burst(h.children); // all five inside the same synchronous stack — a 0 ms window still holds them
+
+    expect(h.sent).toHaveLength(3); // lead + 2 + 2
+    expect((h.sent[0]!.message.details as Record<string, unknown>).batched).toBeUndefined();
+    expect(sentIds(h.sent[1]!.message)).toEqual(["d-2", "d-3"]);
+    expect((h.sent[1]!.message.details as Record<string, unknown>).batched).toBe(true);
+    expect(sentIds(h.sent[2]!.message)).toEqual(["d-4", "d-5"]);
+
+    await drainBatchWindow(); // the 0 ms expiry over an empty buffer sends nothing
+    expect(h.sent).toHaveLength(3);
+  });
+});

@@ -74,6 +74,15 @@ export const RESULT_CUSTOM_TYPE = "delegation-result";
 /** Answer-tail budget of the delegation-result card: the whole message content stays ≤ 8 KB (T71). */
 export const NOTIFICATION_CAP_CHARS = 8 * 1024;
 
+/** RR3: the coalesce window opened after a lead card, ms — held notes flush when it expires. */
+export const BATCH_WINDOW_MS = 2000;
+
+/** RR3: batch size cap — a capacity flush fires at this many held notes (the window stays open). */
+export const BATCH_MAX_CARDS = 6;
+
+/** RR3: separator between cards in a batched delegation-result message (content and renderer). */
+export const BATCH_SEPARATOR = "\n\n———\n\n";
+
 /** R4: the durable per-run log dir, outside every git repo. Injectable via deps for tests. */
 export const DEFAULT_LOG_DIR = join(homedir(), ".pi", "agent", "subagent-logs");
 
@@ -256,6 +265,11 @@ export interface SubagentDeps {
   cap?: number;
   /** R7 queue cap override; default 16. */
   queueCap?: number;
+  /** RR3 batching window override, ms (tests). Default 2000. 0 is legal: same-tick arrivals
+   * still batch, because the window timer is a macrotask. */
+  batchWindowMs?: number;
+  /** RR3 batch size cap override (tests). Default 6. */
+  batchMaxCards?: number;
 }
 
 /** Receipt details (row 45, §4): the background tool result's `details`. */
@@ -318,12 +332,29 @@ export function notificationVerdict(note: DelegationNote): string {
  * Truncation keeps the TAIL (the answer lives at the end) and marks the drop capTail-style, so
  * marker + tail together fit the room exactly and the whole card stays ≤ 8 KB (T71).
  */
-function capIntoBudget(text: string, used: number): string {
-  const room = NOTIFICATION_CAP_CHARS - used;
+/**
+ * The one card-tone classification (T99): failed, or completed with a non-zero exit ("exited N"),
+ * renders error; aborted renders warning; everything else success. Shared by the single-card
+ * and batched renderer branches so the two paths can never drift.
+ */
+function cardTone(note: DelegationNote | undefined): "error" | "warning" | "success" {
+  if (note?.state === "failed" || (note?.state === "completed" && (note.exitCode ?? 0) !== 0)) return "error";
+  if (note?.state === "aborted") return "warning";
+  return "success";
+}
+
+/**
+ * Cap `text` into a budget: what remains of `budget` after `used` characters (default: the
+ * whole-card NOTIFICATION_CAP_CHARS). Truncation keeps the TAIL (the answer lives at the end)
+ * and marks the drop capTail-style, so marker + tail together fit the room exactly and the
+ * whole card stays ≤ budget (T71; the batch path passes per-card budgets, T95).
+ */
+function capIntoBudget(text: string, used: number, budget: number = NOTIFICATION_CAP_CHARS): string {
+  const room = budget - used;
   if (text.length <= room) return text;
   const marker = (dropped: number) => `[...${dropped} earlier characters dropped]\n`;
   let tailLength = room - marker(text.length).length;
-  if (tailLength <= 0) return "(over the 8 KB card budget — see the run log)";
+  if (tailLength <= 0) return `(over the ${Math.max(1, Math.floor(budget / 1024))} KB card budget — see the run log)`;
   let head = marker(text.length - tailLength);
   if (head.length + tailLength > room) {
     tailLength = room - head.length;
@@ -336,7 +367,7 @@ function capIntoBudget(text: string, used: number): string {
  * The delegation-result card body (R5): verdict line, usage + log path meta line, then the
  * answer tail capped so the WHOLE content stays ≤ NOTIFICATION_CAP_CHARS (T71).
  */
-export function notificationContent(note: DelegationNote): string {
+export function notificationContent(note: DelegationNote, budget: number = NOTIFICATION_CAP_CHARS): string {
   const lines: string[] = [notificationVerdict(note)];
   const meta: string[] = [];
   const usage = formatUsage(note.usage);
@@ -347,16 +378,27 @@ export function notificationContent(note: DelegationNote): string {
   let used = lines.join("\n").length;
   const answer = note.answer.trim();
   if (answer) {
-    const capped = capIntoBudget(answer, used + 2);
+    const capped = capIntoBudget(answer, used + 2, budget);
     lines.push("", capped);
     used = lines.join("\n").length;
   }
   const stderr = note.stderrTail?.trim();
   if (stderr) {
-    const capped = capIntoBudget(`stderr: ${stderr}`, used + 2);
+    const capped = capIntoBudget(`stderr: ${stderr}`, used + 2, budget);
     lines.push("", capped);
   }
   return lines.join("\n");
+}
+
+/**
+ * The batched message body (RR3): per-card contents joined by BATCH_SEPARATOR, each card capped
+ * to floor((NOTIFICATION_CAP_CHARS - (n-1) * separator) / n) so the WHOLE message stays ≤ 8 KB
+ * (T71/T95) for any n within the BATCH_MAX_CARDS count cap.
+ */
+export function composeBatchContent(notes: DelegationNote[]): string {
+  const n = notes.length;
+  const budget = Math.floor((NOTIFICATION_CAP_CHARS - (n - 1) * BATCH_SEPARATOR.length) / n);
+  return notes.map((note) => notificationContent(note, budget)).join(BATCH_SEPARATOR);
 }
 
 // ------------------------------------------------------------------ log dir (R4/R10)
@@ -470,6 +512,8 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
 
   const logDir = deps.logDir ?? DEFAULT_LOG_DIR;
   const now = deps.now ?? Date.now;
+  const batchWindowMs = deps.batchWindowMs ?? BATCH_WINDOW_MS;
+  const batchMaxCards = deps.batchMaxCards ?? BATCH_MAX_CARDS;
 
   // Notes and per-run progress subscribers key by run id. Notes: the blocking path reads the
   // run's note (answer/stderr tails) after awaiting `done`; capped, because background runs
@@ -479,24 +523,70 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   const notes = new Map<string, DelegationNote>();
   const latestProgress = new Map<string, DelegationProgress>();
   const progressSubscribers = new Map<string, (progress: DelegationProgress) => void>();
+  /** RR3: notes held inside an open batch window; each is delivered exactly once (T97). */
+  let heldNotes: DelegationNote[] = [];
+  let batchWindowTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const closeBatchWindow = (): void => {
+    if (batchWindowTimer !== undefined) {
+      clearTimeout(batchWindowTimer);
+      batchWindowTimer = undefined;
+    }
+  };
+
+  /** One followUp for 1..n cards: a single card is the v1 shape byte-identical (T92); 2+ cards
+   * render as one batched message with per-card notes in details (RR3). Empty input sends
+   * nothing — a window expiry over an empty buffer is a no-op, never an empty batch (T98). */
+  const sendCards = (cards: DelegationNote[]): void => {
+    if (cards.length === 0) return;
+    if (cards.length === 1) {
+      const note = cards[0]!;
+      pi.sendMessage(
+        { customType: RESULT_CUSTOM_TYPE, content: notificationContent(note), display: true, details: { ...note } },
+        { deliverAs: "followUp", triggerTurn: true },
+      );
+      return;
+    }
+    pi.sendMessage(
+      {
+        customType: RESULT_CUSTOM_TYPE,
+        content: composeBatchContent(cards),
+        display: true,
+        details: { batched: true, notes: cards.map((card) => ({ ...card })) },
+      },
+      { deliverAs: "followUp", triggerTurn: true },
+    );
+  };
+
+  const flushHeldNotes = (): void => {
+    const cards = heldNotes;
+    heldNotes = [];
+    sendCards(cards);
+  };
 
   /** R5's single notification wire: exactly one followUp per terminal transition (row 38: the
-   * registry drops notifications after shutdown, so this is never called for those). */
+   * registry drops notifications after shutdown, so this is never called for those). Batching
+   * (RR3/RR6) sits BELOW that wire: the lead card of a quiet period is delivered immediately
+   * (zero added latency, T92); notes arriving while the window is open are held and flush when
+   * the window expires or the batch reaches BATCH_MAX_CARDS, whichever comes first — a capacity
+   * flush does not close the window (T96). Each note is delivered exactly once, as the lead or
+   * inside exactly one batch (T97); T70's double-close pin is upstream and unaffected. */
   const deliverNote = (note: DelegationNote): void => {
     notes.set(note.id, note);
     if (notes.size > 64) {
       const oldest = notes.keys().next().value;
       if (oldest !== undefined) notes.delete(oldest);
     }
-    pi.sendMessage(
-      {
-        customType: RESULT_CUSTOM_TYPE,
-        content: notificationContent(note),
-        display: true,
-        details: { ...note },
-      },
-      { deliverAs: "followUp", triggerTurn: true },
-    );
+    if (batchWindowTimer === undefined) {
+      sendCards([note]);
+      batchWindowTimer = setTimeout(() => {
+        batchWindowTimer = undefined;
+        flushHeldNotes();
+      }, batchWindowMs);
+    } else {
+      heldNotes.push(note);
+      if (heldNotes.length >= batchMaxCards) flushHeldNotes();
+    }
   };
 
   /** R4's per-run log sink factory: `~/.pi/agent/subagent-logs/<runId>.jsonl`, dir 0o700, file 0o600. */
@@ -531,9 +621,13 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       ? { emit: (transition: DelegationTransition) => pi.events.emit(TRANSITION_CHANNEL, transition) }
       : {}),
     // T73: ids allocate over the LIVE log dir listing, past the highest id ever seen — a
-    // restarted session never reuses an id, so `delegations log d-N` stays unambiguous.
-    allocateId: () =>
-      allocateRunId(
+    // restarted session never reuses an id, so `delegations log d-N` stays unambiguous. The
+    // closure also excludes the registry's live records: a queued run has no log file yet, so
+    // without that check, concurrent queueing (a 7-panel burst) would allocate the same id
+    // twice — exposed by T95–T97 and fixed here, not in the frozen core allocator.
+    allocateId: (): string => {
+      const live: Set<string> = new Set(registry.list().map((record: DelegationRecord) => record.id));
+      return allocateRunId(
         (() => {
           try {
             return readdirSync(logDir).filter((name) => name.endsWith(".jsonl")).map((name) => name.replace(/\.jsonl$/, ""));
@@ -541,8 +635,9 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
             return [];
           }
         })(),
-        (candidate) => existsSync(join(logDir, `${candidate}.jsonl`)),
-      ),
+        (candidate) => existsSync(join(logDir, `${candidate}.jsonl`)) || live.has(candidate),
+      );
+    },
   });
 
   pi.on("session_start", () => {
@@ -565,9 +660,12 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   });
 
   // R8: session_shutdown = SIGTERM → grace → SIGKILL via the registry, which also drops every
-  // notification from here on (row 38) and empties the records. Delegations do not outlive
-  // the session; the runtime teardown re-runs this factory with a fresh registry.
+  // notification from here on (row 38) and empties the records. The held batch rides out FIRST
+  // — those notes were accepted through the wire before the shutdown (T98/T104). Delegations do
+  // not outlive the session; the runtime teardown re-runs this factory with a fresh registry.
   pi.on("session_shutdown", () => {
+    closeBatchWindow();
+    flushHeldNotes();
     registry.shutdown();
   });
 
@@ -577,14 +675,27 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   registerDelegationStatus(pi, registry);
 
   // T72: the compact card the delegation-result followUp renders through in the transcript.
+  // Batched messages (RR3) render as ONE box whose per-card verdict lines are styled by each
+  // card's own state using the SAME classification as the single-card path (T99) — a completed
+  // exitCode-1 card is error-styled, not success. A message without batch details falls back
+  // to the plain body box, so unknown senders degrade safely.
   pi.registerMessageRenderer(RESULT_CUSTOM_TYPE, (message, options, theme) => {
     const body = typeof message.content === "string" ? message.content : "";
     if (!body) return undefined;
-    const note = message.details as DelegationNote | undefined;
-    const lines = body.split("\n");
-    const failed = note?.state === "failed" || (note?.state === "completed" && (note.exitCode ?? 0) !== 0);
-    const head = theme.fg(failed ? "error" : note?.state === "aborted" ? "warning" : "success", lines[0] ?? "");
+    const details = message.details as (DelegationNote & { batched?: boolean; notes?: DelegationNote[] }) | undefined;
     const box = new Box(options.outputPad, 1, (line: string) => theme.bg("customMessageBg", line));
+    if (details?.batched && Array.isArray(details.notes) && details.notes.length > 0) {
+      const cardBodies = body.split(BATCH_SEPARATOR);
+      const blocks = details.notes.map((card, index) => {
+        const lines = (cardBodies[index] ?? "").split("\n");
+        const head = theme.fg(cardTone(card), lines[0] ?? "");
+        return [head, ...lines.slice(1)].join("\n");
+      });
+      box.addChild(new Text(blocks.join(BATCH_SEPARATOR), 0, 0));
+      return box;
+    }
+    const lines = body.split("\n");
+    const head = theme.fg(cardTone(details), lines[0] ?? "");
     box.addChild(new Text([head, ...lines.slice(1)].join("\n"), 0, 0));
     return box;
   });

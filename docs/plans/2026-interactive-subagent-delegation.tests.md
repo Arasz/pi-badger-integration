@@ -154,3 +154,27 @@ aborted" — the 1m00s zero-pad shape stays pinned exactly by T88 at the pure-fu
 | T89 | P2 | tests/subagent-status.test.ts + tests/delegation-core.test.ts | list/wait and panel render the timeout | record with `abortReason "timeout"` → describeRecord `aborted (timeout)`; renderRunLine renders the same; user-aborted runs render plain `aborted` | AC-T7 |
 | T90 | P2 | tests/subagent-extension.test.ts | blocking result names the timeout | `background:false`, `timeoutMs: 1000`, drive expiry → content contains `timed out (limit 1s) and was aborted`, `details.exitCode` null | AC-T7 |
 | T91 | P2 | tests/subagent-extension.test.ts + tests/subagent-status.test.ts | description text updated | delegate + delegations descriptions drop "no automatic per-run timeout", both name `timeoutMs`; background param sentence gone; param description states floor (1000 ms), cap (86400000), kill path (SIGTERM), spawn-started clock | AC-T8 |
+
+### Pkg P3 rows — burst batching (committed with the P3 code)
+
+Witnessed red: T93–T100 failed pre-implementation — every same-tick completion sent its own
+message immediately (2-burst → 2 sends, 3-burst → 3, 5-burst → 5) and the renderer had no batch
+branch; T92 (PIN) was green by construction and mutation-validated (forcing the batch shape onto
+single sends turns T92 — and rows 46/T69/T93/T96/T100 — red). Plan conflict recorded: the
+7–8-run burst fixtures exposed a pre-existing T73 wiring race — `allocateId` read only the log
+dir, and a QUEUED run has no log file yet, so concurrent queueing re-allocated the same id and
+the registry overwrote its record/request (T95–T97 unpassable). Fixed minimally in the index.ts
+allocateId closure (live registry records join the exists check); the frozen core allocator is
+untouched. T97's uniqueness assertion is the pin for that fix.
+
+| id | pkg | file | test | arrange → act → assert | AC |
+|----|-----|------|------|------------------------|-----|
+| T92 | P3 | tests/subagent-extension.test.ts | isolated completion unchanged (PIN) | one child exit → one sendMessage, v1 customType/content/display/details-spread/deliverAs/triggerTurn, no batch flag | AC-T9 |
+| T93 | P3 | tests/subagent-extension.test.ts | second same-tick completion held, flushed as a normal card | two exits same tick → 1 send before drain, 2 after; second has no batch flag | AC-T10 |
+| T94 | P3 | tests/subagent-extension.test.ts | three-note burst → lead + batched message | three exits same tick → 2 sends; second `details.batched`, `details.notes` ids = d-2, d-3 in settle order, divider in content | AC-T10 |
+| T95 | P3 | tests/subagent-extension.test.ts | batch content capped at 8 KB | 7 runs (lead + 6 held), 10 KB answers → capacity flush → content ≤ 8192, 6 drop markers, 6 verdict lines each exactly once | AC-T11 |
+| T96 | P3 | tests/subagent-extension.test.ts | capacity flush keeps the window open | 8-note burst → 3 sends: lead, batch of 6 (batched), single tail card | AC-T10 |
+| T97 | P3 | tests/subagent-extension.test.ts | per-run uniqueness across lead and batches | 8-note burst → ids over all sends → each id exactly once (also pins the allocateId live-record fix) | AC-T12 |
+| T98 | P3 | tests/subagent-extension.test.ts | shutdown flushes once, then silence; empty expiry is a no-op | lead + 2 held + 1 live → session_shutdown → one batched flush, further exits silent, no phantom sends after drain; a window expiry over an empty buffer sends nothing | AC-T13 |
+| T99 | P3 | tests/subagent-extension.test.ts | batch renderer + fallback | batch message: failed + completed-exit-1 cards styled error, aborted warning, clean success (single-path classification); details-less message → plain body box | AC-T14 |
+| T100 | P3 | tests/subagent-extension.test.ts | dep overrides | `batchWindowMs: 0` batches same-tick arrivals; `batchMaxCards: 2` → 5-burst → lead + 2 + 2, empty expiry silent | AC-T10 |
