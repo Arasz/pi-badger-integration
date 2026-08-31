@@ -922,8 +922,9 @@ function blockingContent(
     state: DelegationState;
     exitCode?: number | null;
     spawnError?: string;
-    abortReason?: "timeout";
+    abortReason?: "timeout" | "lost";
     timeoutMs?: number;
+    watchdogMs?: number;
   },
   note: DelegationNote | undefined,
   personaName: string,
