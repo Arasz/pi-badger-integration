@@ -569,6 +569,23 @@ describe("T89 — renderRunLine renders a timed-out run (deferral pkg P2)", () =
   });
 });
 
+// ------------------------------------------------------------------ T115: renderRunLine lost branch (pkg P2)
+
+describe("T115 — renderRunLine renders a lost run (pkg P2)", () => {
+  test("an aborted run with abortReason 'lost' renders 'aborted (lost)' (panel + reconstruction path)", () => {
+    const line = renderDelegationStatus(
+      [{ id: "d-2", agent: "architect", state: "aborted", abortReason: "lost", startedAt: NOW - 60_000 }],
+      NOW,
+    );
+    expect(line).toBe("d-2 architect — aborted (lost)");
+  });
+
+  test("a user-aborted run still renders plain 'aborted'", () => {
+    const line = renderDelegationStatus([{ id: "d-3", agent: "beta", state: "aborted", startedAt: NOW }], NOW);
+    expect(line).toBe("d-3 beta — aborted");
+  });
+});
+
 // ------------------------------------------------------------------ T105: RR5 accounting pin (deferral pkg P4)
 
 describe("T105 — a timed-out run's log classifies lost (RR5 pin, deferral pkg P4)", () => {

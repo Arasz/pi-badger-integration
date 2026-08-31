@@ -24,7 +24,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeChild } from "./helpers/fake-child.ts";
-import { AGENTS_DIR } from "../extensions/subagent/index.ts";
+import { AGENTS_DIR, pidAlive } from "../extensions/subagent/index.ts";
 import subagent from "../extensions/subagent/index.ts";
 import {
   BATCH_SEPARATOR,
@@ -892,6 +892,87 @@ describe("T92–T100 — burst batching on the notification wire (deferral pkg P
 
     await drainBatchWindow(); // the 0 ms expiry over an empty buffer sends nothing
     expect(h.sent).toHaveLength(3);
+  });
+});
+
+// ------------------------------------------------------------------ T114/T115/S3: registry visibility, lost verdict, probe pin (pkg P2)
+
+describe("T114 — registry empty ≠ blind (RR1, pkg P2)", () => {
+  const runList = async (params: Record<string, unknown>) => {
+    const tool = h.tools.get("delegations") as {
+      execute(toolCallId: string, params: Record<string, unknown>, signal: undefined, onUpdate: undefined, ctx: unknown): Promise<DelegateResult>;
+    };
+    return tool.execute("call-0", params, undefined, undefined, makeCtx());
+  };
+
+  test("zero runs: the delegations tool AND the /delegations panel identify the emptiness with stats", async () => {
+    h = makeHarness();
+
+    const toolText = contentOf(await runList({ action: "list" }));
+    expect(toolText).toContain("registry empty");
+    expect(toolText).toContain("0 records");
+    expect(toolText).not.toContain("no delegations have been started");
+
+    await (h.commands.get("delegations") as { handler(args: string, ctx: unknown): Promise<void> }).handler("", makeCtx());
+    expect(h.notifications[h.notifications.length - 1]).toContain("registry empty");
+  });
+
+  test("one run: the tool lists the session's own run (the R0 repro — no self-blindness)", async () => {
+    h = makeHarness();
+    await callDelegate({ agent: "architect", task: "t" }, makeCtx());
+
+    const toolText = contentOf(await runList({ action: "list" }));
+    expect(toolText).toContain("d-1 architect");
+    expect(toolText).not.toContain("registry empty");
+  });
+
+  test("startup identifies the instance: session_start logs the extension version (RR1)", () => {
+    h = makeHarness();
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (message: unknown) => errors.push(String(message));
+    try {
+      fireSessionStart();
+    } finally {
+      console.error = original;
+    }
+    expect(errors.some((line) => line.includes("ai-badger subagent extension v"))).toBe(true);
+  });
+});
+
+describe("T115 — the lost verdict (pkg P2)", () => {
+  test("a lost note renders the silence verdict, naming the watchdog limit, never the elapsed runtime", () => {
+    const note = {
+      id: "d-2",
+      agent: "architect",
+      task: "t",
+      state: "aborted",
+      abortReason: "lost",
+      watchdogMs: 600_000,
+      durationMs: 610_000, // must not appear — the LIMIT is named, like the timeout verdict (T88)
+      answer: "",
+    } as DelegationNote;
+    expect(notificationVerdict(note)).toBe(
+      "Delegation d-2 (architect) stopped responding (no output for 10m00s) and was aborted.",
+    );
+
+    // a user abort still renders the plain verdict (no marker)
+    const userAbort = { id: "d-3", agent: "architect", task: "t", state: "aborted", durationMs: 5000, answer: "" } as DelegationNote;
+    expect(notificationVerdict(userAbort)).toBe("Delegation d-3 (architect) aborted in 5s.");
+  });
+});
+
+describe("S3 — the boolean pidAlive probe is unchanged and pinned (pkg P2)", () => {
+  test("live pid true, reaped pid false, EPERM-class liveness stays alive", () => {
+    expect(pidAlive(process.pid)).toBe(true);
+    expect(pidAlive(deadPid())).toBe(false);
+    // EPERM → alive: on a normal macOS/Linux host a non-root caller gets EPERM for pid 1
+    // (launchd/systemd, root-owned). Assert only where the condition is actually reachable.
+    try {
+      process.kill(1, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EPERM") expect(pidAlive(1)).toBe(true);
+    }
   });
 });
 

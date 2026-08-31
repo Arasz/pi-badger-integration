@@ -75,6 +75,25 @@ function isLive(record: DelegationRecord): boolean {
 	return record.state === "running" || record.state === "queued";
 }
 
+/** The three-way pid liveness result (RR3): report-only — never settles a run. */
+export type PidLiveness = "alive" | "dead" | "unknown";
+
+/**
+ * kill(pid, 0) three-way probe (RR3): ESRCH → dead, EPERM → unknown (the process exists but
+ * is not ours — never rendered as dead), a successful signal-0 kill → alive. Distinct from
+ * and coexisting with index.ts's boolean `pidAlive` (EPERM → alive) that feeds log-dir
+ * classification (S3) — that predicate is pinned and unchanged; this one only reports.
+ */
+export function probePid(pid: number): PidLiveness {
+	try {
+		process.kill(pid, 0);
+		return "alive";
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ESRCH") return "dead";
+		return "unknown";
+	}
+}
+
 export function clampLogTailBytes(bytes: number): number {
 	const value = typeof bytes === "number" && Number.isFinite(bytes) ? Math.round(bytes) : DEFAULT_LOG_TAIL_BYTES;
 	return Math.min(MAX_LOG_TAIL_BYTES, Math.max(MIN_LOG_TAIL_BYTES, value));
@@ -103,8 +122,11 @@ function taskExcerpt(task: string): string {
 	return oneLine.length > 100 ? `${oneLine.slice(0, 100)}…` : oneLine;
 }
 
-/** One line per record for the LLM tool's list/wait output — phase plus the task it maps to. */
-export function describeRecord(record: DelegationRecord, now: number): string {
+/** One line per record for the LLM tool's list/wait output — phase plus the task it maps to.
+ * When `probe` is given, RUNNING records with a pid gain a liveness segment (RR3): `alive`,
+ * `unknown`, or `lost (dead pid)` for a dead-but-unsettled run; settled and queued records
+ * skip the probe (N4). */
+export function describeRecord(record: DelegationRecord, now: number, probe?: (pid: number) => PidLiveness): string {
 	const parts: string[] = [`${record.id} ${record.agent}`];
 	switch (record.state) {
 		case "queued":
@@ -117,6 +139,10 @@ export function describeRecord(record: DelegationRecord, now: number): string {
 				const usage = formatUsage(record.usage);
 				if (usage) parts.push(usage);
 			}
+			if (probe && record.pid !== undefined) {
+				const liveness = probe(record.pid);
+				parts.push(liveness === "dead" ? "lost (dead pid)" : liveness);
+			}
 			break;
 		case "completed":
 			parts.push(record.exitCode != null && record.exitCode !== 0 ? `exited ${record.exitCode}` : "done");
@@ -125,7 +151,13 @@ export function describeRecord(record: DelegationRecord, now: number): string {
 			parts.push(record.spawnError ? `failed (${record.spawnError})` : "failed");
 			break;
 		case "aborted":
-			parts.push(record.abortReason === "timeout" ? "aborted (timeout)" : "aborted");
+			parts.push(
+				record.abortReason === "timeout"
+					? "aborted (timeout)"
+					: record.abortReason === "lost"
+						? "aborted (lost)"
+						: "aborted",
+			);
 			break;
 		case "lost":
 			parts.push("lost");
@@ -179,7 +211,8 @@ function unknownIdError(id: string): Error {
  * `DELEGATION_EVENTS_CHANNEL` for transition-driven widget rendering):
  *
  * ```ts
- * registerDelegationStatus(pi, registry, opts?: { widgetKey?: string; bytes?: number; now?: () => number }): void
+ * registerDelegationStatus(pi, registry, opts?: { widgetKey?: string; bytes?: number;
+ *   now?: () => number; probePid?: (pid: number) => PidLiveness }): void
  * ```
  *
  * `opts.widgetKey` — the ctx.ui.setWidget key (default "pi-badger-delegations").
@@ -187,14 +220,24 @@ function unknownIdError(id: string): Error {
  * the tool's per-call `bytes` parameter overrides it per call.
  * `opts.now` — the elapsed-time clock; MUST be the same injected clock the registry was built
  * with, because records carry that clock's `startedAt` (defaults to Date.now()).
+ * `opts.probePid` — the three-way liveness probe the list action runs per running record
+ * (RR3); defaults to the real kill(pid, 0) probe.
  */
 export function registerDelegationStatus(
 	pi: ExtensionAPI,
 	registry: DelegationRegistry,
-	opts?: { widgetKey?: string; bytes?: number; now?: () => number },
+	opts?: {
+		widgetKey?: string;
+		bytes?: number;
+		now?: () => number;
+		/** Three-way pid liveness probe for the list action (RR3); defaults to the real
+		 * `probePid`. Injectable so tests can stub EPERM-class outcomes. */
+		probePid?: (pid: number) => PidLiveness;
+	},
 ): void {
 	const widgetKey = opts?.widgetKey ?? DEFAULT_WIDGET_KEY;
 	const configuredLogBytes = clampLogTailBytes(opts?.bytes ?? DEFAULT_LOG_TAIL_BYTES);
+	const probePidFn = opts?.probePid ?? probePid;
 	// The elapsed clock: registries are built with an injected `now` (flake conventions), so the
 	// surfaces that render elapsed time must read the SAME clock, not their own Date.now().
 	const nowFn = opts?.now ?? (() => Date.now());
@@ -236,7 +279,7 @@ export function registerDelegationStatus(
 	}
 
 	function statusPanel(now: number): string {
-		return renderDelegationStatus(registry.list(), now) ?? "no delegations have been started";
+		return renderDelegationStatus(registry.list(), now) ?? "registry empty (0 records)";
 	}
 
 	function elapsedNow(): number {
@@ -305,9 +348,9 @@ export function registerDelegationStatus(
 		switch (params.action) {
 			case "list": {
 				const records = [...registry.list()].sort((a, b) => a.startedAt - b.startedAt);
-				if (records.length === 0) return textResult("no delegations have been started", { records: [] });
+				if (records.length === 0) return textResult("registry empty (0 records)", { records: [] }); // RR1: identify emptiness, never a blind "none"
 				const now = elapsedNow();
-				return textResult(records.map((record) => describeRecord(record, now)).join("\n"), { records });
+				return textResult(records.map((record) => describeRecord(record, now, probePidFn)).join("\n"), { records });
 			}
 			case "log": {
 				if (typeof params.id !== "string" || !params.id.trim()) {
