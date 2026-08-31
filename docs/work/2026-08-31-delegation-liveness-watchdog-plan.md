@@ -37,35 +37,49 @@ Both outcomes are acceptable task completions for R0; which one fired is reporte
 
 ### RR2 (R1): the watchdog is an inactivity timer beside the timeout timer
 
-Per-run `RunState.watchdogTimer`, armed at spawn alongside `timeoutTimer`, reset on every
-event the runner already handles (tee writes and `message_update` progress — the same
-places `liveUsage` updates). Fires only while unsettled → `abortRun` (R8's one kill path)
-→ settle `aborted` with `abortReason: "lost"` + `watchdogMs` on the record/note → the
-normal R5 notification. Composes with `timeoutMs` without sharing a timer: watchdog =
-no activity for N ms; timeout = wall clock since spawn; either settle clears both.
-Default `RUN_WATCHDOG_MS = 600_000`, dep-injectable `runWatchdogMs`, `0` = off = fixture
-idiom. The runner re-clamps positive values (floor 5_000 ms — shorter is meaningless
-against a streaming child; no upper bound needed, the timer self-resets).
+Per-run `RunState.watchdogTimer`, armed at spawn alongside `timeoutTimer`, reset in
+`handleLine` after each successfully parsed event, gated on `!state.settled` (S1: every
+stream event, not just `message_update` — a long silent tool call streaming
+`tool_execution_update` must not false-trip; the settled gate keeps the lost-settle →
+close → tail-flush path from re-arming an orphan watchdog). Fires only while unsettled →
+`abortRun` (R8's one kill path) → settle `aborted` with `abortReason: "lost"` +
+`watchdogMs` on the record/note → the normal R5 notification. Composes with `timeoutMs`
+without sharing a timer: watchdog = no activity for N ms; timeout = wall clock since spawn;
+**any settle clears both** (a timeout expiry is terminal — cleared, not "reset as
+activity", N3). Value clamped in the core helper: floor **1_000 ms** (S2: test rows drain
+in ~1.1 s like the timeout rows — the house `drainMacrotasks` idiom drives real timers,
+not injected-`now` arithmetic), cap **`RUN_TIMEOUT_MAX_MS`** (M1: the watchdog arms through
+the same `setTimeout` whose >2^31−1 ms clamp fires in ~1 ms — an uncapped injectable
+"3e9" would instantly abort every run `lost`; the cap is mandatory, not cosmetic).
+Default `RUN_WATCHDOG_MS = 600_000`, dep-injectable `runWatchdogMs` via the registry
+spread — a per-`RunState` timer, so no registry edit (N1), `0` = off = fixture idiom.
 
 Surfaces: verdict `Delegation d-2 (architect) stopped responding (no output for 10m00s) and
 was aborted.`; `describeRecord`/`renderRunLine` render `aborted (lost)` via the existing
-`abortReason` branches (S4 pattern from the timeout task). Verdicts render durations through
-`formatDuration` (zero-padded — `10m00s`), naming the configured threshold, never elapsed.
+`abortReason` branches (S4 pattern from the timeout task) — both branches get a row (S4).
+Verdicts render durations through `formatDuration` (zero-padded — `10m00s`), naming the
+configured threshold, never elapsed.
 
 ### RR3 (R2): the operator probe is read-only
 
-`delegations list` gains a `pid` liveness line per running record via `kill(pid, 0)`
+`delegations list` gains a `pid` liveness line per running record via a three-way probe
 (ESRCH → `dead`, EPERM → `unknown`, else `alive`; pid comes from the run header the runner
 already records). Dead-but-unsettled renders `lost (dead pid)`. No auto-settle in v1 — an
-explicit `abort` remains the settle path. `unknown` never renders as `dead`.
+explicit `abort` remains the settle path. `unknown` never renders as `dead`. The existing
+boolean `pidAlive` (EPERM → alive) that feeds `classifyFromLogDir` is UNCHANGED and pinned
+— the three-way probe is report-only and they coexist (S3).
 
 ### RR4 (R3): staleness is a pure classification
 
-`classifyFromLogDir` gains `stale`: a log with no terminal line whose injected mtime age
-exceeds a threshold parameter (default 600_000 ms, injected) — distinct from `lost` (pid
-dead) and from existing states, which keep their exact current outputs (pinned). Surfaced
-in the `delegations` tool when the registry is empty: reconstructed `stale` runs are listed
-with their log paths. Log format untouched — mtime is filesystem, not a line type.
+`classifyFromLogDir` gains `stale` — **with the M2 precedence fix**: at HEAD the tee writes
+only the header at spawn and the tail at close (stderr held in memory), so a live run's
+log mtime ≈ spawn time and mtime alone would brand every healthy 10-min cross-session run
+`stale`. Classification order: terminal lines first → pid-alive → `running` (never `stale`)
+→ then stale-vs-lost by mtime among pid-dead, terminal-line-less logs. Threshold parameter
+(default 600_000 ms, injected) — distinct from `lost` and from existing states, which keep
+their exact current outputs (pinned). Log format untouched — mtime is filesystem, not a
+line type. Surfaced in the `delegations` tool when the registry is empty: reconstructed
+`stale` runs are listed with their log paths.
 
 ## 2. Packages and serialisation
 
@@ -73,7 +87,7 @@ with their log paths. Log format untouched — mtime is filesystem, not a line t
 |-----|-------|-------|
 | P1 | `delegation-runner.ts`, `delegation-registry.ts`, `delegation-core.ts` (clamp+verdict helpers), `tests/delegation-runner.test.ts`, `tests/delegation-core.test.ts` | watchdog core; runner-only — no index.ts |
 | P2 | `index.ts` (R0 repro/guard + surfaces wiring), `delegation-status.ts` (probe), `tests/subagent-extension.test.ts`, `tests/subagent-status.test.ts` | depends on P1's fields |
-| P3 | `delegation-core.ts` (`classifyFromLogDir`), `index.ts` (empty-registry listing), `tests/delegation-core.test.ts` | independent of P2 except the index wiring — land after P2 |
+| P3 | `delegation-core.ts` (`classifyFromLogDir`), `delegation-status.ts` (owns the empty-registry list case — `runAction` inside `registerDelegationStatus`; the factory signature widens additively via `opts`, M3), `index.ts` (wiring) | land after P2 |
 | P4 | cross-feature integration tests + docs | last, mandatory |
 
 Strictly serial P1 → P2 → P3 → P4, one lane, **commit after every package** (the d-28
@@ -95,12 +109,12 @@ ACs:
 
 | id | file | test | arrange → act → assert | red-first |
 |----|------|------|--------------------------|-----------|
-| T108 | runner | inactivity expiry kills via the abort path | `runWatchdogMs: 5`, `escalateAfterMs: 0`, silent child, advance injected `now` past threshold + drain → signals `["SIGTERM","SIGKILL"]`, state `aborted` | NEW; mutation: direct settle or second kill path → red |
+| T108 | runner | inactivity expiry kills via the abort path | `runWatchdogMs: 1000` (S2 floor), `escalateAfterMs: 0`, silent child, `drainMacrotasks(1100)` → signals `["SIGTERM","SIGKILL"]`, state `aborted` | NEW; mutation: direct settle or second kill path → red |
 | T109 | runner | lost settle carries the marker, no exitCode, one note | same setup → note `abortReason: "lost"`, record mirrors it, no `exitCode` key | NEW; mutation: plain abort without marker → red |
-| T110 | runner | activity resets the deadline | two `message_update` bursts each just under threshold, spanning 2× threshold → completed normally, `signals: []` | NEW; mutation: arm-once-never-reset → red |
+| T110 | runner | activity resets the deadline | two parsed-event bursts (mixed types incl. tool events) each just under threshold, spanning 2× threshold via real drains → completed normally, `signals: []` | NEW; mutation: arm-once-never-reset → red; mutation: reset on message_update only → a tool-event-only run trips → red (S1) |
 | T111 | runner | natural close clears the watchdog | `exit(0)` before threshold → drain past it → completed, no signals | PIN-style (mirrors T81; mutation: remove clear → red) |
 | T112 | runner (registry) | shutdown with an armed watchdog notifies nothing | `shutdown()` pre-expiry → drain → notes empty | NEW |
-| T113 | runner | timeout expiry counts as activity; both timers clear on any settle | `timeoutMs: 5` fires → watchdog never fires after; a watchdog fire with `timeoutMs` armed settles once, not twice | NEW |
+| T113 | runner | timeout expiry clears the watchdog; both timers clear on any settle | `timeoutMs: 5` fires → watchdog never fires after; a watchdog fire with `timeoutMs` armed settles once, not twice | NEW |
 
 ### Pkg P2: visibility + operator surfaces
 
@@ -114,9 +128,9 @@ ACs:
 
 | id | file | test | arrange → act → assert | red-first |
 |----|------|------|--------------------------|-----------|
-| T114 | extension | registry empty ≠ blind: tool handler output identifies emptiness | harness + zero runs → delegations tool returns "registry empty" wording + stats; with one run → listed | Outcome A: NEW red (today's wording); Outcome B: NEW green guard + manual row |
-| T115 | extension | lost verdict line | note `{state:"aborted", abortReason:"lost", watchdogMs:600000}` → `stopped responding (no output for 10m00s) and was aborted.` exact string | NEW |
-| T116 | status | liveness probe | running record pid alive → `alive`; reaped pid → `lost (dead pid)`; EPERM stub → `unknown`; settled records skip the probe | NEW; mutation: EPERM rendered as dead → red |
+| T114 | extension | registry empty ≠ blind: tool AND panel output identify emptiness | harness + zero runs → delegations tool AND the `/delegations` statusPanel (N2) say "registry empty" wording + stats; with one run → listed | Outcome A: NEW red (today's wording in both surfaces); Outcome B: NEW green guard + manual row |
+| T115 | extension + core + status | lost verdict + both render branches | note `{state:"aborted", abortReason:"lost", watchdogMs:600000}` → verdict `stopped responding (no output for 10m00s) and was aborted.` exact string; `renderRunLine` and `describeRecord` render `aborted (lost)` (S4) | NEW |
+| T116 | status | liveness probe | running record pid alive → `alive`; reaped pid → `lost (dead pid)`; EPERM stub → `unknown`; settled records skip the probe; queued records (no pid) skip it (N4) | NEW; mutation: EPERM rendered as dead → red |
 
 ### Pkg P3: staleness classification
 
@@ -127,7 +141,7 @@ ACs:
 
 | id | file | test | arrange → act → assert | red-first |
 |----|------|------|--------------------------|-----------|
-| T117 | core | stale classification | header-only log, injected old mtime → `stale`; same + recent mtime → existing state; log with `exit` + old mtime → never `stale` | NEW |
+| T117 | core | stale classification with M2 precedence | header-only log, dead pid, old mtime → `stale`; **live pid + old mtime → `running`, never `stale`** (the tee writes mid-run are none — mtime ≈ spawn time, M2); same + recent mtime → existing state; log with `exit` + old mtime → never `stale` | NEW |
 | T118 | extension | empty registry + stale logs → listed with log paths | no runs; log dir with a stale file → delegations tool lists it as `stale` with path | NEW |
 
 ### Pkg P4: integration + documentation (mandatory last)
