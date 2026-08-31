@@ -1,17 +1,29 @@
 {
-  "lastUpdated": "2026-08-30T20:45:00Z",
+  "lastUpdated": "2026-08-31",
   "next": null,
   "completedTasks": [
+    {
+      "taskId": "pbi-delegation-timeout-and-burst-batching",
+      "title": "Deferred ledger: per-run timeoutMs (A12) + followUp burst batching (CR11)",
+      "finishedAt": "2026-08-31T13:20:00Z",
+      "summary": "Both \u00a710 deferred items landed (plan by architect d-21, reviewed execute-with-folds by code-reviewer d-26, implemented by api-engineer d-33 after one silent lane death, reviewed merge-ready by d-38 with folds applied). delegate gains timeoutMs (clamped 1s..24h at BOTH schema and runner timer sites \u2014 setTimeout overflows >2^31ms to 1ms); expiry rides the R8 abortRun path, settles aborted + abortReason:'timeout', verdict names the limit not elapsed (queue wait pollutes durationMs). deliverNote gained the RR3 batching machine: lead-immediate, 2000ms coalesce window, 6-card cap, per-card budgets floor((8192-(n-1)*sep)/n) \u2014 an n-burst costs 1+ceil((n-1)/6) turns; renderer shares the single-path cardTone. Drove out a real pre-existing bug: queued runs re-allocated the same id (T97 pin). R4 log contract untouched: timed-out runs settle abort-like (no exit line) and are unrecorded spend by ai-badger 0.149.0's M1 ruling (RR5, T105). M6 manual-evidence slot open (needs a live TUI).",
+      "decisions": [
+        "timeout = abort semantics, not a new state \u2014 the frozen R4 log format could never reconstruct a new state from a log; additive fields (abortReason/timeoutMs) carry the distinction",
+        "setTimeout clamps delays > 2^31-1 ms to ~1 ms (verified in Bun) \u2014 every runtime cap clamped at BOTH the tool-schema helper and the runner timer site; an uncapped 'no upper bound' ruling was a silent-miskill bug",
+        "batching threshold belongs on batch SIZE (6-card cap), not on arming \u2014 the first ~6 completions fire before any threshold could see them; lead-immediate preserves v1 latency and bytes for isolated completions",
+        "a delegation lane can die silently (d-28: pid gone, no exit line, no settle, no receipt) \u2014 commit-per-package caps the loss; liveness monitoring spec queued (docs/plans/2026-delegation-liveness-monitoring-spec.md)"
+      ]
+    },
     {
       "taskId": "pbi-interactive-background-subagent-delegation",
       "title": "Interactive background subagent delegation with progress and logs",
       "finishedAt": "2026-08-30T20:45:00Z",
-      "summary": "The delegate tool is background-by-default in interactive TUI sessions (auto = ctx.mode === 'tui'; headless stays blocking and byte-compatible plus details.usage): receipt returns immediately, exactly one delegation-result followUp (deliverAs followUp, triggerTurn) lands per terminal transition and wakes the idle agent. New delegations tool (list/log/abort/wait), /delegations command, widget for background/queued runs; children switched to --mode json with one line-buffered parser (usage accumulation, activity, silent-JSON fallback); logs teed to ~/.pi/agent/subagent-logs/<runId>.jsonl (run header with sessionId, 14-day prune, dir cap, per-run byte cap, sink-failure isolation); admission 4 running / 16 queued / loud reject; split kill paths (session_shutdown SIGTERM→5s→SIGKILL, process-exit sync SIGKILL); log-dir-only restart reconstruction, runIds never reused; session-signals gained a tick-defer (no 0-second footer flash) and watches delegations. 332 unit tests + 2 gated real-child smoke rows green; published to user scope, drift zero, fresh-session load functionally verified. Manual-evidence slots M1-M5 (H1 idle-wake, H5 visual, e2e x3) documented in docs/plans/2026-interactive-subagent-delegation.manual-evidence.md for the owner.",
+      "summary": "The delegate tool is background-by-default in interactive TUI sessions (auto = ctx.mode === 'tui'; headless stays blocking and byte-compatible plus details.usage): receipt returns immediately, exactly one delegation-result followUp (deliverAs followUp, triggerTurn) lands per terminal transition and wakes the idle agent. New delegations tool (list/log/abort/wait), /delegations command, widget for background/queued runs; children switched to --mode json with one line-buffered parser (usage accumulation, activity, silent-JSON fallback); logs teed to ~/.pi/agent/subagent-logs/<runId>.jsonl (run header with sessionId, 14-day prune, dir cap, per-run byte cap, sink-failure isolation); admission 4 running / 16 queued / loud reject; split kill paths (session_shutdown SIGTERM\u21925s\u2192SIGKILL, process-exit sync SIGKILL); log-dir-only restart reconstruction, runIds never reused; session-signals gained a tick-defer (no 0-second footer flash) and watches delegations. 332 unit tests + 2 gated real-child smoke rows green; published to user scope, drift zero, fresh-session load functionally verified. Manual-evidence slots M1-M5 (H1 idle-wake, H5 visual, e2e x3) documented in docs/plans/2026-interactive-subagent-delegation.manual-evidence.md for the owner.",
       "decisions": [
         "background auto-default keyed on ctx.mode==='tui', NOT ctx.hasUI (rpc also has UI and must not receive wake turns)",
-        "log dir at user scope (~/.pi/agent/subagent-logs): durable across reboots, git-clean in every project — and a de-facto cross-repo contract (ai-badger pi_session_source.delegation_usage will parse it; format changes need coordination)",
-        "fake-pi test harnesses must be pub/sub (handler ARRAYS per event): single-slot maps let a second extension's session_shutdown silently overwrite the first — caught as a W3 join failure, real pi.on fans out",
-        "two review-driven cuts kept the task landable: session-signals pi.events wire → 5-line tick-defer; branch-parsing reconstruction → log-dir-only (the log dir already holds everything)",
+        "log dir at user scope (~/.pi/agent/subagent-logs): durable across reboots, git-clean in every project \u2014 and a de-facto cross-repo contract (ai-badger pi_session_source.delegation_usage will parse it; format changes need coordination)",
+        "fake-pi test harnesses must be pub/sub (handler ARRAYS per event): single-slot maps let a second extension's session_shutdown silently overwrite the first \u2014 caught as a W3 join failure, real pi.on fans out",
+        "two review-driven cuts kept the task landable: session-signals pi.events wire \u2192 5-line tick-defer; branch-parsing reconstruction \u2192 log-dir-only (the log dir already holds everything)",
         "cold-start delegation children from fresh dirs take ~62s (one retry cycle): smoke watchdog 120s; headless MoE-panel consumers should pass background:false or use delegations wait",
         "plan docs live in docs/plans/ (plan + .tests.md contract + .research.md + manual-evidence); the 78-row test table is committed, never regenerate it from transcripts"
       ]
