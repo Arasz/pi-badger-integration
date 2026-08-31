@@ -7,4 +7,6 @@ __pycache__/
 .ai-badger/worktrees/
 # per-project task-tracking runtime state (write lock, executed-tasks, token usage)
 .ai-badger/task-tracking/
+# prompt-markers hook runtime state (feedback streak counter) — same as ai-badger's own repo
+.ai-badger/prompt-markers/
 .ai-badger.bckp/
