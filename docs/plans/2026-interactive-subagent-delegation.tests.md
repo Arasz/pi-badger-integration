@@ -218,8 +218,14 @@ RUN_TIMEOUT_MAX_MS per M1, 0 = off) re-clamped at the runner's arm site, so fixt
 logs on the same policy session_start applies anyway; bounded by the policy, accepted for
 v1, a prune-free classification entry point is the follow-up if it bites. NIT-3: the
 probe's EPERM→`unknown` branch is render-pinned but has no direct mutation witness
-(EPERM is not deterministically arrangeable) — recorded in the mutation ledger as an
-unwitnessed branch.
+(EPERM is not deterministically arrangeable) — now witnessed by T123 (patched-kill idiom; mutation flip -> red, witnessed).
+
+**Second review pass (owner: fix all findings).** SHOULD-1 upgraded from accepted to
+fixed: `reconstructFromLogDir` gained `{ prune?: boolean }` (default true — session_start
+unchanged) and the delegations stale query classifies prune-free. NIT-3 resolved: the
+EPERM branch has a direct witness.
+| T122 | extension suite | the stale query is prune-free | empty registry + a stale log older than LOG_MAX_AGE_MS -> list -> the tool lists it stale AND the file still exists | NEW red (reconstruction pruned it today: file gone after the query) |
+| T123 | status suite | probePid's EPERM branch witnessed directly | process.kill patched to throw EPERM -> probePid -> 'unknown', never 'dead' | PIN (green now); mutation: catch returns 'dead' -> red, witnessed |
 (no fake-timer library, no injected-`now` arithmetic, S2).
 
 Red-first: the core-file clamp rows failed to load pre-implementation (`Export named

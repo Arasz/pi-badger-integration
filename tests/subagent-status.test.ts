@@ -696,3 +696,19 @@ describe("T116 — liveness probe on the delegations list (RR3, pkg P2)", () => 
 		expect(queuedLine).not.toContain("alive");
 	});
 });
+
+describe("T123 — probePid's EPERM branch witnessed directly (d-52 NIT-3)", () => {
+  test("a process.kill EPERM failure reports 'unknown' — never 'dead'", () => {
+    const originalKill = process.kill;
+    process.kill = (() => {
+      const error = new Error("Operation not permitted") as NodeJS.ErrnoException;
+      error.code = "EPERM";
+      throw error;
+    }) as typeof process.kill;
+    try {
+      expect(probePid(12345)).toBe("unknown");
+    } finally {
+      process.kill = originalKill;
+    }
+  });
+});

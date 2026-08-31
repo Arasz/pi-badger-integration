@@ -1179,3 +1179,21 @@ describe("review folds (d-38): SHOULD-1 overrun + NIT-2 renderer guard", () => {
     expect(component.render(120).join("\n")).toContain("Delegation d-2 (architect) completed");
   });
 });
+
+describe("T122 — the stale query is prune-free (d-52 SHOULD-1)", () => {
+  test("empty-registry list surfaces a stale log WITHOUT retiring it", async () => {
+    h = makeHarness();
+    const stalePath = join(h.logDir, "d-9.jsonl");
+    // a run header, no terminal line — older than LOG_MAX_AGE_MS (mtime is the evidence)
+    writeFileSync(stalePath, `${JSON.stringify({ type: "run", runId: "d-9", agent: "architect", persona: "architect", task: "lost work", argv: ["-p"], cwd: "/p", pid: 424242, startedAt: NOW - 90 * 24 * 60 * 60 * 1000 })}\n`);
+    utimesSync(stalePath, new Date(NOW - 90 * 24 * 60 * 60 * 1000), new Date(NOW - 90 * 24 * 60 * 60 * 1000));
+
+    const tool = h.tools.get("delegations") as {
+      execute(toolCallId: string, params: Record<string, unknown>, signal: undefined, onUpdate: undefined, ctx: unknown): Promise<DelegateResult>;
+    };
+    const toolText = contentOf(await tool.execute("call-0", { action: "list" }, undefined, undefined, makeCtx()));
+    expect(toolText).toContain("stale");
+    expect(toolText).toContain("d-9");
+    expect(existsSync(stalePath)).toBe(true); // report-only: the evidence survives the query
+  });
+});

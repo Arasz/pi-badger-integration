@@ -464,7 +464,11 @@ function readLogLines(file: string): string[] {
  * caller of a pure function owns the side effects), then classify the surviving logs with P1's
  * classifier and a kill(pid,0)-style probe. Reconstruction never spawns, never notifies (T47).
  */
-export function reconstructFromLogDir(logDir: string, now: number): LogRunSummary[] {
+export function reconstructFromLogDir(
+  logDir: string,
+  now: number,
+  opts?: { prune?: boolean },
+): LogRunSummary[] {
   let entries: LogDirEntry[];
   try {
     entries = readdirSync(logDir)
@@ -474,20 +478,26 @@ export function reconstructFromLogDir(logDir: string, now: number): LogRunSummar
     return []; // no log dir yet — nothing to reconstruct
   }
 
-  const plan = pruneLogFiles(entries, now);
-  for (const name of plan.delete) {
-    try {
-      rmSync(join(logDir, name));
-    } catch {
-      // an unlink failure leaves the file; classification below still reads it
+  // d-52 SHOULD-1: a report-shaped query must not retire evidence logs. Pruning is the
+  // caller's policy (session_start); the delegations stale query classifies prune-free.
+  let kept: LogDirEntry[] = entries;
+  if (opts?.prune !== false) {
+    const plan = pruneLogFiles(entries, now);
+    for (const name of plan.delete) {
+      try {
+        rmSync(join(logDir, name));
+      } catch {
+        // an unlink failure leaves the file; classification below still reads it
+      }
     }
+    kept = entries.filter((entry) => !plan.delete.includes(entry.name));
   }
 
-  const mtimes = new Map(entries.map((entry) => [entry.name, entry.mtimeMs]));
-  const files: LogRunFile[] = plan.keep.map((name) => ({
-    id: name.replace(/\.jsonl$/, ""),
-    lines: readLogLines(join(logDir, name)),
-    mtimeMs: mtimes.get(name), // RR4: staleness needs the file's mtime — a frozen log is the evidence
+  const mtimes = new Map(kept.map((entry) => [entry.name, entry.mtimeMs]));
+  const files: LogRunFile[] = kept.map((entry) => ({
+    id: entry.name.replace(/\.jsonl$/, ""),
+    lines: readLogLines(join(logDir, entry.name)),
+    mtimeMs: mtimes.get(entry.name), // RR4: staleness needs the file's mtime — a frozen log is the evidence
   }));
   return classifyFromLogDir(files, pidAlive, { now }).map((summary) => ({
     ...summary,
@@ -731,7 +741,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   // frozen signature — the one instance of the registry this session constructed. RR4: the
   // status surface consults the log dir through the same reconstruction session_start uses,
   // so an empty registry still surfaces stale runs (the net that survives a dead runner).
-  registerDelegationStatus(pi, registry, { staleRuns: () => reconstructFromLogDir(logDir, now()) });
+  registerDelegationStatus(pi, registry, { staleRuns: () => reconstructFromLogDir(logDir, now(), { prune: false }) });
 
   // T72: the compact card the delegation-result followUp renders through in the transcript.
   // Batched messages (RR3) render as ONE box whose per-card verdict lines are styled by each
