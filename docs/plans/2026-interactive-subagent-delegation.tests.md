@@ -205,11 +205,21 @@ turns T105 (and row 14) red.
 Rows T108–T121 implement the liveness watchdog (RR2), the operator liveness surfaces (RR1/RR3)
 and the staleness classification (RR4) from
 `docs/work/2026-08-31-delegation-liveness-watchdog-plan.md`, which implements
-`docs/plans/2026-delegation-liveness-monitoring-spec.md`. Numbering continues the tables above;
-each package's rows are committed with the code that satisfies them. Clamp note: the watchdog
+`docs/plans/2026-delegation-liveness-monitoring-spec.md`. Numbering continues the tables above.
+The liveness rows landed in the single P4 commit (3821431) per the liveness plan's §4 ruling —
+unlike the timeout/batching rows, which landed per package. Clamp note: the watchdog
 value runs through `clampRunWatchdogMs` (default RUN_WATCHDOG_MS 600_000, floor 1 s, cap
 RUN_TIMEOUT_MAX_MS per M1, 0 = off) re-clamped at the runner's arm site, so fixture rows pass
 `runWatchdogMs: 1000` and drain ~1.1 s in real time — the same house idiom as the timeout rows
+
+**Review-fold notes (d-52).** SHOULD-1, accepted + documented: the empty-registry
+`delegations list` path runs the same reconstruction session_start uses, including its
+`rmSync` prune past `LOG_MAX_AGE_MS`/dir cap — a report-shaped query can retire evidence
+logs on the same policy session_start applies anyway; bounded by the policy, accepted for
+v1, a prune-free classification entry point is the follow-up if it bites. NIT-3: the
+probe's EPERM→`unknown` branch is render-pinned but has no direct mutation witness
+(EPERM is not deterministically arrangeable) — recorded in the mutation ledger as an
+unwitnessed branch.
 (no fake-timer library, no injected-`now` arithmetic, S2).
 
 Red-first: the core-file clamp rows failed to load pre-implementation (`Export named

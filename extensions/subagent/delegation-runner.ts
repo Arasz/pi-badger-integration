@@ -149,10 +149,10 @@ export interface RunnerDeps {
   warn?: (message: string) => void;
   /** Injected clock; the only Date.now() boundary in this module. */
   now?: () => number;
-  /** Synchronous terminal callback — the registry releases admission and dequeues here (row 39). */
   /** Liveness watchdog (RR2), ms of stream silence before the run aborts lost. Default
    * RUN_WATCHDOG_MS (600_000); 0 = off (the test-fixture idiom). Re-clamped at the arm site. */
   runWatchdogMs?: number;
+  /** Synchronous terminal callback — the registry releases admission and dequeues here (row 39). */
   onSettle?: (record: DelegationRecord) => void;
 }
 
