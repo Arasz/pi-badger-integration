@@ -331,6 +331,8 @@ function targetFromArgs(args: unknown): string | undefined {
   for (const key of TARGET_KEYS) {
     const value = (args as Record<string, unknown>)[key];
     if (typeof value !== "string" || !value.trim()) continue;
+    // Path-like or nothing: a prose word ("them") must never become the label (R9 hygiene).
+    if (!value.includes("/") && !value.includes(".")) continue;
     const base = value.replaceAll("\\", "/").split("/").filter(Boolean).pop();
     if (base) return base.length > 18 ? base.slice(0, 18) : base;
   }
