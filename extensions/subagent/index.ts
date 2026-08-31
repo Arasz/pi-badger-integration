@@ -23,8 +23,9 @@
  *
  * Accounting consequence of a per-run timeout (RR5): a timed-out run is killed through the
  * runner's abort path, so its log ends with the run header, the tee'd stream and any stderr
- * lines but NO `exit` line. ai-badger's `pi_session_source.delegation_usage` records a run iff
- * an `exit` or `agent_settled` line exists — a timed-out run is therefore NOT recorded: timeout
+ * lines but NO `exit` line. ai-badger's `pi_session_source.delegation_usage` (0.149.0) records a
+ * run iff an `exit` or `agent_settled` line exists — a timed-out run is therefore NOT recorded:
+ * timeout
  * behaves exactly like abort for accounting. The spent tokens remain readable in the log file
  * itself (the stdout tee is written when the child closes; real children always die to SIGKILL).
  * This is the contract, not an oversight — pinned by T105 in the tests doc's deferral section.
@@ -362,7 +363,12 @@ function capIntoBudget(text: string, used: number, budget: number = NOTIFICATION
   if (text.length <= room) return text;
   const marker = (dropped: number) => `[...${dropped} earlier characters dropped]\n`;
   let tailLength = room - marker(text.length).length;
-  if (tailLength <= 0) return `(over the ${Math.max(1, Math.floor(budget / 1024))} KB card budget — see the run log)`;
+  if (tailLength <= 0) {
+    // Budget-honest degenerate fallback (review SHOULD-1): never append beyond the caller's
+    // remaining room — a fixed string here overran batched messages past the 8 KB cap (T106).
+    if (room <= 0) return "";
+    return `(over the ${Math.max(1, Math.floor(budget / 1024))} KB card budget — see the run log)`.slice(0, room);
+  }
   let head = marker(text.length - tailLength);
   if (head.length + tailLength > room) {
     tailLength = room - head.length;
@@ -387,13 +393,15 @@ export function notificationContent(note: DelegationNote, budget: number = NOTIF
   const answer = note.answer.trim();
   if (answer) {
     const capped = capIntoBudget(answer, used + 2, budget);
-    lines.push("", capped);
-    used = lines.join("\n").length;
+    if (capped) {
+      lines.push("", capped);
+      used = lines.join("\n").length;
+    }
   }
   const stderr = note.stderrTail?.trim();
   if (stderr) {
     const capped = capIntoBudget(`stderr: ${stderr}`, used + 2, budget);
-    lines.push("", capped);
+    if (capped) lines.push("", capped); // empty cap = no room — pushing it would add a trailing newline past the budget
   }
   return lines.join("\n");
 }
@@ -694,13 +702,17 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     const box = new Box(options.outputPad, 1, (line: string) => theme.bg("customMessageBg", line));
     if (details?.batched && Array.isArray(details.notes) && details.notes.length > 0) {
       const cardBodies = body.split(BATCH_SEPARATOR);
-      const blocks = details.notes.map((card, index) => {
-        const lines = (cardBodies[index] ?? "").split("\n");
-        const head = theme.fg(cardTone(card), lines[0] ?? "");
-        return [head, ...lines.slice(1)].join("\n");
-      });
-      box.addChild(new Text(blocks.join(BATCH_SEPARATOR), 0, 0));
-      return box;
+      // Positional-pairing guard (review NIT-2): an answer containing the separator string
+      // shifts bodies across verdicts — degrade to the plain box instead of mispairing (T107).
+      if (cardBodies.length === details.notes.length) {
+        const blocks = details.notes.map((card, index) => {
+          const lines = (cardBodies[index] ?? "").split("\n");
+          const head = theme.fg(cardTone(card), lines[0] ?? "");
+          return [head, ...lines.slice(1)].join("\n");
+        });
+        box.addChild(new Text(blocks.join(BATCH_SEPARATOR), 0, 0));
+        return box;
+      }
     }
     const lines = body.split("\n");
     const head = theme.fg(cardTone(details), lines[0] ?? "");

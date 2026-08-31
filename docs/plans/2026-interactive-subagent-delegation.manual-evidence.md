@@ -30,4 +30,8 @@ publish drift zero; fresh-session load functional (see below).
 - **Suites**: 332 pass / 0 fail (unit, 17 files) + smoke 2/0 with gate set; `bun run
   typecheck` exit 0.
 
+## Manual evidence (deferred rows — T79–T105 task)
+
+| Id  | Check | Command | Expect | Slot |
+|-----|-------|---------|--------|------|
 | M6 | **Batched-card rendering in a real TUI** (pbi-delegation-timeout-and-burst-batching, plan §6.4) — unit pins cannot see the actual renderer box | `pi` → prompt: "delegate in the background to architect, api-engineer, test-engineer, planner, qa and docs — each replies with exactly ok; then summarize" (or any 3+ near-simultaneous background delegations) → keep typing while they complete | The first completion lands as a normal single card; the near-simultaneous rest land as ONE batched `delegation-result` message — one box, one divider (`———`) between cards, each card's verdict line colored by its own state, whole message ≤ 8 KB — and the summary turn integrates them | ☐ |

@@ -27,6 +27,7 @@ import { FakeChild } from "./helpers/fake-child.ts";
 import { AGENTS_DIR } from "../extensions/subagent/index.ts";
 import subagent from "../extensions/subagent/index.ts";
 import {
+  BATCH_SEPARATOR,
   clampRunTimeoutMs,
   notificationVerdict,
   RUN_TIMEOUT_MAX_MS,
@@ -957,4 +958,50 @@ describe("T101/T102/T104 — timeout × batching integration (deferral pkg P4)",
     await new Promise((resolve) => setTimeout(resolve, 1250)); // past both the window and d-4's expiry
     expect(h.sent).toHaveLength(2); // no timeout note, no post-shutdown send (CR10)
   }, 20_000);
+});
+
+describe("review folds (d-38): SHOULD-1 overrun + NIT-2 renderer guard", () => {
+  test("T106: the batch 8 KB cap holds for failed cards with stderr tails", async () => {
+    h = makeHarness(); // default window — capacity flush of 6 lands synchronously
+    for (let i = 1; i <= 7; i++) await callDelegate({ agent: "architect", task: `t${i}` }, makeCtx(), undefined, `call-${i}`);
+    for (const child of h.children) {
+      child.stderrWrite("e".repeat(4 * 1024)); // ordinary failed-delegation shape
+      child.write(`${assistantEnd("x".repeat(10 * 1024))}\n`);
+      child.exit(1);
+    }
+
+    expect(h.sent).toHaveLength(2);
+    const content = String(h.sent[1]!.message.content);
+    expect(content.length).toBeLessThanOrEqual(8192); // T71 under batching, stderr shape included
+    expect((content.match(/Delegation d-\d+ \(architect\)/g) ?? []).length).toBe(6);
+  });
+
+  test("T107: an answer containing the batch separator degrades to the plain box — no mispairing", async () => {
+    h = makeHarness("tui", { batchWindowMs: 0 });
+    for (let i = 1; i <= 3; i++) await callDelegate({ agent: "architect", task: `t${i}` }, makeCtx(), undefined, `call-${i}`);
+    h.children[0]!.write(`${assistantEnd("first")}\n`);
+    h.children[0]!.exit(0); // lead
+    h.children[1]!.write(`${assistantEnd("answer two")}\n`);
+    h.children[1]!.exit(0);
+    h.children[2]!.write(`${assistantEnd(`third${BATCH_SEPARATOR}injected extra body`)}\n`);
+    h.children[2]!.exit(0); // its answer contains the separator
+    await new Promise((resolve) => setTimeout(resolve, 5)); // drain: the 0 ms window flush fires
+
+    expect(h.sent).toHaveLength(2); // lead + batch of 2 (T93/T100 idiom)
+    const batch = h.sent[1]!.message;
+    expect((batch.details as Record<string, unknown>).batched).toBe(true);
+    const renderer = h.renderers.get("delegation-result")!;
+    const fgCalls: Array<[string, string]> = [];
+    const component = renderer(
+      batch,
+      { expanded: false, outputPad: 0 },
+      { fg: (color: string, text: string) => { fgCalls.push([color, text]); return text; }, bg: (_c: string, t: string) => t },
+    ) as { render(width: number): string[] };
+    // positional split yields 3 bodies for 2 notes -> the guard must fall back to the plain box
+    expect(fgCalls.length).toBe(1); // one head = single path, never per-card mispairing
+    // The fold's guarantee: branch selection, not box internals — the message content stays
+    // intact (asserted below); the plain box's own line handling is pi-TUI behavior.
+    expect(batch.content).toContain("answer two"); // raw body untouched by the guard
+    expect(component.render(120).join("\n")).toContain("Delegation d-2 (architect) completed");
+  });
 });
