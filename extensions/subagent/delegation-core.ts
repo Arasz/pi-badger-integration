@@ -138,9 +138,11 @@ export function applyLiveUsage(live: DelegationUsage, event: ChildEvent): Delega
 
 /**
  * Every delegation phase a UI may have to render. `lost` exists only on reconstruction from
- * the log dir (R10) — a live record never enters it; `aborted` is terminal (plan §4).
+ * the log dir (R10) — a live record never enters it; `stale` likewise exists only on
+ * reconstruction (RR4): a pid-dead, terminal-line-less log whose mtime is older than the
+ * threshold. `aborted` is terminal (plan §4).
  */
-export type DelegationState = "queued" | "running" | "completed" | "failed" | "aborted" | "lost";
+export type DelegationState = "queued" | "running" | "completed" | "failed" | "aborted" | "lost" | "stale";
 
 /**
  * The registry record shape (plan §4 sketch: `sessionId` added, `aborted` terminal, `logFile`
@@ -218,10 +220,12 @@ export function clampRunWatchdogMs(runWatchdogMs: number | undefined): number | 
 
 // ------------------------------------------------------------------ log-dir classification
 
-/** One run's log file as the caller read it: its id and the raw lines of `<id>.jsonl`. */
+/** One run's log file as the caller read it: its id, the raw lines of `<id>.jsonl`, and the
+ * file's mtime when the caller has it (RR4 staleness needs it; absent = never stale). */
 export interface LogRunFile {
   id: string;
   lines: string[];
+  mtimeMs?: number;
 }
 
 /**
@@ -230,7 +234,7 @@ export interface LogRunFile {
  */
 export interface LogRunSummary {
   id: string;
-  state: "running" | "completed" | "failed" | "lost";
+  state: "running" | "completed" | "failed" | "lost" | "stale";
   exitCode?: number | null;
   agent?: string;
   task?: string;
@@ -238,6 +242,8 @@ export interface LogRunSummary {
   pid?: number;
   sessionId?: string;
   spawnError?: string;
+  /** The log file the summary was reconstructed from; stamped by the reconstructing caller. */
+  logFile?: string;
 }
 
 function optionalString(value: unknown): string | undefined {
@@ -250,20 +256,29 @@ function optionalNumber(value: unknown): number | undefined {
 
 /**
  * Classify the log dir's runs without touching the filesystem (rows 14–17, R10 log-dir-only
- * reconstruction).
+ * reconstruction; RR4 adds staleness).
  *
- * Per run, in precedence order:
- *   - `exit` line present → `completed` (the exit code rides along, row 15);
+ * Per run, in precedence order (M2: the tee writes only the header at spawn and the tail at
+ * close — stderr is held in memory — so a live run's log mtime ≈ spawn time; mtime alone
+ * would brand every healthy long cross-session run stale, hence the pid gates come first):
+ *   - `exit` line present → `completed` (the exit code rides along, row 15) — never stale;
  *   - `spawnError` marker → `failed` (the child never ran, row 16);
- *   - header without exit, pid probe dead (or header has no pid at all) → `lost`;
- *   - header without exit, pid alive → `running` (another live session's run).
+ *   - header without exit, pid probe dead (or header has no pid at all) → `stale` when the
+ *     file's mtime age exceeds `staleThresholdMs` (both mtime and `now` must be supplied),
+ *     else `lost`;
+ *   - header without exit, pid alive → `running`, NEVER stale.
  * A file whose lines hold no readable `run` header is `lost` with only its id — a partial
  * write is a run we lost, not something to hide.
  *
  * `pidAlive` is the caller's probe (kill(pid, 0), corroborated per R16) — this function only
  * decides on its answer.
  */
-export function classifyFromLogDir(files: LogRunFile[], pidAlive: (pid: number) => boolean): LogRunSummary[] {
+export function classifyFromLogDir(
+  files: LogRunFile[],
+  pidAlive: (pid: number) => boolean,
+  opts?: { now?: number; staleThresholdMs?: number },
+): LogRunSummary[] {
+  const staleThresholdMs = opts?.staleThresholdMs ?? RUN_WATCHDOG_MS;
   const summaries: LogRunSummary[] = [];
   for (const file of files) {
     let header: ChildEvent | undefined;
@@ -297,7 +312,14 @@ export function classifyFromLogDir(files: LogRunFile[], pidAlive: (pid: number) 
     } else if (exit) {
       summaries.push({ ...base, state: "completed", exitCode: typeof exit.exitCode === "number" ? exit.exitCode : null });
     } else if (base.pid === undefined || !pidAlive(base.pid)) {
-      summaries.push({ ...base, state: "lost" });
+      // M2 precedence: staleness is decided only among pid-dead, terminal-line-less logs.
+      const mtimeMs = file.mtimeMs;
+      const now = opts?.now;
+      if (mtimeMs !== undefined && now !== undefined && now - mtimeMs > staleThresholdMs) {
+        summaries.push({ ...base, state: "stale" });
+      } else {
+        summaries.push({ ...base, state: "lost" });
+      }
     } else {
       summaries.push({ ...base, state: "running" });
     }
@@ -457,6 +479,9 @@ function renderRunLine(run: DelegationStatusRun, now: number): string {
       break;
     case "lost":
       segments.push("lost");
+      break;
+    case "stale":
+      segments.push("stale");
       break;
   }
   return segments.join(" — ");

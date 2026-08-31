@@ -470,11 +470,16 @@ export function reconstructFromLogDir(logDir: string, now: number): LogRunSummar
     }
   }
 
+  const mtimes = new Map(entries.map((entry) => [entry.name, entry.mtimeMs]));
   const files: LogRunFile[] = plan.keep.map((name) => ({
     id: name.replace(/\.jsonl$/, ""),
     lines: readLogLines(join(logDir, name)),
+    mtimeMs: mtimes.get(name), // RR4: staleness needs the file's mtime — a frozen log is the evidence
   }));
-  return classifyFromLogDir(files, pidAlive);
+  return classifyFromLogDir(files, pidAlive, { now }).map((summary) => ({
+    ...summary,
+    logFile: join(logDir, `${summary.id}.jsonl`),
+  }));
 }
 
 /** kill(pid, 0) probe: EPERM means the process exists but is not ours — still alive. */
@@ -710,8 +715,10 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
 
   // W3 merge wiring (plan §5 interface freeze): the delegations tool, the /delegations command
   // and the background-run widget are P4's delegation-status.ts, wired here against its
-  // frozen signature — the one instance of the registry this session constructed.
-  registerDelegationStatus(pi, registry);
+  // frozen signature — the one instance of the registry this session constructed. RR4: the
+  // status surface consults the log dir through the same reconstruction session_start uses,
+  // so an empty registry still surfaces stale runs (the net that survives a dead runner).
+  registerDelegationStatus(pi, registry, { staleRuns: () => reconstructFromLogDir(logDir, now()) });
 
   // T72: the compact card the delegation-result followUp renders through in the transcript.
   // Batched messages (RR3) render as ONE box whose per-card verdict lines are styled by each

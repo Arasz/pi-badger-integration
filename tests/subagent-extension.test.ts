@@ -976,7 +976,35 @@ describe("S3 — the boolean pidAlive probe is unchanged and pinned (pkg P2)", (
   });
 });
 
-// ------------------------------------------------------------------ T101/T102/T104: integration (deferral pkg P4)
+// ------------------------------------------------------------------ T118: empty registry + stale logs (pkg P3)
+
+describe("T118 — empty registry lists reconstructed stale runs with their log paths (RR4, pkg P3)", () => {
+  const runList = async (): Promise<string> => {
+    const tool = h.tools.get("delegations") as {
+      execute(toolCallId: string, params: Record<string, unknown>, signal: undefined, onUpdate: undefined, ctx: unknown): Promise<DelegateResult>;
+    };
+    return contentOf(await tool.execute("call-0", { action: "list" }, undefined, undefined, makeCtx()));
+  };
+
+  test("no runs; a stale log file (header-only, dead pid, old mtime) is listed as stale with its path", async () => {
+    h = makeHarness();
+    writeLog(h.logDir, "d-9", [runHeaderLine("d-9", deadPid())], new Date(NOW - 700_000));
+
+    const text = await runList();
+    expect(text).toContain("registry empty"); // the registry itself is still empty (RR1 wording stays)
+    expect(text).toContain("d-9 architect — stale");
+    expect(text).toContain(join(h.logDir, "d-9.jsonl"));
+  });
+
+  test("a fresh pid-dead log is not listed — reconstruction's lost runs stay session_start's business", async () => {
+    h = makeHarness();
+    writeLog(h.logDir, "d-8", [runHeaderLine("d-8", deadPid())]); // mtime ≈ NOW → not stale
+
+    const text = await runList();
+    expect(text).toContain("registry empty");
+    expect(text).not.toContain("d-8");
+  });
+});
 
 describe("T101/T102/T104 — timeout × batching integration (deferral pkg P4)", () => {
   test("T101: a timeout firing inside an open batch window rides the flush with the timeout verdict", async () => {
