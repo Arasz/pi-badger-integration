@@ -279,6 +279,8 @@ export interface SubagentDeps {
   batchWindowMs?: number;
   /** RR3 batch size cap override (tests). Default 6. */
   batchMaxCards?: number;
+  /** RR2: per-run liveness watchdog, ms of child silence. Default 600_000 (10 min); 0 = off. */
+  runWatchdogMs?: number;
 }
 
 /** Receipt details (row 45, §4): the background tool result's `details`. */
@@ -310,6 +312,19 @@ function envCap(): number | undefined {
 }
 
 /**
+ * The extension version from this directory's package.json (RR1/R0): the session_start log
+ * line carries it, so a stale loaded instance generation identifies itself in its own output.
+ */
+function extensionVersion(): string {
+  try {
+    const parsed = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf-8")) as { version?: unknown };
+    return typeof parsed.version === "string" ? parsed.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
  * The completion verdict line of a delegation-result card (R5). State-driven: completed with a
  * non-zero exit renders "exited N"; the silent-JSON variant names itself loudly (R3/CR4).
  */
@@ -321,6 +336,10 @@ export function notificationVerdict(note: DelegationNote): string {
       // durationMs counts from the request, so it includes queue wait.
       if (note.abortReason === "timeout") {
         return `Delegation ${note.id} (${note.agent}) timed out (limit ${formatDuration(note.timeoutMs ?? 0)}) and was aborted.`;
+      }
+      // RR2: the watchdog-lost verdict likewise names the configured silence threshold.
+      if (note.abortReason === "lost") {
+        return `Delegation ${note.id} (${note.agent}) stopped responding (no output for ${formatDuration(note.watchdogMs ?? 0)}) and was aborted.`;
       }
       return `Delegation ${note.id} (${note.agent}) aborted${duration}.`;
     case "failed":
@@ -623,6 +642,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     ...(deps.escalateAfterMs !== undefined ? { escalateAfterMs: deps.escalateAfterMs } : {}),
     ...(deps.spawnFn ? { spawnFn: deps.spawnFn } : {}),
     ...(deps.now ? { now } : {}),
+    ...(deps.runWatchdogMs !== undefined ? { runWatchdogMs: deps.runWatchdogMs } : {}),
     logSink,
     notifyComplete: deliverNote,
     onUpdate: (progress) => {
@@ -657,6 +677,9 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   });
 
   pi.on("session_start", () => {
+    // RR1/R0: the instance identifies itself at startup, so a stale loaded extension
+    // generation is diagnosable from its own output when the registry disagrees with reality.
+    console.error(`ai-badger subagent extension v${extensionVersion()}: session started — delegation registry live`);
     const summaries = reconstructFromLogDir(logDir, now());
     if (summaries.length === 0) return;
     // Row 47: reconstruction only MARKS runs (status surfaces show them); it never notifies

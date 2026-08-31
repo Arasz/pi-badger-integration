@@ -451,7 +451,9 @@ function renderRunLine(run: DelegationStatusRun, now: number): string {
       segments.push(run.spawnError ? `failed (${run.spawnError})` : "failed");
       break;
     case "aborted":
-      segments.push(run.abortReason === "timeout" ? "aborted (timeout)" : "aborted");
+      segments.push(
+        run.abortReason === "timeout" ? "aborted (timeout)" : run.abortReason === "lost" ? "aborted (lost)" : "aborted",
+      );
       break;
     case "lost":
       segments.push("lost");

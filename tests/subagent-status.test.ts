@@ -17,6 +17,7 @@ import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeChild } from "./helpers/fake-child.ts";
+import { spawnSync } from "node:child_process";
 import {
   DelegationRegistry,
   type DelegationDeps,
@@ -34,10 +35,12 @@ import {
   formatLogTail,
   MAX_LOG_TAIL_BYTES,
   MIN_LOG_TAIL_BYTES,
+  probePid,
   registerDelegationStatus,
   widgetLines,
   WAIT_DEFAULT_MS,
   WAIT_MAX_MS,
+  type PidLiveness,
 } from "../extensions/subagent/delegation-status.ts";
 import {
   default as sessionSignals,
@@ -134,7 +137,10 @@ interface Fixture {
 	widgetKey: string;
 }
 
-function makeFixture(overrides: Partial<DelegationDeps> = {}, opts: { widgetKey?: string } = {}): Fixture {
+function makeFixture(
+	overrides: Partial<DelegationDeps> = {},
+	opts: { widgetKey?: string; probePid?: (pid: number) => PidLiveness } = {},
+): Fixture {
 	let clock = NOW;
 	const children: FakeChild[] = [];
 	const harness = makePi();
@@ -154,6 +160,7 @@ function makeFixture(overrides: Partial<DelegationDeps> = {}, opts: { widgetKey?
 	});
 	registerDelegationStatus(harness.pi, registry, {
 		...(opts.widgetKey ? { widgetKey: opts.widgetKey } : {}),
+		...(opts.probePid ? { probePid: opts.probePid } : {}),
 		// Same injected clock the registry was built with — records carry its startedAt.
 		now: () => clock,
 	});
@@ -246,10 +253,10 @@ describe("row 49: /delegations status command with a mixed fleet", () => {
 		expect(lines[2]).toBe("d-2 architect — queued (position 1)");
 	});
 
-	test("an empty fleet answers plainly, not with an empty panel", async () => {
+	test("an empty fleet answers plainly, not with an empty panel (T114 wording: emptiness is identified)", async () => {
 		const fx = makeFixture();
 		await fx.harness.commands.get("delegations")!.handler("", fx.ctx);
-		expect(lastNotification(fx).message).toBe("no delegations have been started");
+		expect(lastNotification(fx).message).toBe("registry empty (0 records)");
 	});
 });
 
@@ -612,3 +619,80 @@ describe("T89/T91 — timeout surfaces on the delegations tool (deferral pkg P2)
 function drainRegistryTimers(): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, 1100));
 }
+
+// ------------------------------------------------------------------ T115/T116: lost rendering + liveness probe (pkg P2)
+
+/** A genuinely dead pid: a real short-lived process that has already been reaped. */
+function deadPid(): number {
+	const proc = spawnSync(process.execPath, ["-e", ""]);
+	return proc.pid ?? 999_999;
+}
+
+describe("T115 — list renders a watchdog-lost run (pkg P2)", () => {
+	test("a real lost settle renders 'aborted (lost)' through the tool", async () => {
+		const fx = makeFixture({ runWatchdogMs: 1000 });
+		await fx.registry.start(startRequest({ id: "d-1", toolCallId: "tc-1" }));
+		await drainRegistryTimers(); // the watchdog fires through the real registry
+
+		const list = await delegationsTool(fx).execute({ action: "list" });
+		expect(String(list.content[0]!.text)).toContain("d-1 architect — aborted (lost) —");
+	}, 20_000);
+});
+
+describe("T116 — liveness probe on the delegations list (RR3, pkg P2)", () => {
+	test("probePid: a live pid is alive; a reaped pid is dead", () => {
+		expect(probePid(process.pid)).toBe("alive");
+		expect(probePid(deadPid())).toBe("dead");
+	});
+
+	test("a running record carries the liveness line; EPERM-style unknown never renders as dead", async () => {
+		const fx = makeFixture({}, { probePid: () => "unknown" });
+		await startBackground(fx, "d-1");
+
+		const text = String((await delegationsTool(fx).execute({ action: "list" })).content[0]!.text);
+		expect(text).toContain("d-1 architect — 0s — unknown — task:");
+		expect(text).not.toContain("dead"); // unknown is never rendered as dead (RR3)
+		expect(text).not.toContain("alive");
+	});
+
+	test("a dead-but-unsettled pid renders 'lost (dead pid)'; a live pid renders 'alive'", async () => {
+		const dead = makeFixture({}, { probePid: () => "dead" });
+		await startBackground(dead, "d-1");
+		const deadText = String((await delegationsTool(dead).execute({ action: "list" })).content[0]!.text);
+		expect(deadText).toContain("d-1 architect — 0s — lost (dead pid) — task:");
+
+		const live = makeFixture({}, { probePid: () => "alive" });
+		await startBackground(live, "d-1");
+		const liveText = String((await delegationsTool(live).execute({ action: "list" })).content[0]!.text);
+		expect(liveText).toContain("d-1 architect — 0s — alive — task:");
+	});
+
+	test("settled records skip the probe (N4)", async () => {
+		const probed: number[] = [];
+		const fx = makeFixture({}, { probePid: (pid) => (probed.push(pid), "alive" as PidLiveness) });
+		await startBackground(fx, "d-1");
+		expect(probed).toHaveLength(0); // starts never probe — only list does
+
+		await delegationsTool(fx).execute({ action: "list" });
+		expect(probed).toHaveLength(1); // the running record was probed
+
+		fx.children[0]!.exit(0);
+		const text = String((await delegationsTool(fx).execute({ action: "list" })).content[0]!.text);
+		expect(probed).toHaveLength(1); // the settled record was not probed again
+		expect(text).toContain("done");
+		expect(text).not.toContain("alive");
+	});
+
+	test("queued records skip the probe (N4)", async () => {
+		const probed: number[] = [];
+		const fx = makeFixture({ cap: 1, queueCap: 16 }, { probePid: (pid) => (probed.push(pid), "alive" as PidLiveness) });
+		await startBackground(fx, "d-1");
+		await startBackground(fx, "d-2");
+
+		const text = String((await delegationsTool(fx).execute({ action: "list" })).content[0]!.text);
+		expect(probed).toHaveLength(1); // only the running record; the queued one has no pid
+		const queuedLine = text.split("\n").find((line) => line.startsWith("d-2"))!;
+		expect(queuedLine).toContain("queued");
+		expect(queuedLine).not.toContain("alive");
+	});
+});
