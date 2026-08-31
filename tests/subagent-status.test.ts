@@ -360,9 +360,20 @@ describe("T75: the widget renders background/queued runs only (review CR17)", ()
 		const live = { id: "d-1", agent: "architect", task: "t", toolCallId: "tc-1", state: "running" as const, startedAt: NOW, usage: { input: 1, output: 7, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 } };
 		const queued = { id: "d-2", agent: "qa", task: "t", toolCallId: "tc-2", state: "queued" as const, startedAt: NOW, queuePosition: 1 };
 		expect(widgetLines([], new Set(), NOW)).toBeUndefined();
-		expect(widgetLines([live], new Set(), NOW)).toEqual(["d-1 architect — 0s — ↓7"]);
+		expect(widgetLines([live], new Set(), NOW)).toEqual(["d-1 architect — 0s — ↑1 ↓7"]);
 		expect(widgetLines([live], new Set(["tc-1"]), NOW)).toBeUndefined(); // blocking → hidden
-		expect(widgetLines([live, queued], new Set(), NOW)).toEqual(["d-1 architect — 0s — ↓7", "1 queued"]);
+		expect(widgetLines([live, queued], new Set(), NOW)).toEqual(["d-1 architect — 0s — ↑1 ↓7", "1 queued"]);
+	});
+
+	test("the widget line carries the full usage string: ↑ ↓ CR% ctx% $ (contextWindow renders ctx as a share)", () => {
+		const rich = { id: "d-1", agent: "architect", task: "t", toolCallId: "tc-1", state: "running" as const, startedAt: NOW, usage: { input: 100, output: 7, cacheRead: 300, cacheWrite: 0, cost: 0.5, contextTokens: 500, turns: 1 } };
+		expect(widgetLines([rich], new Set(), NOW, 1000)).toEqual([
+			"d-1 architect — 0s — ↑100 ↓7 CR75% ctx:50% $0.5000",
+		]);
+		// no window → absolute ctx fallback
+		expect(widgetLines([rich], new Set(), NOW)).toEqual([
+			"d-1 architect — 0s — ↑100 ↓7 CR75% ctx:500 $0.5000",
+		]);
 	});
 });
 

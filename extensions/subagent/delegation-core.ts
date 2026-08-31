@@ -357,15 +357,29 @@ export function formatDuration(ms: number): string {
   return `${rest}s`;
 }
 
-/** Compact one-line usage, same glyph order as pi's own subagent example; empty when zero. */
-export function formatUsage(usage: DelegationUsage | undefined): string {
+/** Render a fraction (0–1) as e.g. "60.1%" — one decimal, a trailing ".0" trimmed. */
+function pct(fraction: number): string {
+  return `${(fraction * 100).toFixed(1).replace(/\.0$/, "")}%`;
+}
+
+/**
+ * Compact one-line usage, same glyph order as pi's own subagent example; empty when zero.
+ * `CR` is the cache-read share of prompt tokens (cacheRead / input+cacheRead+cacheWrite) as a
+ * percent — a raw cached-token count said nothing about hit rate. `ctx` is the share of the
+ * model's context window when `contextWindow` is known (the delegating session's model — an
+ * approximation when a run overrides the model), absolute tokens otherwise.
+ */
+export function formatUsage(usage: DelegationUsage | undefined, contextWindow?: number): string {
   if (!usage) return "";
   const parts: string[] = [];
   if (usage.input) parts.push(`↑${usage.input}`);
   if (usage.output) parts.push(`↓${usage.output}`);
-  if (usage.cacheRead) parts.push(`R${usage.cacheRead}`);
+  const promptTokens = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+  if (usage.cacheRead && promptTokens > 0) parts.push(`CR${pct(usage.cacheRead / promptTokens)}`);
   if (usage.cacheWrite) parts.push(`W${usage.cacheWrite}`);
-  if (usage.contextTokens) parts.push(`ctx:${usage.contextTokens}`);
+  if (usage.contextTokens) {
+    parts.push(contextWindow ? `ctx:${pct(usage.contextTokens / contextWindow)}` : `ctx:${usage.contextTokens}`);
+  }
   if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
   return parts.join(" ");
 }
@@ -452,7 +466,7 @@ export function deriveActivity(event: ChildEvent): string | undefined {
   return undefined;
 }
 
-function renderRunLine(run: DelegationStatusRun, now: number): string {
+function renderRunLine(run: DelegationStatusRun, now: number, contextWindow?: number): string {
   const segments: string[] = [`${run.id} ${run.agent}`];
   switch (run.state) {
     case "queued":
@@ -462,7 +476,7 @@ function renderRunLine(run: DelegationStatusRun, now: number): string {
       segments.push(run.startedAt === undefined ? "running" : formatDuration(now - run.startedAt));
       if (run.activity) segments.push(run.activity);
       {
-        const usage = formatUsage(run.usage);
+        const usage = formatUsage(run.usage, contextWindow);
         if (usage) segments.push(usage);
       }
       break;
@@ -492,12 +506,12 @@ function renderRunLine(run: DelegationStatusRun, now: number): string {
  * show their phase, never a clock (row 19). `undefined` when there is nothing to show — the
  * caller clears its widget/footer with it, mirroring session-signals' `renderStatus`.
  */
-export function renderDelegationStatus(runs: DelegationStatusRun[], now: number): string | undefined {
+export function renderDelegationStatus(runs: DelegationStatusRun[], now: number, contextWindow?: number): string | undefined {
   if (runs.length === 0) return undefined;
   const sorted = [...runs].sort(
     (a, b) => (a.startedAt ?? Number.POSITIVE_INFINITY) - (b.startedAt ?? Number.POSITIVE_INFINITY),
   );
-  return sorted.map((run) => renderRunLine(run, now)).join("\n");
+  return sorted.map((run) => renderRunLine(run, now, contextWindow)).join("\n");
 }
 
 // ------------------------------------------------------------------ admission policy

@@ -229,6 +229,25 @@ describe("renderDelegationStatus (rows 18–21)", () => {
     expect(line?.split("\n")).toHaveLength(1);
   });
 
+  test("row 18b: with a contextWindow, CR renders the cache-hit share and ctx the window share", () => {
+    const line = renderDelegationStatus(
+      [
+        {
+          id: "d-1",
+          agent: "architect",
+          state: "running",
+          startedAt: 0,
+          usage: { input: 10, output: 2, cacheRead: 3, cacheWrite: 1, cost: 0.01, contextTokens: 99, turns: 1 },
+        },
+      ],
+      92_000,
+      1000,
+    );
+    expect(line).toContain("CR21.4%"); // 3 of 14 prompt tokens cached
+    expect(line).toContain("ctx:9.9%"); // 99 of a 1000-token window
+    expect(line).not.toContain("R3"); // the raw cached-token glyph is gone
+  });
+
   test("row 19: three runs sort by start; queued shows phase not clock", () => {
     const runs: DelegationStatusRun[] = [
       { id: "d-3", agent: "gamma", state: "queued", startedAt: NOW - 1000 },

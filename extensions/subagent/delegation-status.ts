@@ -14,7 +14,7 @@
  *     every mutation goes through the same registry calls the tool uses (T78), so the tool
  *     and the command can never disagree about a transition.
  *   - the background widget (R9): one line per live BACKGROUND run (id, agent, elapsed,
- *     activity, ↓output tokens) plus a queued count, 5 s tick while anything is live, cleared
+ *     activity, full usage (↑ ↓ CR% ctx%)) plus a queued count, 5 s tick while anything is live, cleared
  *     when nothing live remains. Blocking delegations are session-signals' footer business
  *     (review CR17) and never render here.
  *
@@ -125,8 +125,8 @@ function taskExcerpt(task: string): string {
 /** One line per record for the LLM tool's list/wait output — phase plus the task it maps to.
  * When `probe` is given, RUNNING records with a pid gain a liveness segment (RR3): `alive`,
  * `unknown`, or `lost (dead pid)` for a dead-but-unsettled run; settled and queued records
- * skip the probe (N4). */
-export function describeRecord(record: DelegationRecord, now: number, probe?: (pid: number) => PidLiveness): string {
+ * skip the probe (N4). `contextWindow` (when known) renders `ctx:` as a share of the window. */
+export function describeRecord(record: DelegationRecord, now: number, probe?: (pid: number) => PidLiveness, contextWindow?: number): string {
 	const parts: string[] = [`${record.id} ${record.agent}`];
 	switch (record.state) {
 		case "queued":
@@ -136,7 +136,7 @@ export function describeRecord(record: DelegationRecord, now: number, probe?: (p
 			parts.push(formatDuration(now - record.startedAt));
 			if (record.activity) parts.push(record.activity);
 			{
-				const usage = formatUsage(record.usage);
+				const usage = formatUsage(record.usage, contextWindow);
 				if (usage) parts.push(usage);
 			}
 			if (probe && record.pid !== undefined) {
@@ -173,8 +173,9 @@ export function describeRecord(record: DelegationRecord, now: number, probe?: (p
 
 /**
  * The widget panel (R9): one line per live background RUNNING run — id, agent, elapsed,
- * activity, ↓output tokens — plus one `N queued` count line when background runs are queued.
- * `undefined` when nothing live and background remains → the caller clears the widget.
+ * activity, full usage (↑input ↓output CR cache-hit% ctx window% $cost) — plus one `N queued`
+ * count line when background runs are queued. `undefined` when nothing live and background
+ * remains → the caller clears the widget.
  *
  * `pendingToolCallIds` holds the delegate tool calls whose result has not landed (blocking
  * delegations in flight); their runs are invisible here — the footer owns them (CR17).
@@ -183,6 +184,7 @@ export function widgetLines(
 	records: DelegationRecord[],
 	pendingToolCallIds: Set<string>,
 	now: number,
+	contextWindow?: number,
 ): string[] | undefined {
 	const background = records.filter((record) => isLive(record) && !pendingToolCallIds.has(record.toolCallId));
 	if (background.length === 0) return undefined;
@@ -190,7 +192,8 @@ export function widgetLines(
 	for (const record of background.filter((r) => r.state === "running").sort((a, b) => a.startedAt - b.startedAt)) {
 		const parts = [`${record.id} ${record.agent}`, formatDuration(now - record.startedAt)];
 		if (record.activity) parts.push(record.activity);
-		if (record.usage && record.usage.output > 0) parts.push(`↓${record.usage.output}`);
+		const usage = formatUsage(record.usage, contextWindow);
+		if (usage) parts.push(usage);
 		lines.push(parts.join(" — "));
 	}
 	const queued = background.filter((r) => r.state === "queued").length;
@@ -256,10 +259,17 @@ export function registerDelegationStatus(
 	let currentCtx: ExtensionContext | undefined;
 	let ticker: ReturnType<typeof setInterval> | undefined;
 
+	/** The delegating session model's context window — the denominator for `ctx:` percent
+	 * renders; undefined → formatUsage falls back to absolute tokens. An approximation when a
+	 * run overrides the model. */
+	function contextWindowOf(): number | undefined {
+		return currentCtx?.model?.contextWindow;
+	}
+
 	function renderWidget(): void {
 		const ctx = currentCtx;
 		if (!ctx || !ctx.hasUI) return;
-		ctx.ui.setWidget(widgetKey, widgetLines(registry.list(), pendingResult, elapsedNow()));
+		ctx.ui.setWidget(widgetKey, widgetLines(registry.list(), pendingResult, elapsedNow(), contextWindowOf()));
 	}
 
 	function hasLiveBackgroundRun(): boolean {
@@ -287,7 +297,7 @@ export function registerDelegationStatus(
 	}
 
 	function statusPanel(now: number): string {
-		return renderDelegationStatus(registry.list(), now) ?? "registry empty (0 records)";
+		return renderDelegationStatus(registry.list(), now, contextWindowOf()) ?? "registry empty (0 records)";
 	}
 
 	function elapsedNow(): number {
@@ -378,7 +388,7 @@ export function registerDelegationStatus(
 					});
 				}
 				const now = elapsedNow();
-				return textResult(records.map((record) => describeRecord(record, now, probePidFn)).join("\n"), { records });
+				return textResult(records.map((record) => describeRecord(record, now, probePidFn, contextWindowOf())).join("\n"), { records });
 			}
 			case "log": {
 				if (typeof params.id !== "string" || !params.id.trim()) {
@@ -402,7 +412,7 @@ export function registerDelegationStatus(
 				const snapshots = await registry.wait(ids, timeoutMs);
 				if (snapshots.length === 0) return textResult("no delegations to wait for", { records: [] });
 				const now = elapsedNow();
-				return textResult(snapshots.map((record) => describeRecord(record, now)).join("\n"), { records: snapshots });
+				return textResult(snapshots.map((record) => describeRecord(record, now, undefined, contextWindowOf())).join("\n"), { records: snapshots });
 			}
 			default:
 				throw new Error(`delegations action must be one of list, log, abort, wait`);
