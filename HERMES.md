@@ -6,7 +6,7 @@ Canonical source for pi coding-agent extensions that are not part of ai-badger (
 
 > Domain: Developer tooling for coding agents - extension distribution and ai-badger/pi integration
 > Stacks: node, ts, pi
-> Scaffolded by ai-badger 0.151.0. Source of truth for this file: `.ai-badger/HERMES.md`.
+> Scaffolded by ai-badger 0.157.2. Source of truth for this file: `.ai-badger/HERMES.md`.
 
 ## Commands
 
