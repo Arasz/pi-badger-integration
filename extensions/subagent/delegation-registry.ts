@@ -19,6 +19,7 @@ import {
   DEFAULT_QUEUE_CAP,
   emptyAdmission,
   releaseRun,
+  removePending,
   type AdmissionCaps,
   type DelegationRecord,
   type DelegationState,
@@ -193,7 +194,9 @@ export class DelegationRegistry {
     }
     if (isTerminal(record.state)) return; // idempotent — exactly one notification per run
     if (record.state === "queued") {
-      this.admission = { running: this.admission.running, queue: this.admission.queue.filter((q) => q !== id) };
+      // removePending repairs the group FIFO too (plan v2 R4): a member-level abort lets the
+      // group continue; an all-aborted group collapses so the next group can dequeue.
+      this.admission = removePending(this.admission, id, this.caps).state;
       record.state = "aborted"; // no kill — there is no child (T61, review CR2)
       record.endedAt = this.now();
       this.queuedRequests.delete(id);
@@ -316,22 +319,18 @@ export class DelegationRegistry {
     this.deferreds.get(record.id)?.resolve(snapshotRecord(record));
     this.deferreds.delete(record.id);
     this.checkWaiters();
-    if (release.admitted !== undefined) this.spawnQueued(release.admitted);
+    for (const admitted of release.admitted) this.spawnQueued(admitted); // zero/one for singles, the whole batch for a parallel head
   }
 
-  /** Admit the queue head FIFO; the dequeue re-checks the aborted flag (T61, review CR2). */
+  /** Spawn one queued member the admission drain already promoted (plan v2 R2): the queue →
+   * running move happened inside the pure drain BEFORE this call, so a synchronous settle
+   * inside runner.run() releases through releaseRun and finds the id in `running`. */
   private spawnQueued(id: string): void {
     const record = this.records.get(id);
     const request = this.queuedRequests.get(id);
     if (!record || !request) return;
     if (record.state !== "queued") return; // aborted while queued — never spawned
     this.queuedRequests.delete(id);
-    // Move queue → running before spawning: a synchronous settle inside runner.run() releases
-    // the slot through releaseRun, which must find the id in `running`.
-    this.admission = {
-      running: [...this.admission.running, id],
-      queue: this.admission.queue.filter((q) => q !== id),
-    };
     // Queued runs keep their request time so start-order sorting stays stable (R7).
     this.spawnNow(id, request, record.startedAt);
   }
