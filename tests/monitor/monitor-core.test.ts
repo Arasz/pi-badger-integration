@@ -306,3 +306,12 @@ describe("poll-guard decision", () => {
 		expect(pollingDecision(timestamps, NOW, cfg({ enabled: false }))).toEqual({ action: "allow" });
 	});
 });
+
+describe("review folds — N1 smuggle gate and S2-safe compile", () => {
+	test("a predicate that smuggles statements through the wrap is rejected at compile (N1)", () => {
+		// "1) } //x" closes the function body and comments the tail: gate 1 (the wrap compiles)
+		// accepts it, so the bare-expression gate must reject it
+		const result = compilePredicate("1) } //x");
+		expect(result.kind).toBe("syntax-error");
+	});
+});

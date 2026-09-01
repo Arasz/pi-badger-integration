@@ -10,12 +10,20 @@
  * pin (E-A1's drift guard lives in poll-guard.test.ts).
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import monitor from "../../extensions/monitor/index.ts";
 import { TRANSITION_CHANNEL } from "../../extensions/subagent/index.ts";
 import subagent from "../../extensions/subagent/index.ts";
 import { createFakePi, type FakePi } from "../helpers/fake-pi.ts";
+
+const tempDirs: string[] = [];
+afterEach(() => {
+  while (tempDirs.length) rmSync(tempDirs.pop()!, { recursive: true, force: true });
+});
 
 // ------------------------------------------------------------------ harness
 
@@ -80,7 +88,9 @@ function makeHarness(deps: Record<string, unknown> = {}): Harness {
 function makeCombinedHarness(): Harness {
   const pi = createFakePi();
   const scheduler = manualScheduler();
-  subagent(pi as never, { now: () => pi.clock.now, escalateAfterMs: 0 });
+  const logDir = mkdtempSync(join(tmpdir(), "aib-monitor-combined-")); // never the real ~/.pi/agent/subagent-logs
+  tempDirs.push(logDir);
+  subagent(pi as never, { now: () => pi.clock.now, escalateAfterMs: 0, logDir });
   monitor(pi as never, { now: () => pi.clock.now, scheduler });
   return { pi, scheduler };
 }
@@ -350,17 +360,15 @@ describe("M-B4: cap, cancel and shutdown (combined subagent + monitor load)", ()
 // ------------------------------------------------------------------ M-B5
 
 describe("M-B5: the whole monitor tool is tui-only", () => {
-  test("every action rejects outside tui with guidance", async () => {
-    for (const mode of ["print", "rpc"]) {
-      const { pi } = makeHarness();
-      await expect(register(pi, { predicate: "false" }, mode)).rejects.toThrow(/tui-only/);
-      await expect(
-        monitorTool(pi)("tc-list", { action: "list" }, undefined, undefined, makeCtx(mode)),
-      ).rejects.toThrow(/tui-only/);
-      await expect(
-        monitorTool(pi)("tc-cancel", { action: "cancel", id: "m-1" }, undefined, undefined, makeCtx(mode)),
-      ).rejects.toThrow(/tui-only/);
-    }
+  test.each(["print", "rpc"])("every action rejects in %s with guidance", async (mode) => {
+    const { pi } = makeHarness();
+    await expect(register(pi, { predicate: "false" }, mode)).rejects.toThrow(/tui-only/);
+    await expect(
+      monitorTool(pi)("tc-list", { action: "list" }, undefined, undefined, makeCtx(mode)),
+    ).rejects.toThrow(/tui-only/);
+    await expect(
+      monitorTool(pi)("tc-cancel", { action: "cancel", id: "m-1" }, undefined, undefined, makeCtx(mode)),
+    ).rejects.toThrow(/tui-only/);
   });
 
   test("register rejects an invalid predicate without consuming the cap", async () => {
@@ -413,5 +421,25 @@ describe("monitor-event renderer", () => {
       fg: (tone: string, text: string) => text,
     });
     expect(rendered).toBeUndefined();
+  });
+});
+
+// ------------------------------------------------------------------ review folds (S1/S2)
+
+describe("review folds — snapshot isolation (S1)", () => {
+  test("a mutating predicate cannot falsify the fleet map for later monitors", async () => {
+    const { pi } = makeCombinedHarness();
+    // the mutator arms while the fleet is empty (mutates nothing, evaluates false, stays armed)
+    await register(pi, { predicate: `((delegations[0] || {}).state = "wedge", false)`, name: "mutator" });
+    pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running"));
+    expect(sentMonitorEvents(pi)).toHaveLength(0); // mutator evaluated against the live d-1 and stayed false
+
+    // an honest monitor must see the TRUE state: with live objects the mutator's write would
+    // have falsified d-1's view for every later evaluation (review S1)
+    await register(pi, { predicate: `delegations.some((d) => d.id === "d-1" && d.state === "completed")`, name: "honest" });
+    pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "completed"));
+    const cards = sentMonitorEvents(pi);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!.message.details).toMatchObject({ kind: "fired", monitorId: "m-2" });
   });
 });

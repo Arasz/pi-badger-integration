@@ -207,7 +207,11 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		record.timer = undefined;
 	};
 
-	/** The one monitor-event wire: followUp + triggerTurn, unbatched (M-B1). */
+	/** The one monitor-event wire: followUp + triggerTurn, unbatched (M-B1). Streaming-parent
+	 * behavior is dist-verified (research d-227/d-238, agent-session.js:1103-1128): while the
+	 * parent runs, the card queues via agent.followUp and is delivered when the run would
+	 * otherwise stop; when idle, triggerTurn starts a run. The fake harness records both
+	 * identically, so that distinction carries no row here by construction. */
 	const sendMonitorEvent = (content: string, details: Record<string, unknown>): void => {
 		pi.sendMessage(
 			{ customType: MONITOR_CUSTOM_TYPE, content, display: true, details },
@@ -421,7 +425,19 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			// W-A4: the liveness re-check runs AFTER subscribing — a settle landing between the
 			// subscription and this check resolved above; only a truly empty fleet resolves empty.
 			queueMicrotask(() => {
-				if (!wait.settled && nothingToWaitFor(wait.ids)) finish("empty");
+				if (wait.settled) return;
+				// SHOULD-2: a named id that settled BEFORE the subscribe is still a settle the wait
+				// must report (registry.wait(ids) parity) — resolve with its snapshot, never "empty".
+				if (wait.ids) {
+					const settledViews = fleetSnapshot().filter(
+						(view) => wait.ids!.includes(view.id) && isTerminalState(view.state),
+					);
+					if (settledViews.length > 0) {
+						finish("delegation", settledViews);
+						return;
+					}
+				}
+				if (nothingToWaitFor(wait.ids)) finish("empty");
 			});
 		});
 	}

@@ -193,3 +193,31 @@ describe("E-A2: what never counts, the env switch, and the reset", () => {
     expect(fireToolCall(pi, delegations, { action: "list" })?.block).toBe(true); // a fresh window, not a carry-over
   });
 });
+
+// ------------------------------------------------------------------ SHOULD-4
+
+describe("SHOULD-4: the kill switch discriminates, and invalid env values fall back", () => {
+  test("disabled calls do not count: re-enabling must NOT inherit the disabled window's phantom calls", () => {
+    const { pi } = makeCombinedHarness();
+    const delegations = registeredDelegationsName(pi);
+    process.env[POLL_ENV] = "5";
+    for (let i = 0; i < 3; i++) expect(fireToolCall(pi, delegations, { action: "list" })).toBeUndefined();
+
+    process.env[POLL_ENV] = "0"; // disabled: nothing counts
+    for (let i = 0; i < 3; i++) expect(fireToolCall(pi, delegations, { action: "list" })).toBeUndefined();
+
+    process.env[POLL_ENV] = "5"; // re-enabled: the window holds the 3 pre-disable calls, not 6
+    // pre-fix (disabled calls counted) the window would hold 6 and THIS call would block
+    expect(fireToolCall(pi, delegations, { action: "list" })).toBeUndefined(); // counted 4 — under 5
+    expect(fireToolCall(pi, delegations, { action: "list" })).toBeUndefined(); // counted 5 — at the limit
+    expect(fireToolCall(pi, delegations, { action: "list" })?.reason).toMatch(/#6/); // counted 6 — blocked
+  });
+
+  test.each(["abc", "-1", "2.5"])("invalid poll env value %s falls back to the configured default", (raw) => {
+    const { pi } = makeCombinedHarness();
+    const delegations = registeredDelegationsName(pi);
+    process.env[POLL_ENV] = raw;
+    for (let i = 0; i < 3; i++) expect(fireToolCall(pi, delegations, { action: "list" })).toBeUndefined();
+    expect(fireToolCall(pi, delegations, { action: "list" })?.block).toBe(true); // default max 3 still governs
+  });
+});

@@ -551,3 +551,21 @@ describe("fake-pi routing bus (P2 harness — plan v2 ★Harness, M-4/M2)", () =
     expect(pi.entries).toEqual([{ customType: "delegation-reconstruction", data: { runs: [] } }]);
   });
 });
+
+describe("S2: shutdown-initiated transitions carry no wire traffic (row-38 symmetry)", () => {
+  test("the queued-aborts inside shutdown emit no transition snapshots", async () => {
+    const emissions: unknown[] = [];
+    const h = makeRegistry({ emit: (transition) => emissions.push(transition) });
+    await h.registry.start(startRequest({ task: "live" }));
+    await h.registry.enqueueGroup(
+      [startRequest({ task: "q1" }), startRequest({ task: "q2" })],
+      "serial",
+    );
+    const before = emissions.length; // running + 2 queued transitions
+
+    h.registry.shutdown(); // aborts the two queued members — pre-fix that emitted 2 snapshots
+
+    expect(emissions.length).toBe(before); // row-38 symmetry: shutdown carries no wire traffic
+    expect(h.registry.list()).toHaveLength(0);
+  });
+});
