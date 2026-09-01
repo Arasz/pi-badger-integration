@@ -72,6 +72,7 @@ import {
 } from "./delegation-registry.ts";
 import type { DelegationNote, DelegationProgress, SpawnFn } from "./delegation-runner.ts";
 import { registerDelegationStatus } from "./delegation-status.ts";
+import { registerDelegationQueue, type DelegationQueueOpts } from "./delegation-queue.ts";
 import { type AgentToolUpdateCallback, type ExtensionAPI, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -81,8 +82,10 @@ export const TOOL_NAME = "delegate";
 /** The plural status tool P4 registers (`delegation-status.ts`); excluded from children too. */
 export const TOOL_NAME_PLURAL = "delegations";
 
-/** `--exclude-tools` value for children: neither call type may recurse (R6, verified comma form). */
-export const CHILD_EXCLUDED_TOOLS = `${TOOL_NAME},${TOOL_NAME_PLURAL}`;
+/** `--exclude-tools` value for children (R5, FINAL): a child can neither recurse delegation
+ * nor reach the queue, monitor or wait surfaces. monitor/wait land with the monitor extension;
+ * the value is final now per plan v2 R5 (six pin sites migrated in the same commit). */
+export const CHILD_EXCLUDED_TOOLS = `${TOOL_NAME},${TOOL_NAME_PLURAL},queue,monitor,wait`;
 
 /** Where adjust_agents.py writes, relative to the project root. */
 export const AGENTS_DIR = [".pi", "agents"];
@@ -220,9 +223,17 @@ export function scanPersonas(cwd: string): PersonaScan {
 }
 
 /** `name: description` for every persona, or "none" — what an unknown agent name is answered with. */
-export function personaList(personas: Persona[]): string {
+export function personaList(personas: Array<{ name: string; description: string }>): string {
   if (personas.length === 0) return "none";
   return personas.map((p) => `${p.name}: ${p.description}`).join("\n");
+}
+
+/**
+ * The unknown-persona message — ONE builder so the delegate and queue tools answer an unknown
+ * agent name byte-for-byte identically (Q-C1).
+ */
+function unknownPersonaMessage(agent: string, agentsDir: string, personas: Array<{ name: string; description: string }>): string {
+  return `ai-badger: no persona named "${agent}" in ${agentsDir}.\nAvailable:\n${personaList(personas)}`;
 }
 
 /**
@@ -236,7 +247,7 @@ export function personaList(personas: Persona[]): string {
  * the child keeps its tool guidance); `--` ends option parsing so a task starting with `-` is a
  * task.
  */
-export function delegationArgs(persona: Persona, task: string, model?: string): string[] {
+export function delegationArgs(persona: Pick<Persona, "systemPrompt">, task: string, model?: string): string[] {
   const args = ["-p", "--mode", "json", "--no-session", "--exclude-tools", CHILD_EXCLUDED_TOOLS];
   if (model) args.push("--model", model);
   if (persona.systemPrompt.trim()) args.push("--append-system-prompt", persona.systemPrompt);
@@ -582,12 +593,16 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   const batchWindowMs = deps.batchWindowMs ?? BATCH_WINDOW_MS;
   const batchMaxCards = deps.batchMaxCards ?? BATCH_MAX_CARDS;
 
-  // Notes and per-run progress subscribers key by run id. Notes: the blocking path reads the
-  // run's note (answer/stderr tails) after awaiting `done`; capped, because background runs
-  // never consume theirs. Progress: the registry-level onUpdate routes to the one blocking
-  // execute subscribed to that run id (the widget in P4 polls the registry instead); the
-  // latest-progress buffer replays anything that fired between start and subscribe.
+  /** Notes and per-run progress subscribers key by run id. Notes: the blocking path reads the
+   * run's note (answer/stderr tails) after awaiting `done`; capped, because background runs
+   * never consume theirs. Progress: the registry-level onUpdate routes to the one blocking
+   * execute subscribed to that run id (the widget in P4 polls the registry instead); the
+   * latest-progress buffer replays anything that fired between start and subscribe.
+   */
   const notes = new Map<string, DelegationNote>();
+  /** Run ids this session has already handed out — group batches allocate all member ids
+   * before any of them registers, so the allocator needs its own memory (★M3). */
+  const allocatedIds = new Set<string>();
   const latestProgress = new Map<string, DelegationProgress>();
   const progressSubscribers = new Map<string, (progress: DelegationProgress) => void>();
   /** RR3: notes held inside an open batch window; each is delivered exactly once (T97). */
@@ -693,9 +708,13 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     // closure also excludes the registry's live records: a queued run has no log file yet, so
     // without that check, concurrent queueing (a 7-panel burst) would allocate the same id
     // twice — exposed by T95–T97 and fixed here, not in the frozen core allocator.
+    // enqueueGroup (plan v2 R4) allocates a whole batch BEFORE any member registers, so the
+    // closure additionally remembers every id it has handed out this session — consecutive
+    // calls in one batch must be distinct (★M3), which neither the log dir nor the live
+    // records can guarantee yet.
     allocateId: (): string => {
       const live: Set<string> = new Set(registry.list().map((record: DelegationRecord) => record.id));
-      return allocateRunId(
+      const id = allocateRunId(
         (() => {
           try {
             return readdirSync(logDir).filter((name) => name.endsWith(".jsonl")).map((name) => name.replace(/\.jsonl$/, ""));
@@ -703,8 +722,10 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
             return [];
           }
         })(),
-        (candidate) => existsSync(join(logDir, `${candidate}.jsonl`)) || live.has(candidate),
+        (candidate) => existsSync(join(logDir, `${candidate}.jsonl`)) || live.has(candidate) || allocatedIds.has(candidate),
       );
+      allocatedIds.add(id);
+      return id;
     },
   });
 
@@ -746,6 +767,19 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   // status surface consults the log dir through the same reconstruction session_start uses,
   // so an empty registry still surfaces stale runs (the net that survives a dead runner).
   const statusApi = registerDelegationStatus(pi, registry, { staleRuns: () => reconstructFromLogDir(logDir, now(), { prune: false }) });
+
+  // Plan v2 R4: the `queue` tool (delegation-queue.ts) rides the SAME registry instance. Its
+  // opts extract everything it shares with the delegate tool — the persona scan, the
+  // byte-identical unknown-persona message, cwd validation and the argv builder — so the new
+  // module never imports this one (no cycle).
+  const queueOpts: DelegationQueueOpts = {
+    scanPersonas: (cwd) => scanPersonas(cwd),
+    agentsDirFor: (cwd) => join(cwd, ...AGENTS_DIR),
+    unknownPersonaMessage: (agent, agentsDir, personas) => unknownPersonaMessage(agent, agentsDir, personas),
+    validateChildCwd,
+    buildInvocation: (persona, task, model) => piInvocation(delegationArgs(persona, task, model)),
+  };
+  registerDelegationQueue(pi, registry, queueOpts);
 
   // T72: the compact card the delegation-result followUp renders through in the transcript.
   // Batched messages (RR3) render as ONE box whose per-card verdict lines are styled by each
@@ -814,7 +848,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
 
       const persona = scan.personas.find((p) => p.name === params.agent);
       if (!persona) {
-        const message = `ai-badger: no persona named "${params.agent}" in ${agentsDir}.\nAvailable:\n${personaList(scan.personas)}`;
+        const message = unknownPersonaMessage(params.agent, agentsDir, scan.personas);
         toolCtx.ui.notify(message, "warning");
         return {
           content: text(message),

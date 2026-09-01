@@ -38,7 +38,7 @@ import type { DelegationRegistry } from "./delegation-registry.ts";
 
 // ------------------------------------------------------------------ contract constants
 
-/** The LLM tool name. Frozen: the child denylist is `--exclude-tools delegate,delegations`. */
+/** The LLM tool name. Frozen: the child denylist is `--exclude-tools delegate,delegations,queue,monitor,wait` (plan v2 R5, final). */
 export const DELEGATIONS_TOOL_NAME = "delegations";
 
 /** The human command name (pi slash command). */

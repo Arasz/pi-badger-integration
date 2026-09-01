@@ -56,7 +56,8 @@ function persona(overrides: Partial<Persona> = {}): Persona {
 
 describe("delegationArgs", () => {
   // row 1 — witnessed RED in lane P0; unskipped in P3 together with the argv change that
-  // satisfies it (`--mode json` + the delegate,delegations denylist, R3/R6).
+  // satisfies it (`--mode json` + the delegate,delegations denylist, R3/R6). Q-C5 (plan v2
+  // R5): the denylist is final — delegate,delegations,queue,monitor,wait.
   test("row 1 — argv carries JSON mode + new denylist", () => {
     const args = delegationArgs(persona({ systemPrompt: "" }), "Draft the plan");
 
@@ -66,7 +67,7 @@ describe("delegationArgs", () => {
       "json",
       "--no-session",
       "--exclude-tools",
-      "delegate,delegations",
+      "delegate,delegations,queue,monitor,wait",
     ]);
     const dash = args.indexOf("--");
     expect(dash).toBeGreaterThan(0);
@@ -85,7 +86,7 @@ describe("delegationArgs", () => {
       "json",
       "--no-session",
       "--exclude-tools",
-      "delegate,delegations",
+      "delegate,delegations,queue,monitor,wait",
       "--model",
       "openrouter/moonshotai/kimi-k2.6",
       "--append-system-prompt",
@@ -105,7 +106,7 @@ describe("delegationArgs", () => {
       "json",
       "--no-session",
       "--exclude-tools",
-      "delegate,delegations",
+      "delegate,delegations,queue,monitor,wait",
       "--model",
       "m",
       "--",
