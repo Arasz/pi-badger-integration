@@ -88,6 +88,17 @@ shows them, `cancel <id>` disarms. A monitor with no `timeoutMs` expires after 1
 delivers an `error` card once and is never retried. Outside the TUI every `monitor`
 action rejects loudly — there is no idle session to wake.
 
+The `wait` tool spends idle time without polling — and is allowed in every mode. It blocks
+the turn (the pending-tool idiom) until the FIRST of: a watched delegation settles (pass
+`ids` to scope the watch; the default is any live delegation), an armed monitor fires, the
+user sends a message, or the timeout passes (default 120 s, max 600 s, clamped). The
+tie-break is listener order (delegation → monitor → input → timeout) and the wait resolves
+exactly once. With nothing live and nothing armed it resolves immediately with
+`observed: "empty"` and guidance instead of idling. The result is a terse pointer
+(`details: {observed, waitedMs, records?}`) — a monitor wake's payload rides the
+monitor-event card and is never duplicated. A turn abort or session shutdown resolves the
+wait as `observed: "aborted"`; nothing sends after shutdown.
+
 ## One-time cleanup after the switch to directory installs (do once, by hand)
 
 The old publish flow installed two flat files, and ai-badger's installer used a

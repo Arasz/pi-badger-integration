@@ -54,6 +54,15 @@ export const MONITOR_CUSTOM_TYPE = "monitor-event";
 /** The LLM-facing tool names this extension registers (also on the child denylist, R5). */
 export const MONITOR_TOOL_NAME = "monitor";
 
+/** The idle-wait tool (R8): pending-tool idiom, resolves on the first wake source. */
+export const WAIT_TOOL_NAME = "wait";
+
+/** Default wait ceiling before the fleet snapshot resolves (R8: 120 s). */
+export const WAIT_DEFAULT_MS = 120_000;
+
+/** Upper bound of a wait (R8: 600 s, clamped not rejected). */
+export const WAIT_MAX_MS = 600_000;
+
 /** Custom entry type of the shutdown report (M-B4). */
 export const SHUTDOWN_ENTRY_TYPE = "monitor-shutdown";
 
@@ -119,6 +128,18 @@ interface ArmedMonitor {
 	timer?: unknown;
 }
 
+/** One in-flight wait (R8): resolve-once; every source cleans up through `settle`. */
+interface PendingWait {
+	ids?: string[];
+	startedAt: number;
+	settled: boolean;
+	settle(observed: "delegation" | "monitor" | "input" | "timeout" | "empty" | "aborted", records?: DelegationView[]): void;
+	unsubscribe: () => void;
+	timer?: unknown;
+	signal?: AbortSignal;
+	onAbort?: () => void;
+}
+
 /** The tool result shape every action returns. */
 interface ToolResult {
 	content: Array<{ type: "text"; text: string }>;
@@ -127,6 +148,21 @@ interface ToolResult {
 
 function textResult(text: string, details: Record<string, unknown>): ToolResult {
 	return { content: [{ type: "text", text }], details };
+}
+
+/**
+ * Clamp a wait request (R8): undefined or non-finite → the 120 s default; anything above the
+ * 600 s cap is clamped there; 0 and in-range values pass through. Clamped, never rejected.
+ */
+function clampWaitMs(timeoutMs: number | undefined): number {
+	const value = typeof timeoutMs === "number" && Number.isFinite(timeoutMs) ? timeoutMs : WAIT_DEFAULT_MS;
+	return Math.min(WAIT_MAX_MS, Math.max(0, value));
+}
+
+/** Terminal delegation states — the live/unlive line for waits (a live record never enters
+ * `lost`/`stale`; those exist only on log-dir reconstruction, which never transitions here). */
+function isTerminalState(state: string): boolean {
+	return state === "completed" || state === "failed" || state === "aborted";
 }
 
 // ------------------------------------------------------------------ factory
@@ -151,8 +187,10 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 	// ---- session state: armed monitors + the incremental fleet view (see module header)
 	const armed = new Map<string, ArmedMonitor>();
 	const delegationViews = new Map<string, DelegationView>();
+	const pendingWaits = new Set<PendingWait>();
 	let monitorSeq = 0;
 	let unsubscribeTransition: (() => void) | undefined;
+	let inputArmed = false;
 
 	const displayName = (record: ArmedMonitor): string => record.name ?? record.id;
 
@@ -196,6 +234,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			firedAt: now(),
 			snapshot,
 		});
+		notifyWaitsOfMonitorFire();
 	};
 
 	/** Disarm + one error card, never retried (M-B3). */
@@ -242,11 +281,168 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		evaluateArmedMonitors();
 	};
 
-	/** First use arms the subscription (A6/M-B1): never at factory load. */
+	// ---------------------------------------------------------------- wait sources (R8)
+
+	const viewOf = (record: TransitionPayload["record"]): DelegationView => ({
+		id: record.id,
+		agent: record.agent,
+		state: record.state,
+		exitCode: record.exitCode ?? null,
+	});
+
+	const fleetSnapshot = (): DelegationView[] => [...delegationViews.values()];
+
+	/** Empty means NO source can ever fire: no live delegation in scope and no armed monitor.
+	 * Input/timeout do not count — waiting just to time out is what "empty" exists to prevent. */
+	const nothingToWaitFor = (ids: string[] | undefined): boolean => {
+		const views = fleetSnapshot();
+		const inScope = ids ? views.filter((view) => ids.includes(view.id)) : views;
+		if (inScope.some((view) => view.state === "queued" || view.state === "running")) return false;
+		return armed.size === 0;
+	};
+
+	const cleanupWait = (wait: PendingWait): void => {
+		wait.unsubscribe();
+		if (wait.timer !== undefined) {
+			scheduler.clearTimeout(wait.timer);
+			wait.timer = undefined;
+		}
+		if (wait.signal && wait.onAbort) wait.signal.removeEventListener("abort", wait.onAbort);
+		pendingWaits.delete(wait);
+	};
+
+	/** The monitor fire path wakes every pending wait — AFTER the current synchronous dispatch
+	 * (microtask), so a delegation settle in the same drain wins the tie-break (W-A3) while the
+	 * card has already been sent. The payload is never duplicated into the wait result. */
+	const notifyWaitsOfMonitorFire = (): void => {
+		if (pendingWaits.size === 0) return;
+		queueMicrotask(() => {
+			for (const wait of [...pendingWaits]) wait.settle("monitor");
+		});
+	};
+
+	/** The input source is armed ONCE (pi.on has no unsubscribe): a persistent observer that
+	 * no-ops while nothing is pending and never consumes or transforms the input (S-1: shipped
+	 * behind the Tier-1 emitInput passthrough probe, which passed on this pi build). */
+	const ensureInputArmed = (): void => {
+		if (inputArmed) return;
+		inputArmed = true;
+		pi.on("input", () => {
+			if (pendingWaits.size === 0) return undefined;
+			for (const wait of [...pendingWaits]) wait.settle("input");
+			return undefined;
+		});
+	};
+
+	function waitResult(
+		observed: "delegation" | "monitor" | "input" | "timeout" | "empty" | "aborted",
+		startedAt: number,
+		records?: DelegationView[],
+	): ToolResult {
+		const waitedMs = Math.max(0, now() - startedAt);
+		const first = records?.[0];
+		const lines: Record<string, string> = {
+			delegation: `Wait resolved: delegation ${first?.id ?? "?"} settled (${first?.state ?? "?"}) after ${humanizeMs(waitedMs)}.`,
+			monitor: `Wait resolved: a monitor fired after ${humanizeMs(waitedMs)} — see the monitor-event card for the snapshot (not duplicated here).`,
+			input: `Wait resolved: the user sent a message after ${humanizeMs(waitedMs)}.`,
+			timeout: `Wait ended: timeout after ${humanizeMs(waitedMs)} — no watched delegation settled; fleet snapshot in details.`,
+			empty:
+				"Nothing to wait for — no live delegations and no armed monitors. Start a delegation (delegate) or arm a monitor (monitor register), then wait again.",
+			aborted: `Wait ended: aborted (the turn was aborted or the session is shutting down) after ${humanizeMs(waitedMs)}.`,
+		};
+		return textResult(lines[observed]!, {
+			observed,
+			waitedMs,
+			...(records !== undefined ? { records } : {}),
+		});
+	}
+
+	const WaitParams = Type.Object({
+		ids: Type.Optional(
+			Type.Array(Type.String(), {
+				description: "delegate run ids to watch; default: every delegation — the FIRST settle resolves the wait",
+			}),
+		),
+		timeoutMs: Type.Optional(
+			Type.Number({
+				description: `give up after this long (default ${WAIT_DEFAULT_MS / 1000}s, max ${WAIT_MAX_MS / 1000}s, clamped) — resolves with a fleet snapshot, never an error`,
+			}),
+		),
+	});
+	type WaitParams = { ids?: string[]; timeoutMs?: number };
+
+	async function executeWait(
+		_toolCallId: string,
+		params: WaitParams,
+		signal: AbortSignal | undefined,
+		_onUpdate: unknown,
+		ctx: unknown,
+	): Promise<ToolResult> {
+		void ctx; // wait is allowed in EVERY mode (self-degrading) — no gate on purpose (R8)
+		const ids = (params.ids ?? []).map((id) => String(id).trim()).filter((id) => id.length > 0);
+		const timeoutMs = clampWaitMs(params.timeoutMs);
+		const startedAt = now();
+		ensureTransitionArmed(); // first use arms the subscription (A6/M-B1)
+		ensureInputArmed();
+
+		if (signal?.aborted) return waitResult("aborted", startedAt);
+
+		return await new Promise<ToolResult>((resolve) => {
+			const wait: PendingWait = {
+				...(ids.length > 0 ? { ids } : {}),
+				startedAt,
+				settled: false,
+				settle: () => {},
+				unsubscribe: () => {},
+			};
+			const finish = (observed: "delegation" | "monitor" | "input" | "timeout" | "empty" | "aborted", records?: DelegationView[]): void => {
+				if (wait.settled) return; // resolve-once (W-A3)
+				wait.settled = true;
+				cleanupWait(wait);
+				resolve(waitResult(observed, startedAt, records));
+			};
+			wait.settle = finish;
+
+			// Tie-break = listener registration order (delegation → monitor → input → timeout):
+			// 1. the delegation source subscribes FIRST;
+			wait.unsubscribe =
+				pi.events?.on(TRANSITION_CHANNEL, (payload: unknown) => {
+					if (!isTransitionPayload(payload)) return;
+					if (wait.ids && !wait.ids.includes(payload.id)) return;
+					if (!isTerminalState(payload.state)) return;
+					finish("delegation", [viewOf(payload.record)]);
+				}) ?? (() => {});
+			// 2. the monitor source joins pendingWaits (fire path notifies);
+			pendingWaits.add(wait);
+			// 3. the input source is the persistent pi.on("input") observer;
+			// 4. the timeout — resolves with a snapshot, never an error.
+			wait.timer = scheduler.setTimeout(() => finish("timeout", fleetSnapshot()), timeoutMs);
+			// W-A5: the turn's abort signal ends the wait without an unhandled rejection.
+			if (signal) {
+				const onAbort = (): void => finish("aborted");
+				signal.addEventListener("abort", onAbort);
+				wait.signal = signal;
+				wait.onAbort = onAbort;
+			}
+			// W-A4: the liveness re-check runs AFTER subscribing — a settle landing between the
+			// subscription and this check resolved above; only a truly empty fleet resolves empty.
+			queueMicrotask(() => {
+				if (!wait.settled && nothingToWaitFor(wait.ids)) finish("empty");
+			});
+		});
+	}
+
+	/** First use arms the subscription (A6/M-B1): never at factory load. session_start arms it
+	 * too — the fleet view must accumulate from the session's FIRST transition, not from the
+	 * first monitor/wait, or delegations settled before any use would be invisible to waits. */
 	const ensureTransitionArmed = (): void => {
 		if (unsubscribeTransition || !pi.events) return;
 		unsubscribeTransition = pi.events.on(TRANSITION_CHANNEL, onTransition);
 	};
+
+	pi.on("session_start", () => {
+		ensureTransitionArmed();
+	});
 
 	const onExpiry = (id: string): void => {
 		const record = armed.get(id);
@@ -439,6 +635,22 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		execute,
 	});
 
+	// ---------------------------------------------------------------- wait tool (R8)
+
+	pi.registerTool({
+		name: WAIT_TOOL_NAME,
+		label: "Wait",
+		description: [
+			"Spend idle time without polling: block this turn until the FIRST of — a watched delegation settles",
+			"(ids filter; default any live delegation), an armed monitor fires, the user sends a message, or the timeout",
+			"(default 120s, max 600s — the timeout resolves with a fleet snapshot, never an error). With nothing live and",
+			"nothing armed it resolves immediately with observed 'empty'. Allowed in every mode. The result is a terse",
+			"pointer: a monitor wake's payload rides the monitor-event card, never this result.",
+		].join(" "),
+		parameters: WaitParams,
+		execute: executeWait,
+	});
+
 	// ---------------------------------------------------------------- renderer
 
 	// T72-analog: the compact card the monitor-event followUp renders through. One Box, tone by
@@ -469,6 +681,9 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			unsubscribeTransition();
 			unsubscribeTransition = undefined;
 		}
+		// Pending waits resolve terminally (W-A5/S-9c): settle() only builds tool results —
+		// nothing sends after shutdown.
+		for (const wait of [...pendingWaits]) wait.settle("aborted");
 		delegationViews.clear();
 		pi.appendEntry(SHUTDOWN_ENTRY_TYPE, { monitors: report });
 	});
