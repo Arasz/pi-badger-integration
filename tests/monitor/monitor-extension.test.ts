@@ -240,6 +240,29 @@ describe("M-B3: throwing predicates", () => {
   });
 });
 
+// ------------------------------------------------------------------ QA F2
+
+describe("QA F2: a predicate that is true at registration fires immediately (wiring layer)", () => {
+  test("registering an already-true predicate delivers the fired card and leaves nothing armed", async () => {
+    const { pi } = makeCombinedHarness();
+    // arm the subscription with a silent monitor, then put a live delegation in the map —
+    // so the NEXT registration's own evaluation sees a non-empty fleet
+    await register(pi, { predicate: "false", name: "silent" });
+    pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running"));
+    expect(sentMonitorEvents(pi)).toHaveLength(0);
+
+    const receipt = await register(pi, { predicate: "delegations.length > 0", name: "already-true" });
+    expect(receipt.details.state).toBe("fired"); // the receipt names the immediate fire, not a phantom arm
+
+    const cards = sentMonitorEvents(pi);
+    expect(cards).toHaveLength(1); // fired at registration, not on some later transition
+    expect(cards[0]!.message.details).toMatchObject({ kind: "fired", monitorId: "m-2" });
+    const listed = await monitorTool(pi)("tc-list", { action: "list" }, undefined, undefined, makeCtx());
+    expect(listed.content[0]!.text).toMatch(/silent/); // one-shot: only the fired monitor is gone
+    expect(listed.content[0]!.text).not.toMatch(/already-true/);
+  });
+});
+
 // ------------------------------------------------------------------ M-B4
 
 describe("M-B4: cap, cancel and shutdown (combined subagent + monitor load)", () => {

@@ -118,6 +118,10 @@ function queueTool(): {
   return h.tools.get("queue");
 }
 
+function registryOf(h: Harness): { abort(id: string): unknown } {
+  return (h.api as { registry: { abort(id: string): unknown } }).registry;
+}
+
 function delegateTool(): {
   execute(toolCallId: string, params: Record<string, unknown>, signal: AbortSignal | undefined, onUpdate: OnUpdate | undefined, ctx: unknown): Promise<ToolResult>;
 } {
@@ -399,4 +403,29 @@ describe("Q-C4 — the whole queue tool rejects in non-tui modes with guidance (
       });
     }
   }
+});
+
+// ------------------------------------------------------------------ S-1 (implementation review)
+
+describe("S-1: live positions agree with the core's definition across mutations", () => {
+  test("positions renumber densely 1..n after a member abort (agreement with liveQueuePosition)", async () => {
+    h = makeHarness("tui", { cap: 2 });
+    await callDelegate({ agent: "architect", task: "blocker 1" }, makeCtx(), "call-blocker-1");
+    await callDelegate({ agent: "architect", task: "blocker 2" }, makeCtx(), "call-blocker-2");
+    const g1 = await callQueue({ action: "add", agent: "architect", tasks: ["a1", "a2"] }, makeCtx(), "call-g1");
+    const g2 = await callQueue({ action: "add", agent: "tester", tasks: ["b1"] }, makeCtx(), "call-g2");
+    const ids = (r: typeof g1) => ((r.details as { tasks: Array<{ id: string }> }).tasks.map((x) => x.id));
+    expect(ids(g1)).toEqual(["d-3", "d-4"]);
+    expect(ids(g2)).toEqual(["d-5"]);
+
+    // abort the first queued member: the survivors must renumber densely 1..n — the
+    // liveQueuePosition contract the tool's rendering re-derives (S-1 cross-reference)
+    await registryOf(h).abort("d-3");
+    const after = await callQueue({ action: "list" }, makeCtx(), "call-list");
+    const positions = (after.details as { groups: Array<{ members: Array<{ id: string; queuePosition?: number }> }> })
+      .groups.flatMap((g) => g.members)
+      .reduce((acc, m) => acc.set(m.id, m.queuePosition), new Map<string, number | undefined>());
+    expect(positions.get("d-4")).toBe(1);
+    expect(positions.get("d-5")).toBe(2);
+  });
 });

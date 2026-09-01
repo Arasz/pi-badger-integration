@@ -169,6 +169,12 @@ export function registerDelegationQueue(
 	 * (monotone snapshots) and removes (order-preserving), so ranking the still-queued records
 	 * by snapshot reproduces the live flat order — the recomputed index after any admission,
 	 * member abort or clear (plan v2 R2, S-10). */
+	/** Live queue positions for rendering. SEMANTIC DEFINITION: delegation-core's
+	 * liveQueuePosition (flat 1-based index over pending members, plan v2 R2) — this module
+	 * cannot import the core's admission state, so it re-derives over registry snapshots.
+	 * The S-1 agreement row in tests/subagent-queue-tool.test.ts pins the two together:
+	 * positions renumber densely 1..n after admissions, member aborts and clears. If a
+	 * change here can disagree with liveQueuePosition, change the core instead. */
 	function livePositions(): Map<string, number> {
 		const queued = registry
 			.list()

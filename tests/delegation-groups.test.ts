@@ -215,6 +215,45 @@ describe("batch-commit-before-spawn (Q-B2 — plan v2 ★B5)", () => {
     });
   });
 
+  test("M1: a serial head that settles synchronously inside the enqueue loop leaves no phantom — the next member runs", async () => {
+    // The M1 defect (implementation review): the enqueue loop interleaved registration and
+    // spawn, so a head settling synchronously (spawn error / pre-aborted signal) promoted the
+    // next member BEFORE its record existed — spawnQueued dropped it and admission wedged on
+    // a phantom (queued record, running admission slot, never spawns, never settles).
+    let spawns = 0;
+    const h = makeRegistry({
+      spawnFn: () => {
+        spawns += 1;
+        const child = spawns === 1 ? new SyncFailChild() : new FakeChild(); // head self-settles inside run()
+        h.children.push(child);
+        return child;
+      },
+    });
+    const outcomes = await h.registry.enqueueGroup(
+      [startRequest({ task: "a" }), startRequest({ task: "b" }), startRequest({ task: "c" })],
+      "serial",
+    );
+
+    // every member exists with a truthful record: a failed, b promoted to running by a's
+    // settle, c queued behind b — the promotion was NOT dropped
+    expect(idsOf(outcomes)).toEqual(["d-1", "d-2", "d-3"]);
+    expect(outcomes[0].ok && outcomes[0].record.state).toBe("failed");
+    expect(outcomes[1].ok && outcomes[1].record.state).toBe("running");
+    expect(outcomes[2].ok && outcomes[2].record.state).toBe("queued");
+    expect(h.registry.get("d-2")?.state).toBe("running");
+    expect(h.registry.get("d-3")?.state).toBe("queued");
+
+    // no wedge: the system accepts a run-now start immediately (the phantom blocked it)
+    const late = await h.registry.start(startRequest({ task: "late" }));
+    expect(late.ok && late.record.state).toBe("queued"); // serial head b still owns the ordering
+
+    // and the queue still drains: b settles → c runs → c settles → late runs
+    h.children[1]!.exit(0);
+    expect(h.registry.get("d-3")?.state).toBe("running");
+    h.children[2]!.exit(0);
+    expect(h.registry.get("d-4")?.state).toBe("running");
+  });
+
   test("Q-B2: the same invariant on the release path — a parallel group admitted by a release spawns once each", async () => {
     let spawns = 0;
     const h = makeRegistry({

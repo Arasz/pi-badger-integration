@@ -1,6 +1,12 @@
 /**
  * Pure core for the background monitor extension (plan v2 rulings R6/R7/R9, rows M-A1–M-A4).
  *
+ * Trust note (review N-5): the vm context bounds RUNTIME (the 250 ms timeout) and gives the
+ * predicate a fresh global scope — it is a contention guard, not a security boundary. A
+ * determined predicate can still reach host objects through the snapshot's prototype chain
+ * (the classic vm escape); the trust model is "the predicate author is the user's own agent",
+ * and the README says so.
+ *
  * Everything the wiring (wave 2: tools, transition subscription, expiry timers, enforcement)
  * needs that can be decided without a process, a clock or pi itself lives here: predicate
  * compilation and evaluation, the one-shot edge transition, monitor-event content
@@ -22,7 +28,7 @@
  * evaluator: the next healthy predicate still runs.
  */
 
-import { createContext, runInContext, Script } from "node:vm";
+import { createContext, Script } from "node:vm";
 
 // ------------------------------------------------------------------ snapshot shape
 
@@ -79,6 +85,19 @@ function wrapExpression(predicate: string): string {
 	return `(function(){ return (${predicate}) })()`;
 }
 
+/** Second compile gate (review N1): the function-body wrap is escapable by wrapper-smuggling
+ * (`1) } //x` closes the function and comments the tail). Requiring the bare parenthesized
+ * expression to compile on its own rejects those — the two gates together are exactly
+ * "an expression and nothing else". */
+function smugglesStatements(predicate: string): boolean {
+	try {
+		new Script(`(${predicate})`, { filename: "monitor-predicate-bare" });
+		return false;
+	} catch {
+		return true;
+	}
+}
+
 /**
  * Compile `return (${predicate})` without running it. Registration calls this BEFORE
  * consuming the active-monitor cap: a statement (or an over-cap string) fails here with the
@@ -93,6 +112,9 @@ export function compilePredicate(predicate: string): PredicateCompileResult {
 	}
 	try {
 		new Script(wrapExpression(predicate), { filename: "monitor-predicate" });
+		if (smugglesStatements(predicate)) {
+			return { kind: "syntax-error", reason: "predicate must be a single expression — statements are not allowed" };
+		}
 		return { kind: "ok" };
 	} catch (err) {
 		return { kind: "syntax-error", reason: err instanceof Error ? err.message : String(err) };
@@ -121,7 +143,9 @@ export function evaluatePredicate(predicate: string, snapshot: MonitorSnapshot):
 	const context = createContext({ delegations: snapshot.delegations, monitors: snapshot.monitors });
 	let value: unknown;
 	try {
-		value = runInContext(wrapExpression(predicate), context, {
+		// One Script, built once and run (review N8): compiling then re-parsing the same source
+		// per evaluation doubles the parse for every monitor on every transition.
+		value = new Script(wrapExpression(predicate), { filename: "monitor-predicate" }).runInContext(context, {
 			timeout: PREDICATE_TIMEOUT_MS,
 			displayErrors: true,
 		});
@@ -233,7 +257,8 @@ function capTail(text: string, used: number, budget: number): string {
 }
 
 /** Humanize a monitor lifetime (≤ 60 min by construction): "45s", "1m 30s", "10m". */
-function formatMonitorLifetime(ms: number): string {
+/** Humanize a monitor lifetime for cards and receipts: "45s", "1m30s", "10m". */
+export function formatMonitorLifetime(ms: number): string {
 	const totalSeconds = Math.max(0, Math.round(ms / 1000));
 	const minutes = Math.floor(totalSeconds / 60);
 	const seconds = totalSeconds % 60;

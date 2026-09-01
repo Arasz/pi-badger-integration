@@ -229,32 +229,55 @@ export class DelegationRegistry {
     this.admission = step.state; // the whole drain committed before any spawn (Q-B2)
     const admittedNow = new Set(step.decision.admittedNow);
     const positionOf = new Map(step.decision.queued.map((queued) => [queued.id, queued.queuePosition]));
+    // Phase 1 — register EVERY member before spawning any (M1): a synchronous settle inside
+    // the first spawn promotes the next member and must find its record, deferred and
+    // queuedRequests already in place, or the promotion is silently dropped and admission
+    // wedges on a phantom.
+    const deferredOf = new Map<string, Deferred<DelegationRecord>>();
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i]!;
+      const deferred = createDeferred<DelegationRecord>();
+      this.deferreds.set(id, deferred);
+      deferredOf.set(id, deferred);
+      if (admittedNow.has(id)) continue; // spawned in phase 2; spawnNow registers the running record
+      const request = requests[i]!;
+      const record: DelegationRecord = {
+        id,
+        agent: request.agent,
+        task: request.task,
+        toolCallId: request.toolCallId ?? "", // P3 always supplies one; "" marks none
+        ...(request.sessionId !== undefined ? { sessionId: request.sessionId } : {}),
+        state: "queued",
+        startedAt: this.now(), // request time — start-order sorting stays stable (R7)
+        exitCode: null,
+        queuePosition: positionOf.get(id),
+      };
+      this.records.set(id, record);
+      this.queuedRequests.set(id, request);
+      this.emitTransition(record);
+    }
+    // Phase 2 — spawn the admit-now members; a synchronous settle here promotes (and now
+    // correctly spawns) queued siblings through spawnQueued before the loop advances.
     const outcomes: GroupMemberOutcome[] = [];
     for (let i = 0; i < ids.length; i++) {
       const id = ids[i]!;
-      const request = requests[i]!;
-      const deferred = createDeferred<DelegationRecord>();
-      this.deferreds.set(id, deferred);
-      if (admittedNow.has(id)) {
-        const spawned = this.spawnNow(id, request);
-        outcomes.push({ ok: true, id, groupId, mode, record: spawned.record, done: spawned.done });
-      } else {
-        const record: DelegationRecord = {
-          id,
-          agent: request.agent,
-          task: request.task,
-          toolCallId: request.toolCallId ?? "", // P3 always supplies one; "" marks none
-          ...(request.sessionId !== undefined ? { sessionId: request.sessionId } : {}),
-          state: "queued",
-          startedAt: this.now(), // request time — start-order sorting stays stable (R7)
-          exitCode: null,
-          queuePosition: positionOf.get(id),
-        };
-        this.records.set(id, record);
-        this.queuedRequests.set(id, request);
-        this.emitTransition(record);
-        outcomes.push({ ok: true, id, groupId, mode, record: snapshotRecord(record), done: deferred.promise });
-      }
+      if (!admittedNow.has(id)) continue;
+      const spawned = this.spawnNow(id, requests[i]!);
+      outcomes.push({ ok: true, id, groupId, mode, record: spawned.record, done: spawned.done });
+    }
+    // Phase 3 — outcomes for the queued members, built AFTER the spawns so a member the
+    // synchronous-settle cascade promoted (or even settled) reports its live state.
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i]!;
+      if (admittedNow.has(id)) continue;
+      outcomes.push({
+        ok: true,
+        id,
+        groupId,
+        mode,
+        record: this.snapshotFor(id),
+        done: deferredOf.get(id)!.promise,
+      });
     }
     return outcomes;
   }
@@ -398,6 +421,7 @@ export class DelegationRegistry {
   }
 
   private emitTransition(record: DelegationRecord): void {
+    if (this.stopped) return; // row-38 symmetry with notify: shutdown-initiated state changes carry no wire traffic (S2)
     const previousState = this.previousStates.get(record.id);
     this.previousStates.set(record.id, record.state);
     if (!this.deps.emit) return;

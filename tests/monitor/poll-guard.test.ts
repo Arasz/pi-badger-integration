@@ -100,6 +100,16 @@ describe("E-A1: the poll guard blocks the 4th counted call in the window", () =>
     expect(blocked?.reason).toMatch(/monitor/);
   });
 
+  test("blocked attempts count: the 5th call's reason names #5 (QA F1 — the caller must append blocked timestamps)", () => {
+    const { pi } = makeCombinedHarness();
+    const delegations = registeredDelegationsName(pi);
+    for (let i = 0; i < 3; i++) expect(fireToolCall(pi, delegations, { action: "list" })).toBeUndefined();
+    expect(fireToolCall(pi, delegations, { action: "list" })?.reason).toMatch(/#4/);
+    // the blocked 4th itself counts (R9): the 5th's reason must advance to #5 — red under a
+    // wiring that only pushes timestamps on the allow branch
+    expect(fireToolCall(pi, delegations, { action: "list" })?.reason).toMatch(/#5/);
+  });
+
   test("list and log count toward the same window", () => {
     const { pi } = makeCombinedHarness();
     const delegations = registeredDelegationsName(pi);

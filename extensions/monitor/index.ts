@@ -35,19 +35,7 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { TRANSITION_CHANNEL } from "../subagent/index.ts";
-import {
-	type DelegationView,
-	clampMonitorCap,
-	clampMonitorTimeoutMs,
-	compilePredicate,
-	composeMonitorEvent,
-	DEFAULT_POLL_MAX,
-	DEFAULT_POLL_WINDOW_MS,
-	evaluateMonitor,
-	MONITOR_TIMEOUT_DEFAULT_MS,
-	type MonitorSnapshot,
-	pollingDecision,
-} from "./monitor-core.ts";
+import { DEFAULT_POLL_MAX, DEFAULT_POLL_WINDOW_MS, MONITOR_TIMEOUT_DEFAULT_MS, clampMonitorCap, clampMonitorTimeoutMs, compilePredicate, composeMonitorEvent, evaluateMonitor, formatMonitorLifetime, pollingDecision, type DelegationView, type MonitorSnapshot } from "./monitor-core.ts";
 
 // ------------------------------------------------------------------ contract constants
 
@@ -117,15 +105,6 @@ function isTransitionPayload(payload: unknown): payload is TransitionPayload {
 		typeof (candidate.record as Record<string, unknown>).id === "string" &&
 		typeof (candidate.record as Record<string, unknown>).state === "string"
 	);
-}
-
-/** Humanize a remaining/elapsed monitor lifetime: "45s", "1m30s", "10m". */
-function humanizeMs(ms: number): string {
-	const totalSeconds = Math.max(0, Math.round(ms / 1000));
-	const minutes = Math.floor(totalSeconds / 60);
-	const seconds = totalSeconds % 60;
-	if (minutes === 0) return `${seconds}s`;
-	return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
 }
 
 /** One armed monitor as the wiring tracks it (R7: armed at register, lifetime clamped). */
@@ -213,9 +192,12 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		expiresAt: record.expiresAt,
 	});
 
-	/** The snapshot predicates evaluate against (R6): the whole fleet view + armed names. */
+	/** The snapshot predicates evaluate against (R6): the whole fleet view + armed names.
+	 * Copies, not live objects: the sandbox realm receives host objects by reference, so a
+	 * predicate that mutates a delegation view would otherwise falsify the fleet map for every
+	 * later monitor and wait (review S1). Frozen belt-and-braces on top of the copy. */
 	const currentSnapshot = (): MonitorSnapshot => ({
-		delegations: [...delegationViews.values()],
+		delegations: [...delegationViews.values()].map((view) => Object.freeze({ ...view })),
 		monitors: [...armed.values()].map((record) => ({ name: displayName(record) })),
 	});
 
@@ -354,13 +336,13 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		const waitedMs = Math.max(0, now() - startedAt);
 		const first = records?.[0];
 		const lines: Record<string, string> = {
-			delegation: `Wait resolved: delegation ${first?.id ?? "?"} settled (${first?.state ?? "?"}) after ${humanizeMs(waitedMs)}.`,
-			monitor: `Wait resolved: a monitor fired after ${humanizeMs(waitedMs)} — see the monitor-event card for the snapshot (not duplicated here).`,
-			input: `Wait resolved: the user sent a message after ${humanizeMs(waitedMs)}.`,
-			timeout: `Wait ended: timeout after ${humanizeMs(waitedMs)} — no watched delegation settled; fleet snapshot in details.`,
+			delegation: `Wait resolved: delegation ${first?.id ?? "?"} settled (${first?.state ?? "?"}) after ${formatMonitorLifetime(waitedMs)}.`,
+			monitor: `Wait resolved: a monitor fired after ${formatMonitorLifetime(waitedMs)} — see the monitor-event card for the snapshot (not duplicated here).`,
+			input: `Wait resolved: the user sent a message after ${formatMonitorLifetime(waitedMs)}.`,
+			timeout: `Wait ended: timeout after ${formatMonitorLifetime(waitedMs)} — no watched delegation settled; fleet snapshot in details.`,
 			empty:
 				"Nothing to wait for — no live delegations and no armed monitors. Start a delegation (delegate) or arm a monitor (monitor register), then wait again.",
-			aborted: `Wait ended: aborted (the turn was aborted or the session is shutting down) after ${humanizeMs(waitedMs)}.`,
+			aborted: `Wait ended: aborted (the turn was aborted or the session is shutting down) after ${formatMonitorLifetime(waitedMs)}.`,
 		};
 		return textResult(lines[observed]!, {
 			observed,
@@ -590,7 +572,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		}
 		return textResult(
 			`Monitor ${record.id} armed — evaluates on every delegation transition, fires once when the predicate first evaluates true. ` +
-				`Expires in ${humanizeMs(record.timeoutMs)} (at ${record.expiresAt}).`,
+				`Expires in ${formatMonitorLifetime(record.timeoutMs)} (at ${record.expiresAt}).`,
 			{ ...echo, state: "armed" },
 		);
 	}
@@ -602,7 +584,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		const lines = [...armed.values()].map(
 			(record) =>
 				`${record.id}${record.name !== undefined ? ` (${record.name})` : ""} — ${record.predicate} — ` +
-				`armed ${humanizeMs(nowMs - record.armedAt)} ago, expires in ${humanizeMs(record.expiresAt - nowMs)}` +
+				`armed ${formatMonitorLifetime(nowMs - record.armedAt)} ago, expires in ${formatMonitorLifetime(record.expiresAt - nowMs)}` +
 				`${record.interrupt ? ", interrupt" : ""}`,
 		);
 		return textResult(lines.join("\n"), {
@@ -688,7 +670,8 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 	const pollWindowMs = deps.pollGuard?.windowMs ?? DEFAULT_POLL_WINDOW_MS;
 
 	/** The kill switch reads PER CALL (R9/N-4): unset or invalid → the configured default;
-	 * 0 → the guard is off entirely (no counting, so re-enabling starts a fresh window). */
+	 * 0 → nothing counts while disabled, and earlier timestamps still count once re-enabled
+	 * until they age out of the window (pinned by the E-A2 env row). */
 	const envPollMax = (): { max: number; enabled: boolean } => {
 		const fallback = deps.pollGuard?.max ?? DEFAULT_POLL_MAX;
 		const raw = process.env[POLL_GUARD_ENV];
