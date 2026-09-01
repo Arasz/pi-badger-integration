@@ -10,7 +10,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   AGENTS_DIR,
-  TOOL_NAME,
   capOutput,
   delegationArgs,
   personaList,
@@ -146,19 +145,17 @@ describe("scanPersonas", () => {
 });
 
 describe("delegationArgs", () => {
-  test("runs headless, in JSON mode, keeps no session, and excludes both delegation tools so delegation cannot recurse", () => {
+  test("runs headless, in JSON mode, keeps no session, and excludes the delegation surfaces so delegation cannot recurse", () => {
     const args = delegationArgs(persona(), "Draft the plan");
 
-    // Amended by lane P3 (outside its owned-file set — flagged for the orchestrator): the
-    // committed tests-doc contract (rows 1–3, subagent-tool.test.ts) supersedes this legacy
-    // pin; delegationArgs now emits `--mode json` (R3) and excludes `delegate,delegations` (R6).
+    // Q-C5 (plan v2 R5): the child denylist is FINAL — delegate,delegations,queue,monitor,wait.
     expect(args).toEqual([
       "-p",
       "--mode",
       "json",
       "--no-session",
       "--exclude-tools",
-      `${TOOL_NAME},delegations`,
+      "delegate,delegations,queue,monitor,wait",
       "--append-system-prompt",
       "# Architect\n",
       "--",

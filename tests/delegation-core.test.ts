@@ -26,11 +26,14 @@ import {
   elideTeeStream,
   emptyAdmission,
   emptyUsage,
+  enqueueGroup,
   extractAnswer,
   formatUsage,
+  liveQueuePosition,
   parseChildEvent,
   pruneLogFiles,
   releaseRun,
+  removePending,
   renderDelegationStatus,
   type DelegationStatusRun,
 } from "../extensions/subagent/delegation-core.ts";
@@ -324,7 +327,9 @@ describe("admission policy (row 22)", () => {
     expect(step.decision).toEqual({ action: "queue", queuePosition: 1 });
 
     const release = releaseRun(state, "r1", caps);
-    expect(release.admitted).toBe("r3");
+    // plan v2 R2: release is group-aware and generalized — `admitted` is the list of ids the
+    // drain admitted (a single is a one-element serial group, so exactly one here).
+    expect(release.admitted).toEqual(["r3"]);
     expect(release.state.running).toEqual(["r2", "r3"]);
     expect(release.state.queue).toEqual([]);
   });
@@ -338,6 +343,218 @@ describe("admission policy (row 22)", () => {
     expect(step.decision.action).toBe("reject");
     expect(step.decision.action === "reject" ? step.decision.reason : "").toContain("full");
     expect(step.state).toBe(state);
+  });
+});
+
+// ------------------------------------------------------------------ group admission (plan v2 R2/R3/R4 — packages P1)
+
+/** The R2 contract itself: ≤4 running, ≤16 queued. */
+const GROUP_CAPS: AdmissionCaps = { cap: 4, queueCap: 16 };
+
+function memberIds(n: number, prefix = "m"): string[] {
+  return Array.from({ length: n }, (_, i) => `${prefix}${i + 1}`);
+}
+
+describe("enqueueGroup (Q-A1, Q-A2 — plan v2 R3 serial-overflow, all-or-nothing)", () => {
+  test("Q-A1: a parallel group bigger than the running cap is rejected at enqueue, naming the cap, the env override and the split remedy", () => {
+    const state = emptyAdmission();
+    const step = enqueueGroup(state, "g1", "parallel", memberIds(5), GROUP_CAPS);
+
+    expect(step.decision.action).toBe("reject");
+    const reason = step.decision.action === "reject" ? step.decision.reason : "";
+    expect(reason).toContain("5"); // the group size
+    expect(reason).toContain("cap of 4"); // the running cap
+    expect(reason).toContain("PI_BADGER_SUBAGENT_MAX_CONCURRENT"); // the env override
+    expect(reason).toContain("split"); // the split remedy
+    expect(step.state).toBe(state); // all-or-nothing: the state is untouched, never partially applied
+  });
+
+  test("Q-A2: enqueueing past the 16-task queue cap rejects the whole group; exactly-full is admitted", () => {
+    // idle system, serial group of 18: one member would admit now, 17 pending > 16 → reject
+    const state = emptyAdmission();
+    const step = enqueueGroup(state, "g1", "serial", memberIds(18), GROUP_CAPS);
+    expect(step.decision.action).toBe("reject");
+    const reason = step.decision.action === "reject" ? step.decision.reason : "";
+    expect(reason).toContain("16"); // the queue cap
+    expect(reason).toContain("split"); // the split remedy
+    expect(step.state).toBe(state); // all-or-nothing
+
+    // boundary: serial group of 17 → 1 admits now + exactly 16 pending → accepted
+    const ok = enqueueGroup(emptyAdmission(), "g2", "serial", memberIds(17), GROUP_CAPS);
+    expect(ok.decision.action).toBe("accepted");
+    expect(ok.decision.action === "accepted" ? ok.decision.admittedNow : []).toEqual(["m1"]);
+    expect(ok.state.queue).toHaveLength(16);
+
+    // behind a full flat queue even a one-member group is rejected (the cap is flat, not per-group)
+    let full = emptyAdmission();
+    for (let i = 1; i <= 4; i++) full = admitRequest(full, `r${i}`, GROUP_CAPS).state;
+    for (let i = 5; i <= 20; i++) full = admitRequest(full, `r${i}`, GROUP_CAPS).state;
+    expect(full.queue).toHaveLength(16);
+    const over = enqueueGroup(full, "g3", "serial", ["x"], GROUP_CAPS);
+    expect(over.decision.action).toBe("reject");
+    expect(over.state).toBe(full);
+  });
+});
+
+describe("group release (Q-A3–Q-A5 — plan v2 R2 FIFO of groups)", () => {
+  test("Q-A3: a serial group admits its next member only when none of that group is running and a slot is free", () => {
+    let state = emptyAdmission();
+    const step = enqueueGroup(state, "g1", "serial", ["a", "b"], GROUP_CAPS);
+    state = step.state;
+    // idle: the serial group admits exactly its FIRST member, one at a time
+    expect(step.decision.action === "accepted" ? step.decision.admittedNow : []).toEqual(["a"]);
+    expect(state.running).toEqual(["a"]);
+    expect(state.queue).toEqual(["b"]);
+
+    // release the running member → none of the group is running and a slot is free → b admits
+    const release = releaseRun(state, "a", GROUP_CAPS);
+    expect(release.admitted).toEqual(["b"]);
+    expect(release.state.running).toEqual(["b"]);
+    expect(release.state.queue).toEqual([]);
+  });
+
+  test("Q-A3 (slot occupied): a serial head with a free queue waits for a slot; the release admits it", () => {
+    const tight: AdmissionCaps = { cap: 1, queueCap: 16 };
+    let state = admitRequest(emptyAdmission(), "r1", tight).state; // the one slot is busy
+    const step = enqueueGroup(state, "g1", "serial", ["a"], tight);
+    state = step.state;
+    expect(step.decision.action === "accepted" ? step.decision.admittedNow : ["sentinel"]).toEqual([]);
+    expect(state.queue).toEqual(["a"]);
+
+    const release = releaseRun(state, "r1", tight);
+    expect(release.admitted).toEqual(["a"]);
+    expect(release.state.running).toEqual(["a"]);
+  });
+
+  test("Q-A4: a parallel group is admitted atomically only when every member fits — never partially", () => {
+    let state = emptyAdmission();
+    state = admitRequest(state, "s1", GROUP_CAPS).state;
+    state = admitRequest(state, "s2", GROUP_CAPS).state;
+    state = admitRequest(state, "s3", GROUP_CAPS).state; // 3 of 4 slots busy
+    const step = enqueueGroup(state, "g1", "parallel", ["p1", "p2", "p3"], GROUP_CAPS);
+    state = step.state;
+    // 3 + 3 > 4: the whole group waits
+    expect(step.decision.action === "accepted" ? step.decision.admittedNow : ["sentinel"]).toEqual([]);
+    expect(state.queue).toEqual(["p1", "p2", "p3"]);
+
+    // one slot freed → 2 + 3 > 4: still nothing admits (no partial admission)
+    let release = releaseRun(state, "s1", GROUP_CAPS);
+    expect(release.admitted).toEqual([]);
+    expect(release.state.queue).toEqual(["p1", "p2", "p3"]);
+
+    // the next slot frees → 1 + 3 ≤ 4: all three admit atomically, in order, never partially
+    release = releaseRun(release.state, "s2", GROUP_CAPS);
+    expect(release.admitted).toEqual(["p1", "p2", "p3"]);
+    expect(release.state.running).toEqual(["s3", "p1", "p2", "p3"]);
+    expect(release.state.queue).toEqual([]);
+  });
+
+  test("Q-A5: a fully-settled head group is popped before the next is considered; later groups never overtake", () => {
+    let state = emptyAdmission();
+    state = enqueueGroup(state, "gA", "serial", ["a1"], GROUP_CAPS).state; // a1 running
+    state = enqueueGroup(state, "gB", "serial", ["b1", "b2"], GROUP_CAPS).state; // behind gA
+    state = enqueueGroup(state, "gC", "serial", ["c1"], GROUP_CAPS).state; // behind gB
+    expect(state.queue).toEqual(["b1", "b2", "c1"]);
+
+    // a1 settles → gA pops, gB admits b1; gC never overtakes
+    let release = releaseRun(state, "a1", GROUP_CAPS);
+    expect(release.admitted).toEqual(["b1"]);
+    expect(release.state.groups.map((g) => g.groupId)).toEqual(["gB", "gC"]); // gA popped
+    expect(release.state.queue).toEqual(["b2", "c1"]);
+
+    // b1 settles → gB is mid-flight: b2 admits, c1 still waits
+    release = releaseRun(release.state, "b1", GROUP_CAPS);
+    expect(release.admitted).toEqual(["b2"]);
+    expect(release.state.queue).toEqual(["c1"]);
+
+    // b2 settles → gB pops → only now does gC dequeue
+    release = releaseRun(release.state, "b2", GROUP_CAPS);
+    expect(release.admitted).toEqual(["c1"]);
+    expect(release.state.groups.map((g) => g.groupId)).toEqual(["gC"]);
+    expect(release.state.queue).toEqual([]);
+  });
+
+  test("run-now (M2): a single start queues behind a mid-serial-group head even though a slot is free", () => {
+    let state = enqueueGroup(emptyAdmission(), "g1", "serial", ["a", "b"], GROUP_CAPS).state;
+    const step = admitRequest(state, "run-now", GROUP_CAPS);
+    expect(step.decision.action).toBe("queue");
+    expect(step.decision.action === "queue" && step.decision.queuePosition).toBe(2); // behind b
+  });
+
+  test("run-now (M2): a single start queues when the parallel head cannot use the freed slot", () => {
+    let state = emptyAdmission();
+    state = admitRequest(state, "s1", GROUP_CAPS).state;
+    state = admitRequest(state, "s2", GROUP_CAPS).state;
+    state = admitRequest(state, "s3", GROUP_CAPS).state; // 3 of 4 busy
+    state = enqueueGroup(state, "gP", "parallel", ["p1", "p2", "p3"], GROUP_CAPS).state; // 3 + 3 > 4
+    const release = releaseRun(state, "s1", GROUP_CAPS); // 2 free slots, but the head needs all 3
+    expect(release.admitted).toEqual([]);
+
+    const step = admitRequest(release.state, "run-now", GROUP_CAPS);
+    expect(step.decision.action).toBe("queue"); // the slot-blocked head blocks run-now too
+    expect(step.decision.action === "queue" && step.decision.queuePosition).toBe(4); // behind p1..p3
+  });
+});
+
+describe("member abort semantics (Q-A6 — plan v2 R4)", () => {
+  test("Q-A6: an all-aborted group collapses and the next group dequeues", () => {
+    const tight: AdmissionCaps = { cap: 2, queueCap: 16 };
+    let state = admitRequest(emptyAdmission(), "r1", tight).state;
+    state = admitRequest(state, "r2", tight).state; // both slots busy, none free
+    state = enqueueGroup(state, "gP", "serial", ["p1", "p2"], tight).state; // waits: no free slot
+    state = enqueueGroup(state, "gB", "serial", ["b1"], tight).state; // behind gP
+    expect(state.queue).toEqual(["p1", "p2", "b1"]);
+
+    // every member of gP is aborted while queued → the group collapses…
+    let step = removePending(state, "p1", tight);
+    expect(step.admitted).toEqual([]); // no free slot yet — nothing promotes
+    step = removePending(step.state, "p2", tight);
+    expect(step.admitted).toEqual([]);
+    expect(step.state.groups.map((g) => g.groupId)).toEqual(["r1", "r2", "gB"]); // gP collapsed away
+    expect(step.state.queue).toEqual(["b1"]);
+
+    // …and the next group dequeues at the next release
+    const release = releaseRun(step.state, "r1", tight);
+    expect(release.admitted).toEqual(["b1"]);
+    expect(release.state.groups.map((g) => g.groupId)).toEqual(["r2", "gB"]);
+  });
+
+  test("Q-A6: a member abort lets the group continue with its remaining members", () => {
+    let state = enqueueGroup(emptyAdmission(), "gS", "serial", ["s1", "s2", "s3"], GROUP_CAPS).state;
+    expect(state.running).toEqual(["s1"]);
+    expect(state.queue).toEqual(["s2", "s3"]);
+
+    state = removePending(state, "s2", GROUP_CAPS).state; // the middle member aborts while queued
+    expect(state.queue).toEqual(["s3"]); // the group continues
+    expect(state.groups[0]!.pending).toEqual(["s3"]);
+
+    const release = releaseRun(state, "s1", GROUP_CAPS);
+    expect(release.admitted).toEqual(["s3"]); // the remaining member still runs in turn
+  });
+});
+
+describe("liveQueuePosition (plan v2 R2/S3 — flat live 1-based index over pending members)", () => {
+  test("positions are flat across groups, 1-based, and recompute live after a removal", () => {
+    let state = emptyAdmission();
+    state = admitRequest(state, "s1", GROUP_CAPS).state;
+    state = admitRequest(state, "s2", GROUP_CAPS).state;
+    state = admitRequest(state, "s3", GROUP_CAPS).state; // 3 of 4 busy
+    state = enqueueGroup(state, "gA", "serial", ["a1", "a2"], GROUP_CAPS).state; // behind the singles
+    state = enqueueGroup(state, "gB", "parallel", ["b1", "b2"], GROUP_CAPS).state; // 3 + 2 > 4
+    expect(state.queue).toEqual(["a1", "a2", "b1", "b2"]);
+
+    expect(liveQueuePosition(state, "a1")).toBe(1);
+    expect(liveQueuePosition(state, "a2")).toBe(2);
+    expect(liveQueuePosition(state, "b1")).toBe(3);
+    expect(liveQueuePosition(state, "b2")).toBe(4);
+    expect(liveQueuePosition(state, "s1")).toBeUndefined(); // running — not a pending position
+    expect(liveQueuePosition(state, "ghost")).toBeUndefined();
+
+    // a1 leaves the queue → its group's next member takes the free slot; survivor positions recompute
+    const after = removePending(state, "a1", GROUP_CAPS).state;
+    expect(liveQueuePosition(after, "a2")).toBeUndefined(); // promoted out of the queue
+    expect(liveQueuePosition(after, "b1")).toBe(1);
+    expect(liveQueuePosition(after, "b2")).toBe(2);
   });
 });
 

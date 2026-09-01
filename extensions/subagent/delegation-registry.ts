@@ -18,10 +18,13 @@ import {
   DEFAULT_ADMISSION_CAP,
   DEFAULT_QUEUE_CAP,
   emptyAdmission,
+  enqueueGroup as enqueueGroupInCore,
   releaseRun,
+  removePending,
   type AdmissionCaps,
   type DelegationRecord,
   type DelegationState,
+  type GroupMode,
 } from "./delegation-core.ts";
 import { DelegationRunner, defaultNow, type DelegationNote, type RunnerDeps, type RunHandle } from "./delegation-runner.ts";
 
@@ -80,6 +83,14 @@ export interface DelegationReceipt {
 
 export type StartOutcome = DelegationReceipt | { ok: false; reason: string };
 
+/** One member's receipt from `enqueueGroup`: the group and mode the member was enqueued under. */
+export interface DelegationGroupReceipt extends DelegationReceipt {
+  groupId: string;
+  mode: GroupMode;
+}
+
+export type GroupMemberOutcome = DelegationGroupReceipt | { ok: false; reason: string };
+
 export function snapshotRecord(record: DelegationRecord): DelegationRecord {
   return { ...record, usage: record.usage ? { ...record.usage } : undefined };
 }
@@ -123,6 +134,7 @@ export class DelegationRegistry {
   private readonly previousStates = new Map<string, DelegationState>();
   private readonly waiters: Waiter[] = [];
   private counter = 0;
+  private groupCounter = 0;
   private stopped = false;
 
   /** The one notification wire: R5 delivers on every terminal transition except
@@ -185,6 +197,115 @@ export class DelegationRegistry {
     return this.spawnNow(id, request);
   }
 
+  /**
+   * Enqueue one whole group (plan v2 R2/R4 — the queue tool's add/add-parallel backing, P3).
+   * Returns one outcome per member: a receipt sharing the group's `groupId` (record state
+   * `running` for members the idle drain admitted, `queued` with the flat 1-based
+   * `queuePosition` snapshot for waiting members) or, when the admission policy rejects the
+   * group all-or-nothing, the same rejection reason for every member. Ids are allocated for
+   * every member up front (★M3: 3 members, 3 distinct ids) — `request.id` is ignored on this
+   * path, the registry owns allocation.
+   *
+   * Batch-commit-before-spawn (★B5/Q-B2): the pure enqueue's whole admission state is committed
+   * before any member spawns, so a synchronous settle inside an earlier member's spawn can
+   * never re-admit a later member.
+   */
+  async enqueueGroup(requests: StartRequest[], mode: GroupMode): Promise<GroupMemberOutcome[]> {
+    if (requests.length === 0) return [];
+    if (this.stopped) {
+      const reason = "the delegation runner is shut down — no new delegations can start";
+      return requests.map(() => ({ ok: false as const, reason }));
+    }
+    // Allocate-then-register: every id exists before any registration or spawn.
+    const ids = requests.map(() => this.deps.allocateId?.() ?? this.nextInternalId());
+    const groupId = `g-${++this.groupCounter}`;
+    const step = enqueueGroupInCore(this.admission, groupId, mode, ids, this.caps);
+    if (step.decision.action === "reject") {
+      // All-or-nothing: nothing was registered — every member gets the rejection verbatim
+      // (with the same guidance start() appends, surfaced to callers unchanged).
+      const reason = `${step.decision.reason} — wait for a running delegation to finish (delegations wait) or abort one (delegations abort <id>), then retry`;
+      return requests.map(() => ({ ok: false as const, reason }));
+    }
+    this.admission = step.state; // the whole drain committed before any spawn (Q-B2)
+    const admittedNow = new Set(step.decision.admittedNow);
+    const positionOf = new Map(step.decision.queued.map((queued) => [queued.id, queued.queuePosition]));
+    // Phase 1 — register EVERY member before spawning any (M1): a synchronous settle inside
+    // the first spawn promotes the next member and must find its record, deferred and
+    // queuedRequests already in place, or the promotion is silently dropped and admission
+    // wedges on a phantom.
+    const deferredOf = new Map<string, Deferred<DelegationRecord>>();
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i]!;
+      const deferred = createDeferred<DelegationRecord>();
+      this.deferreds.set(id, deferred);
+      deferredOf.set(id, deferred);
+      if (admittedNow.has(id)) continue; // spawned in phase 2; spawnNow registers the running record
+      const request = requests[i]!;
+      const record: DelegationRecord = {
+        id,
+        agent: request.agent,
+        task: request.task,
+        toolCallId: request.toolCallId ?? "", // P3 always supplies one; "" marks none
+        ...(request.sessionId !== undefined ? { sessionId: request.sessionId } : {}),
+        state: "queued",
+        startedAt: this.now(), // request time — start-order sorting stays stable (R7)
+        exitCode: null,
+        queuePosition: positionOf.get(id),
+      };
+      this.records.set(id, record);
+      this.queuedRequests.set(id, request);
+      this.emitTransition(record);
+    }
+    // Phase 2 — spawn the admit-now members; a synchronous settle here promotes (and now
+    // correctly spawns) queued siblings through spawnQueued before the loop advances.
+    const outcomes: GroupMemberOutcome[] = [];
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i]!;
+      if (!admittedNow.has(id)) continue;
+      const spawned = this.spawnNow(id, requests[i]!);
+      outcomes.push({ ok: true, id, groupId, mode, record: spawned.record, done: spawned.done });
+    }
+    // Phase 3 — outcomes for the queued members, built AFTER the spawns so a member the
+    // synchronous-settle cascade promoted (or even settled) reports its live state.
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i]!;
+      if (admittedNow.has(id)) continue;
+      outcomes.push({
+        ok: true,
+        id,
+        groupId,
+        mode,
+        record: this.snapshotFor(id),
+        done: deferredOf.get(id)!.promise,
+      });
+    }
+    return outcomes;
+  }
+
+  /**
+   * Queued-only flush (plan v2 R4 — the queue tool's clear backing, P3): every queued member is
+   * aborted through the queued-abort path (no kill — there is no child), running members are
+   * untouched, and exactly one aborted notification per member rides the existing notify wire.
+   * A member promoted mid-clear (a collapse drained it into running) is spared and reported in
+   * `stillRunning`. An empty queue reports `{cancelled: [], stillRunning: [...]}` — loud, not an
+   * error (Q-C3 is the tool-level wording).
+   */
+  clearQueue(): { cancelled: string[]; stillRunning: string[] } {
+    const queuedIds = [...this.admission.queue]; // snapshot: abort() mutates the queue
+    const cancelled: string[] = [];
+    for (const id of queuedIds) {
+      const record = this.records.get(id);
+      if (record?.state !== "queued") continue; // promoted mid-clear — running now, spared
+      this.abort(id);
+      cancelled.push(id);
+    }
+    const cancelledSet = new Set(cancelled);
+    const stillRunning = [...this.records.values()]
+      .filter((record) => !isTerminal(record.state) && !cancelledSet.has(record.id))
+      .map((record) => record.id);
+    return { cancelled, stillRunning };
+  }
+
   /** Abort one run: queued → removed with state `aborted` and no kill (T61); running → kill path + aborted. */
   abort(id: string): void {
     const record = this.records.get(id);
@@ -193,7 +314,10 @@ export class DelegationRegistry {
     }
     if (isTerminal(record.state)) return; // idempotent — exactly one notification per run
     if (record.state === "queued") {
-      this.admission = { running: this.admission.running, queue: this.admission.queue.filter((q) => q !== id) };
+      // removePending repairs the group FIFO too (plan v2 R4): a member-level abort lets the
+      // group continue; an all-aborted group collapses so the next group can dequeue.
+      const removed = removePending(this.admission, id, this.caps);
+      this.admission = removed.state;
       record.state = "aborted"; // no kill — there is no child (T61, review CR2)
       record.endedAt = this.now();
       this.queuedRequests.delete(id);
@@ -202,6 +326,9 @@ export class DelegationRegistry {
       this.deferreds.delete(id);
       this.notify(this.noteForAborted(record)); // R5: aborted-before-start notifies (dropped after shutdown)
       this.checkWaiters();
+      if (!this.stopped) {
+        for (const promoted of removed.admitted) this.spawnQueued(promoted); // the collapse promoted the next group (Q-A6)
+      }
       return;
     }
     this.handles.get(id)?.abort(); // SIGTERM → grace → SIGKILL, settles aborted, releases via onSettle
@@ -267,7 +394,8 @@ export class DelegationRegistry {
 
   // ------------------------------------------------------------------ internals
 
-  private spawnNow(id: string, request: StartRequest, startedAt?: number): StartOutcome {
+  /** Always admits — admission was committed by the caller; the receipt shape is unconditional. */
+  private spawnNow(id: string, request: StartRequest, startedAt?: number): DelegationReceipt {
     // The deferred already exists; a run that settles inside runner.run() (pre-aborted signal,
     // spawn error) fires onSettle synchronously — which resolves AND deletes the deferred — so
     // the promise is captured before spawning.
@@ -293,6 +421,7 @@ export class DelegationRegistry {
   }
 
   private emitTransition(record: DelegationRecord): void {
+    if (this.stopped) return; // row-38 symmetry with notify: shutdown-initiated state changes carry no wire traffic (S2)
     const previousState = this.previousStates.get(record.id);
     this.previousStates.set(record.id, record.state);
     if (!this.deps.emit) return;
@@ -316,22 +445,18 @@ export class DelegationRegistry {
     this.deferreds.get(record.id)?.resolve(snapshotRecord(record));
     this.deferreds.delete(record.id);
     this.checkWaiters();
-    if (release.admitted !== undefined) this.spawnQueued(release.admitted);
+    for (const admitted of release.admitted) this.spawnQueued(admitted); // zero/one for singles, the whole batch for a parallel head
   }
 
-  /** Admit the queue head FIFO; the dequeue re-checks the aborted flag (T61, review CR2). */
+  /** Spawn one queued member the admission drain already promoted (plan v2 R2): the queue →
+   * running move happened inside the pure drain BEFORE this call, so a synchronous settle
+   * inside runner.run() releases through releaseRun and finds the id in `running`. */
   private spawnQueued(id: string): void {
     const record = this.records.get(id);
     const request = this.queuedRequests.get(id);
     if (!record || !request) return;
     if (record.state !== "queued") return; // aborted while queued — never spawned
     this.queuedRequests.delete(id);
-    // Move queue → running before spawning: a synchronous settle inside runner.run() releases
-    // the slot through releaseRun, which must find the id in `running`.
-    this.admission = {
-      running: [...this.admission.running, id],
-      queue: this.admission.queue.filter((q) => q !== id),
-    };
     // Queued runs keep their request time so start-order sorting stays stable (R7).
     this.spawnNow(id, request, record.startedAt);
   }

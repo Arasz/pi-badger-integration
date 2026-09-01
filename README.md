@@ -21,6 +21,7 @@ subtree (pi discovers `~/.pi/agent/extensions/<name>/index.ts` only).
 | session-signals (marker `!` importance — mid-run abort; delegation working status in the footer) | `extensions/session-signals/` | `~/.pi/agent/extensions/session-signals/` |
 | shift-enter-newline (Shift+Enter newline for terminals that cannot report it, e.g. JetBrains IDE terminal) | `extensions/shift-enter-newline/` | `~/.pi/agent/extensions/shift-enter-newline/` |
 | subagent (delegation to ai-badger personas scaffolded into `<project>/.pi/agents/`; background runs, progress and logs — see below) | `extensions/subagent/` | `~/.pi/agent/extensions/subagent/` |
+| monitor (one-shot predicate monitors over delegation transitions, the idle `wait` tool, and manual-polling enforcement — see below) | `extensions/monitor/` | `~/.pi/agent/extensions/monitor/` |
 
 Still ai-badger-owned: the adapter is vendored + tested in ai-badger's
 `features/pi/` (see the three-copy model below).
@@ -28,16 +29,26 @@ Still ai-badger-owned: the adapter is vendored + tested in ai-badger's
 ## The subagent extension: background delegation
 
 The `delegate` tool runs a persona as a separate `pi -p --mode json` child. In an
-interactive TUI session (`ctx.mode === "tui"`) delegation is **background by default**:
-the tool returns immediately with a receipt (`d-<n>`, state running/queued) and the main
-agent loop stays interactive — the user can keep typing, the agent can keep working.
-When the child settles, its result lands in exactly one `delegation-result` follow-up
-message (exit code, answer tail capped at 8 KB, duration, token usage, log path) and wakes
-the agent; completions arriving inside a 2 s coalesce window share one batched message
-(lead card immediate, up to 6 cards per batch). In headless modes (`-p`, json, rpc) delegation stays **blocking** — the result
-is the tool result, byte-compatible with the pre-background contract, plus `details.usage`.
-Explicit `background: true/false` always wins; `background: true` outside the TUI degrades
-to blocking with a note in the tool result. There is no automatic wall-clock timeout: runs
+interactive TUI session (`ctx.mode === "tui"`) delegation is **always background** —
+blocking was removed there: the tool returns immediately with a receipt (`d-<n>`, state
+running/queued) and the main agent loop stays interactive — the user can keep typing, the
+agent can keep working. When the child settles, its result lands in exactly one
+`delegation-result` follow-up message (exit code, answer tail capped at 8 KB, duration,
+token usage, log path) and wakes the agent; completions arriving inside a 2 s coalesce
+window share one batched message (lead card immediate, up to 6 cards per batch). Results
+arrive on their own — **never poll** for them (repeated `delegations list`/`log` polling is
+blocked by the monitor's enforcement). To keep a strict order, queue work with the
+**`queue` tool**: `add` (serial group — members run one at a time, in order),
+`add-parallel` (members run concurrently once they all fit), `clear` (cancel every queued
+task; running ones untouched), `list` (the queued groups with live positions). The whole
+queue tool is TUI-only. An explicit `background: false` in the TUI is rejected at execution
+time (`reason: "blocking-removed"`, no child runs) with guidance pointing at `queue`
+(ordering), `delegations wait` (spending idle time) and `delegations abort` (stopping
+runs). A synchronous panel is receipts plus `delegations wait ids`, which waits for ALL
+named ids. In headless modes (`-p`, json, rpc) delegation stays **blocking** — the result
+is the tool result, byte-compatible with the pre-background contract, plus `details.usage`;
+an explicit `background: true` outside the TUI degrades to blocking with a note in the tool
+result and `details.degraded`. There is no automatic wall-clock timeout: runs
 are unbounded unless the `delegate` call passes `timeoutMs` (clamped to 1 s–24 h; on expiry
 the run is aborted and settles as `aborted (timeout)`). The inactivity watchdog is
 automatic: a child that emits no stream events for 10 minutes (default) is aborted and
@@ -69,6 +80,40 @@ is injected after a restart. Run ids are never reused (skip-to-next-free over th
 directory), so `delegations log d-N` stays unambiguous across restarts. One documented
 limitation: `/tree` navigation away from the delegating branch hides that branch's
 receipts — the log directory remains the way to find those runs.
+
+## The monitor extension: predicate wake-ups
+
+The `monitor` tool (TUI-only) arms one-shot predicate monitors over delegation
+transitions. `register` takes a JS predicate expression (4 KB cap) evaluated as
+`return (expr)` in a fresh sandbox against `{ delegations, monitors }` on every
+`delegation-transition` event — no wall-clock input, transitions are the only trigger. The
+snapshot's `delegations` is the whole fleet this session has seen (terminal records stay),
+so an "all settled" predicate sees every delegation's current state. The FIRST truthy
+evaluation — including at registration, when the condition already holds — removes the
+monitor and delivers one `monitor-event` follow-up (unbatched, wakes the agent). The
+predicate must evaluate to a primitive: a promise or object is an error card that disarms
+the monitor. At most 8 monitors are active (9th register rejects naming them); `list`
+shows them, `cancel <id>` disarms. A monitor with no `timeoutMs` expires after 10 minutes
+(max 60): the expiry delivers an `expired` card and removes it. A throwing predicate
+delivers an `error` card once and is never retried. Outside the TUI every `monitor`
+action rejects loudly — there is no idle session to wake.
+
+The `wait` tool spends idle time without polling — and is allowed in every mode. It blocks
+the turn (the pending-tool idiom) until the FIRST of: a watched delegation settles (pass
+`ids` to scope the watch; the default is any live delegation), an armed monitor fires, the
+user sends a message, or the timeout passes (default 120 s, max 600 s, clamped). The
+tie-break is listener order (delegation → monitor → input → timeout) and the wait resolves
+exactly once. With nothing live and nothing armed it resolves immediately with
+`observed: "empty"` and guidance instead of idling. The result is a terse pointer
+(`details: {observed, waitedMs, records?}`) — a monitor wake's payload rides the
+monitor-event card and is never duplicated. A turn abort or session shutdown resolves the
+wait as `observed: "aborted"`; nothing sends after shutdown.
+
+The monitor extension also enforces the no-polling rule: a `tool_call` observer counts
+`delegations list`/`log` calls (nothing else — `wait`, `abort`, `queue` and `monitor`
+calls are exempt) and blocks the 4th call inside a sliding 120 s window with guidance to
+use `wait` or a monitor instead; blocked attempts count too. `PI_BADGER_MONITOR_POLL_MAX`
+is read per call and `0` disables the guard; state resets on session shutdown.
 
 ## One-time cleanup after the switch to directory installs (do once, by hand)
 

@@ -24,6 +24,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeChild } from "./helpers/fake-child.ts";
+import { createFakePi, type FakePiHandler, type FakePiRenderer, type FakePiSentMessage } from "./helpers/fake-pi.ts";
 import { AGENTS_DIR, pidAlive } from "../extensions/subagent/index.ts";
 import subagent from "../extensions/subagent/index.ts";
 import {
@@ -48,20 +49,15 @@ description: Architecture specialist. Read-only.
 Produce a blueprint, never an edit.
 `;
 
-interface SentMessage {
-  message: { customType?: string; content: unknown; display?: boolean; details?: Record<string, unknown> };
-  options: { deliverAs?: string; triggerTurn?: boolean } | undefined;
-}
-
 interface Harness {
-  /** Real pi.on is pub/sub: many handlers per event, run in registration order. The fake
-   * must dispatch arrays — single-slot storage let P4's session_shutdown (widget cleanup)
-   * silently overwrite P3's (registry kill-all) once the W3 wiring landed. */
-  handlers: Map<string, Array<(event: unknown, ctx: unknown) => unknown>>;
+  /** Captured by the shared fake-pi helper (tests/helpers/fake-pi.ts): handlers stored as
+   * ARRAYS per event, events routed through an EventEmitter-backed bus (real pi bus
+   * semantics), emissions recorded into `transitions` (the T60 recording surface). */
+  handlers: Map<string, FakePiHandler[]>;
   tools: Map<string, any>;
   commands: Map<string, unknown>;
-  renderers: Map<string, (message: any, options: any, theme: any) => unknown>;
-  sent: SentMessage[];
+  renderers: Map<string, FakePiRenderer>;
+  sent: FakePiSentMessage[];
   entries: Array<{ customType: string; data: any }>;
   transitions: Array<{ channel: string; data: any }>;
   children: FakeChild[];
@@ -73,14 +69,15 @@ interface Harness {
 }
 
 function makeHarness(mode = "tui", deps: Record<string, unknown> = {}): Harness {
+  const pi = createFakePi();
   const h: Harness = {
-    handlers: new Map(),
-    tools: new Map(),
-    commands: new Map(),
-    renderers: new Map(),
-    sent: [],
-    entries: [],
-    transitions: [],
+    handlers: pi.handlers,
+    tools: pi.tools as Map<string, any>,
+    commands: pi.commands,
+    renderers: pi.renderers,
+    sent: pi.sent,
+    entries: pi.entries as Array<{ customType: string; data: any }>,
+    transitions: pi.transitions as Array<{ channel: string; data: any }>,
     children: [],
     spawnOptions: [],
     notifications: [],
@@ -91,23 +88,6 @@ function makeHarness(mode = "tui", deps: Record<string, unknown> = {}): Harness 
   mkdirSync(join(h.projectDir, ...AGENTS_DIR), { recursive: true });
   writeFileSync(join(h.projectDir, ...AGENTS_DIR, "architect.md"), SCAFFOLDED);
 
-  const pi = {
-    registerTool: (tool: any) => h.tools.set(tool.name, tool),
-    registerCommand: (name: string, opts: unknown) => h.commands.set(name, opts),
-    registerMessageRenderer: (customType: string, renderer: any) => h.renderers.set(customType, renderer),
-    on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => {
-      const list = h.handlers.get(name) ?? [];
-      list.push(handler);
-      h.handlers.set(name, list);
-    },
-    sendMessage: (message: any, options?: any) => h.sent.push({ message, options }),
-    appendEntry: (customType: string, data?: unknown) => h.entries.push({ customType, data }),
-    events: {
-      emit: (channel: string, data: unknown) => h.transitions.push({ channel, data }),
-      on: () => () => {},
-    },
-  };
-
   const spawnFn = (_command: string, _args: string[], options: { cwd: string }) => {
     h.spawnOptions.push(options);
     const child = new FakeChild();
@@ -115,7 +95,9 @@ function makeHarness(mode = "tui", deps: Record<string, unknown> = {}): Harness 
     return child;
   };
 
-  h.api = subagent(pi as never, { spawnFn, logDir: h.logDir, now: () => NOW, escalateAfterMs: 0, ...deps }) as {
+  // now: () => pi.clock.now — the harness's injected clock is mutable (fake-pi.ts header);
+  // the NOW constant below stays for log-dir fixtures.
+  h.api = subagent(pi as never, { spawnFn, logDir: h.logDir, now: () => pi.clock.now, escalateAfterMs: 0, ...deps }) as {
     registry: any;
   };
   return h;
@@ -310,28 +292,17 @@ describe("T66 — background auto-resolution matrix (auto = background iff mode 
     expect(result.details.degraded).toBeUndefined();
   });
 
-  test("blocking-in-tui is observable: explicit background:false result names itself", async () => {
+  test("B-A1: background:false in tui → execute-time rejection (reason 'blocking-removed'), guidance names queue/wait/abort, NO child spawned", async () => {
     h = makeHarness();
-    const pending = callDelegate({ agent: "architect", task: "t", background: false }, makeCtx("tui"));
-    h.children[0]!.write(`${assistantEnd("sync answer")}\n`);
-    h.children[0]!.exit(0);
-    const result = await pending;
+    const result = await callDelegate({ agent: "architect", task: "t", background: false }, makeCtx("tui"));
 
-    expect(contentOf(result)).toContain("background:false");
-    expect(contentOf(result)).toContain("blocking");
-    expect(contentOf(result)).toContain("sync answer"); // the inline result still rides below the notice
-  });
-
-  test("explicit background:false wins in tui → blocking result", async () => {
-    h = makeHarness();
-    const pending = callDelegate({ agent: "architect", task: "t", background: false }, makeCtx("tui"));
-    h.children[0]!.write(`${assistantEnd("sync answer")}\n`);
-    h.children[0]!.exit(0);
-    const result = await pending;
-
-    expect(contentOf(result)).toContain("sync answer");
-    expect(result.details.exitCode).toBe(0);
-    expect(result.details.state).toBeUndefined();
+    expect((result.details as Record<string, unknown>).reason).toBe("blocking-removed");
+    const guidance = contentOf(result);
+    expect(guidance).toContain("queue"); // ordering → the queue tool
+    expect(guidance).toContain("delegations wait"); // spending idle time
+    expect(guidance).toContain("delegations abort"); // stopping a running delegation
+    expect(h.children).toHaveLength(0); // NO child spawned
+    expect(h.api!.registry.list()).toHaveLength(0); // nothing enqueued either
   });
 
   test("explicit background:true wins in tui → background receipt", async () => {
@@ -677,12 +648,44 @@ describe("T86–T91 — per-run timeout surfaces (deferral pkg P2)", () => {
 
     expect(String(tool.description)).not.toContain("no automatic per-run timeout");
     expect(String(tool.description)).toContain("timeoutMs");
-    expect(params.properties.background?.description ?? "").not.toContain("no automatic per-run timeout");
+    // Q-C5/R1 migration: the background param's line now carries the rejection/redirect wording
+    // (blocking-removed in the TUI; queue/wait as the replacements) instead of a default-value claim.
+    const backgroundDescription = params.properties.background?.description ?? "";
+    expect(backgroundDescription).not.toContain("no automatic per-run timeout");
+    expect(backgroundDescription).toContain("blocking-removed");
+    expect(backgroundDescription).toContain("queue");
     const timeoutDescription = params.properties.timeoutMs?.description ?? "";
     expect(timeoutDescription).toContain("1000 ms"); // the floor
     expect(timeoutDescription).toContain("86400000"); // the cap
     expect(timeoutDescription).toContain("SIGTERM"); // the kill path
     expect(timeoutDescription).toContain("spawn"); // the clock starts at spawn, queue wait does not count
+  });
+});
+
+// ------------------------------------------------------------------ B-A3: description redirect wording
+
+describe("B-A3 — delegate + delegations descriptions pin the R1 redirect wording", () => {
+  test("the delegate description: followUps arrive on their own, never poll, queue for order, wait for idle, headless still blocks, receipts + delegations wait ids", () => {
+    h = makeHarness();
+    const description = String(h.tools.get("delegate")!.description);
+
+    expect(description).toContain("followUp");
+    expect(description).toContain("never poll");
+    expect(description).toContain("queue tool");
+    expect(description).toContain("delegations wait");
+    expect(description).toContain("delegations wait ids"); // the synchronous-panel idiom (all named ids)
+    expect(description).toContain("Headless");
+    expect(description).not.toContain("pass background: false to block"); // the removed instruction
+  });
+
+  test("the delegations description carries the same redirect (results arrive on their own; never poll)", () => {
+    h = makeHarness();
+    const description = String(h.tools.get("delegations")!.description);
+
+    expect(description).toContain("followUp");
+    expect(description).toContain("never poll");
+    expect(description).toContain("queue tool");
+    expect(description).toContain("delegations wait ids");
   });
 });
 

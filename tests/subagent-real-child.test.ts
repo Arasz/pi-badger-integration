@@ -38,7 +38,7 @@ function smokeInvocation(systemPrompt: string, task: string): { command: string;
 	return {
 		command: "pi",
 		args: [
-			"-p", "--mode", "json", "--no-session", "--exclude-tools", "delegate,delegations",
+			"-p", "--mode", "json", "--no-session", "--exclude-tools", "delegate,delegations,queue,monitor,wait",
 			"--append-system-prompt", systemPrompt, "--", task,
 		],
 	};
