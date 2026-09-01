@@ -24,6 +24,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeChild } from "./helpers/fake-child.ts";
+import { createFakePi, type FakePiHandler, type FakePiRenderer, type FakePiSentMessage } from "./helpers/fake-pi.ts";
 import { AGENTS_DIR, pidAlive } from "../extensions/subagent/index.ts";
 import subagent from "../extensions/subagent/index.ts";
 import {
@@ -48,20 +49,15 @@ description: Architecture specialist. Read-only.
 Produce a blueprint, never an edit.
 `;
 
-interface SentMessage {
-  message: { customType?: string; content: unknown; display?: boolean; details?: Record<string, unknown> };
-  options: { deliverAs?: string; triggerTurn?: boolean } | undefined;
-}
-
 interface Harness {
-  /** Real pi.on is pub/sub: many handlers per event, run in registration order. The fake
-   * must dispatch arrays — single-slot storage let P4's session_shutdown (widget cleanup)
-   * silently overwrite P3's (registry kill-all) once the W3 wiring landed. */
-  handlers: Map<string, Array<(event: unknown, ctx: unknown) => unknown>>;
+  /** Captured by the shared fake-pi helper (tests/helpers/fake-pi.ts): handlers stored as
+   * ARRAYS per event, events routed through an EventEmitter-backed bus (real pi bus
+   * semantics), emissions recorded into `transitions` (the T60 recording surface). */
+  handlers: Map<string, FakePiHandler[]>;
   tools: Map<string, any>;
   commands: Map<string, unknown>;
-  renderers: Map<string, (message: any, options: any, theme: any) => unknown>;
-  sent: SentMessage[];
+  renderers: Map<string, FakePiRenderer>;
+  sent: FakePiSentMessage[];
   entries: Array<{ customType: string; data: any }>;
   transitions: Array<{ channel: string; data: any }>;
   children: FakeChild[];
@@ -73,14 +69,15 @@ interface Harness {
 }
 
 function makeHarness(mode = "tui", deps: Record<string, unknown> = {}): Harness {
+  const pi = createFakePi();
   const h: Harness = {
-    handlers: new Map(),
-    tools: new Map(),
-    commands: new Map(),
-    renderers: new Map(),
-    sent: [],
-    entries: [],
-    transitions: [],
+    handlers: pi.handlers,
+    tools: pi.tools as Map<string, any>,
+    commands: pi.commands,
+    renderers: pi.renderers,
+    sent: pi.sent,
+    entries: pi.entries as Array<{ customType: string; data: any }>,
+    transitions: pi.transitions as Array<{ channel: string; data: any }>,
     children: [],
     spawnOptions: [],
     notifications: [],
@@ -91,23 +88,6 @@ function makeHarness(mode = "tui", deps: Record<string, unknown> = {}): Harness 
   mkdirSync(join(h.projectDir, ...AGENTS_DIR), { recursive: true });
   writeFileSync(join(h.projectDir, ...AGENTS_DIR, "architect.md"), SCAFFOLDED);
 
-  const pi = {
-    registerTool: (tool: any) => h.tools.set(tool.name, tool),
-    registerCommand: (name: string, opts: unknown) => h.commands.set(name, opts),
-    registerMessageRenderer: (customType: string, renderer: any) => h.renderers.set(customType, renderer),
-    on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => {
-      const list = h.handlers.get(name) ?? [];
-      list.push(handler);
-      h.handlers.set(name, list);
-    },
-    sendMessage: (message: any, options?: any) => h.sent.push({ message, options }),
-    appendEntry: (customType: string, data?: unknown) => h.entries.push({ customType, data }),
-    events: {
-      emit: (channel: string, data: unknown) => h.transitions.push({ channel, data }),
-      on: () => () => {},
-    },
-  };
-
   const spawnFn = (_command: string, _args: string[], options: { cwd: string }) => {
     h.spawnOptions.push(options);
     const child = new FakeChild();
@@ -115,7 +95,9 @@ function makeHarness(mode = "tui", deps: Record<string, unknown> = {}): Harness 
     return child;
   };
 
-  h.api = subagent(pi as never, { spawnFn, logDir: h.logDir, now: () => NOW, escalateAfterMs: 0, ...deps }) as {
+  // now: () => pi.clock.now — the harness's injected clock is mutable (fake-pi.ts header);
+  // the NOW constant below stays for log-dir fixtures.
+  h.api = subagent(pi as never, { spawnFn, logDir: h.logDir, now: () => pi.clock.now, escalateAfterMs: 0, ...deps }) as {
     registry: any;
   };
   return h;
