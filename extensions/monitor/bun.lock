@@ -6,6 +6,7 @@
       "name": "ai-badger-monitor",
       "dependencies": {
         "@earendil-works/pi-coding-agent": "*",
+        "typebox": "*",
       },
     },
   },

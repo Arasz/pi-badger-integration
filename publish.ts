@@ -65,7 +65,7 @@ export const ADAPTER_FILES = [
 
 const ADAPTER_SOURCE_DIR = "features/pi/adjustments/adapter";
 /** Directory names under extensions/, each installed as ~/.pi/agent/extensions/<name>/. */
-const EXTENSION_DIRS = ["pi-cron", "pi-mcp-tools", "session-signals", "shift-enter-newline", "subagent"] as const;
+const EXTENSION_DIRS = ["pi-cron", "pi-mcp-tools", "session-signals", "shift-enter-newline", "subagent", "monitor"] as const;
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const USER_EXTENSIONS_DIR = join(homedir(), ".pi", "agent", "extensions");
