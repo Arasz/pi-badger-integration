@@ -28,16 +28,26 @@ Still ai-badger-owned: the adapter is vendored + tested in ai-badger's
 ## The subagent extension: background delegation
 
 The `delegate` tool runs a persona as a separate `pi -p --mode json` child. In an
-interactive TUI session (`ctx.mode === "tui"`) delegation is **background by default**:
-the tool returns immediately with a receipt (`d-<n>`, state running/queued) and the main
-agent loop stays interactive — the user can keep typing, the agent can keep working.
-When the child settles, its result lands in exactly one `delegation-result` follow-up
-message (exit code, answer tail capped at 8 KB, duration, token usage, log path) and wakes
-the agent; completions arriving inside a 2 s coalesce window share one batched message
-(lead card immediate, up to 6 cards per batch). In headless modes (`-p`, json, rpc) delegation stays **blocking** — the result
-is the tool result, byte-compatible with the pre-background contract, plus `details.usage`.
-Explicit `background: true/false` always wins; `background: true` outside the TUI degrades
-to blocking with a note in the tool result. There is no automatic wall-clock timeout: runs
+interactive TUI session (`ctx.mode === "tui"`) delegation is **always background** —
+blocking was removed there: the tool returns immediately with a receipt (`d-<n>`, state
+running/queued) and the main agent loop stays interactive — the user can keep typing, the
+agent can keep working. When the child settles, its result lands in exactly one
+`delegation-result` follow-up message (exit code, answer tail capped at 8 KB, duration,
+token usage, log path) and wakes the agent; completions arriving inside a 2 s coalesce
+window share one batched message (lead card immediate, up to 6 cards per batch). Results
+arrive on their own — **never poll** for them (repeated `delegations list`/`log` polling is
+blocked by the monitor's enforcement). To keep a strict order, queue work with the
+**`queue` tool**: `add` (serial group — members run one at a time, in order),
+`add-parallel` (members run concurrently once they all fit), `clear` (cancel every queued
+task; running ones untouched), `list` (the queued groups with live positions). The whole
+queue tool is TUI-only. An explicit `background: false` in the TUI is rejected at execution
+time (`reason: "blocking-removed"`, no child runs) with guidance pointing at `queue`
+(ordering), `delegations wait` (spending idle time) and `delegations abort` (stopping
+runs). A synchronous panel is receipts plus `delegations wait ids`, which waits for ALL
+named ids. In headless modes (`-p`, json, rpc) delegation stays **blocking** — the result
+is the tool result, byte-compatible with the pre-background contract, plus `details.usage`;
+an explicit `background: true` outside the TUI degrades to blocking with a note in the tool
+result and `details.degraded`. There is no automatic wall-clock timeout: runs
 are unbounded unless the `delegate` call passes `timeoutMs` (clamped to 1 s–24 h; on expiry
 the run is aborted and settles as `aborted (timeout)`). The inactivity watchdog is
 automatic: a child that emits no stream events for 10 minutes (default) is aborted and

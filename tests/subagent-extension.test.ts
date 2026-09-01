@@ -292,28 +292,17 @@ describe("T66 — background auto-resolution matrix (auto = background iff mode 
     expect(result.details.degraded).toBeUndefined();
   });
 
-  test("blocking-in-tui is observable: explicit background:false result names itself", async () => {
+  test("B-A1: background:false in tui → execute-time rejection (reason 'blocking-removed'), guidance names queue/wait/abort, NO child spawned", async () => {
     h = makeHarness();
-    const pending = callDelegate({ agent: "architect", task: "t", background: false }, makeCtx("tui"));
-    h.children[0]!.write(`${assistantEnd("sync answer")}\n`);
-    h.children[0]!.exit(0);
-    const result = await pending;
+    const result = await callDelegate({ agent: "architect", task: "t", background: false }, makeCtx("tui"));
 
-    expect(contentOf(result)).toContain("background:false");
-    expect(contentOf(result)).toContain("blocking");
-    expect(contentOf(result)).toContain("sync answer"); // the inline result still rides below the notice
-  });
-
-  test("explicit background:false wins in tui → blocking result", async () => {
-    h = makeHarness();
-    const pending = callDelegate({ agent: "architect", task: "t", background: false }, makeCtx("tui"));
-    h.children[0]!.write(`${assistantEnd("sync answer")}\n`);
-    h.children[0]!.exit(0);
-    const result = await pending;
-
-    expect(contentOf(result)).toContain("sync answer");
-    expect(result.details.exitCode).toBe(0);
-    expect(result.details.state).toBeUndefined();
+    expect((result.details as Record<string, unknown>).reason).toBe("blocking-removed");
+    const guidance = contentOf(result);
+    expect(guidance).toContain("queue"); // ordering → the queue tool
+    expect(guidance).toContain("delegations wait"); // spending idle time
+    expect(guidance).toContain("delegations abort"); // stopping a running delegation
+    expect(h.children).toHaveLength(0); // NO child spawned
+    expect(h.api!.registry.list()).toHaveLength(0); // nothing enqueued either
   });
 
   test("explicit background:true wins in tui → background receipt", async () => {
@@ -659,12 +648,44 @@ describe("T86–T91 — per-run timeout surfaces (deferral pkg P2)", () => {
 
     expect(String(tool.description)).not.toContain("no automatic per-run timeout");
     expect(String(tool.description)).toContain("timeoutMs");
-    expect(params.properties.background?.description ?? "").not.toContain("no automatic per-run timeout");
+    // Q-C5/R1 migration: the background param's line now carries the rejection/redirect wording
+    // (blocking-removed in the TUI; queue/wait as the replacements) instead of a default-value claim.
+    const backgroundDescription = params.properties.background?.description ?? "";
+    expect(backgroundDescription).not.toContain("no automatic per-run timeout");
+    expect(backgroundDescription).toContain("blocking-removed");
+    expect(backgroundDescription).toContain("queue");
     const timeoutDescription = params.properties.timeoutMs?.description ?? "";
     expect(timeoutDescription).toContain("1000 ms"); // the floor
     expect(timeoutDescription).toContain("86400000"); // the cap
     expect(timeoutDescription).toContain("SIGTERM"); // the kill path
     expect(timeoutDescription).toContain("spawn"); // the clock starts at spawn, queue wait does not count
+  });
+});
+
+// ------------------------------------------------------------------ B-A3: description redirect wording
+
+describe("B-A3 — delegate + delegations descriptions pin the R1 redirect wording", () => {
+  test("the delegate description: followUps arrive on their own, never poll, queue for order, wait for idle, headless still blocks, receipts + delegations wait ids", () => {
+    h = makeHarness();
+    const description = String(h.tools.get("delegate")!.description);
+
+    expect(description).toContain("followUp");
+    expect(description).toContain("never poll");
+    expect(description).toContain("queue tool");
+    expect(description).toContain("delegations wait");
+    expect(description).toContain("delegations wait ids"); // the synchronous-panel idiom (all named ids)
+    expect(description).toContain("Headless");
+    expect(description).not.toContain("pass background: false to block"); // the removed instruction
+  });
+
+  test("the delegations description carries the same redirect (results arrive on their own; never poll)", () => {
+    h = makeHarness();
+    const description = String(h.tools.get("delegations")!.description);
+
+    expect(description).toContain("followUp");
+    expect(description).toContain("never poll");
+    expect(description).toContain("queue tool");
+    expect(description).toContain("delegations wait ids");
   });
 });
 

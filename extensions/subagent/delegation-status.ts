@@ -430,6 +430,8 @@ export function registerDelegationStatus(
 			"log id (bounded tail of a run's log file plus the full log path),",
 			'abort id|"all" (stop one delegation or every live one),',
 			`wait ids? timeoutMs? (block until the named delegations settle; the timeout resolves with per-id state snapshots, never an error; default ${WAIT_DEFAULT_MS / 1000} s, max ${WAIT_MAX_MS / 1000} s).`,
+			"Results arrive as followUp messages on their own — never poll with list/log (repeated polling is blocked); the queue tool orders work; wait spends idle time;",
+			"the synchronous-panel idiom is receipts plus delegations wait ids, which waits for ALL named ids.",
 			'A run is unbounded unless the delegate call passes timeoutMs: on expiry the run is aborted through the normal kill path and settles aborted (timeout) — use abort to stop one yourself.',
 		].join(" "),
 		parameters: DelegationsParams,

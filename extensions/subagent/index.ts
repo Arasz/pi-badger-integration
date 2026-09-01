@@ -328,6 +328,13 @@ export interface BlockingDetails {
   degraded?: boolean;
 }
 
+/** B-A1 rejection details (R1): an explicit `background:false` in the TUI, where blocking no
+ * longer exists. Nothing was spawned and nothing was enqueued. */
+export interface BlockingRemovedDetails {
+  reason: "blocking-removed";
+  agent: string;
+}
+
 function envCap(): number | undefined {
   const raw = process.env[MAX_CONCURRENT_ENV];
   if (!raw?.trim()) return undefined;
@@ -538,7 +545,7 @@ const DelegateParams = Type.Object({
   background: Type.Optional(
     Type.Boolean({
       description:
-        "Run in the background: the tool returns a receipt immediately and the completion arrives as a followUp message. Default: true in the TUI, false otherwise.",
+        "Compatibility only. In the TUI delegation is always background: an explicit background:false is rejected at execution time (reason 'blocking-removed') — use the queue tool for ordered work or delegations wait to wait for results. Outside the TUI an explicit background:true degrades to full blocking (details.degraded); headless modes block by default.",
     }),
   ),
   timeoutMs: Type.Optional(
@@ -818,11 +825,14 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       "Delegate a task to one of this project's ai-badger personas, each of which runs as a",
       `separate pi process with its own context. Personas live in ${AGENTS_DIR.join("/")}/*.md;`,
       "call this with an unknown agent name to get the list of available ones.",
-      "In the TUI this runs in the background by default: it returns a receipt immediately and",
-      'the result arrives as a followUp message when the delegation finishes; pass background:',
-      "false to block instead. A run is unbounded unless you pass timeoutMs, which bounds the",
-      "run's wall-clock time and aborts it on expiry; use the delegations tool to inspect or",
-      "abort running delegations.",
+      "In the TUI the tool returns a receipt immediately and the result arrives as a followUp",
+      "message on its own — never poll for it (repeated delegations list/log is blocked); when",
+      "work must run in order, queue it with the queue tool (actions add/add-parallel); to spend",
+      "idle time until results land, use delegations wait; to stop a run, delegations abort. A",
+      "synchronous panel is receipts plus delegations wait ids, which waits for ALL named ids.",
+      "Headless modes still block: there the result IS the tool result. A run is unbounded unless",
+      "you pass timeoutMs, which bounds the run's wall-clock time and aborts it on expiry; use",
+      "the delegations tool to inspect or abort running delegations.",
     ].join(" "),
     parameters: DelegateParams,
 
@@ -872,15 +882,30 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         childCwd = params.cwd;
       }
 
+      // R1 (plan v2): blocking was removed from the TUI — delegate always receipts and the
+      // result arrives as a followUp on its own. An explicit background:false here is rejected
+      // at execute time, BEFORE anything spawns or enqueues; the guidance redirects each
+      // former blocking use to the tool that replaces it (B-A1).
+      if (toolCtx.mode === "tui" && params.background === false) {
+        const message =
+          "ai-badger: blocking delegation was removed in the TUI — delegate returns a receipt immediately and the result arrives as a followUp message on its own. " +
+          "To run work in a strict order, queue it with the queue tool (actions add/add-parallel). " +
+          "To spend idle time until results land, use delegations wait (it resolves when runs settle). " +
+          "To stop a running delegation, use delegations abort <id> (or delegations abort all).";
+        toolCtx.ui.notify(message, "warning");
+        return {
+          content: text(message),
+          details: { reason: "blocking-removed", agent: persona.name } satisfies BlockingRemovedDetails,
+        };
+      }
+
       // R2: auto = background iff ctx.mode === "tui" (NOT hasUI — rpc has UI and still blocks);
       // an explicit value always wins. An explicit background:true outside tui degrades to FULL
       // blocking with the warning riding the tool result content AND details.degraded — never
-      // ui.notify alone, which is a no-op in print/json.
+      // ui.notify alone, which is a no-op in print/json. (background:false in tui never reaches
+      // here — rejected above; background:false outside tui IS the blocking default.)
       const wantsBackground = params.background ?? toolCtx.mode === "tui";
       const degraded = wantsBackground && toolCtx.mode !== "tui";
-      // Mirror of `degraded` (T67): an explicit opt-OUT inside tui blocks a turn that would
-      // have backgrounded by default — make that choice observable in the result (f: 2026-08-30).
-      const blockedInTui = toolCtx.mode === "tui" && params.background === false;
 
       const model = toolCtx.model ? `${toolCtx.model.provider}/${toolCtx.model.id}` : undefined;
       const invocation = piInvocation(delegationArgs(persona, params.task, model));
@@ -918,7 +943,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       if (wantsBackground && !degraded) {
         return receiptResult(outcome, toolCallId);
       }
-      return blockingResult(outcome, { personaName: persona.name, agentsDir, errors: scan.errors, degraded, blockedInTui, onUpdate });
+      return blockingResult(outcome, { personaName: persona.name, agentsDir, errors: scan.errors, degraded, onUpdate });
     },
   });
 
@@ -955,7 +980,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   /** Blocking path: await the run's done; today's result shape + details.usage (AC6). */
   async function blockingResult(
     outcome: DelegationReceipt,
-    context: { personaName: string; agentsDir: string; errors: string[]; degraded: boolean; blockedInTui: boolean; onUpdate: AgentToolUpdateCallback<unknown> | undefined },
+    context: { personaName: string; agentsDir: string; errors: string[]; degraded: boolean; onUpdate: AgentToolUpdateCallback<unknown> | undefined },
   ) {
     const { id } = outcome;
     if (context.onUpdate) {
@@ -982,9 +1007,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       content: text(
         context.degraded
           ? `[ai-badger] background was requested outside tui mode — running fully blocking instead.\n${body}`
-          : context.blockedInTui
-            ? `[ai-badger] background:false — this delegation ran blocking; the result below is inline, no receipt follows.\n${body}`
-            : body,
+          : body,
       ),
       details: {
         agent: context.personaName,
