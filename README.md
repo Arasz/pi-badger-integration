@@ -99,6 +99,12 @@ exactly once. With nothing live and nothing armed it resolves immediately with
 monitor-event card and is never duplicated. A turn abort or session shutdown resolves the
 wait as `observed: "aborted"`; nothing sends after shutdown.
 
+The monitor extension also enforces the no-polling rule: a `tool_call` observer counts
+`delegations list`/`log` calls (nothing else — `wait`, `abort`, `queue` and `monitor`
+calls are exempt) and blocks the 4th call inside a sliding 120 s window with guidance to
+use `wait` or a monitor instead; blocked attempts count too. `PI_BADGER_MONITOR_POLL_MAX`
+is read per call and `0` disables the guard; state resets on session shutdown.
+
 ## One-time cleanup after the switch to directory installs (do once, by hand)
 
 The old publish flow installed two flat files, and ai-badger's installer used a

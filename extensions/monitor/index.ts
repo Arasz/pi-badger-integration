@@ -41,9 +41,12 @@ import {
 	clampMonitorTimeoutMs,
 	compilePredicate,
 	composeMonitorEvent,
+	DEFAULT_POLL_MAX,
+	DEFAULT_POLL_WINDOW_MS,
 	evaluateMonitor,
 	MONITOR_TIMEOUT_DEFAULT_MS,
 	type MonitorSnapshot,
+	pollingDecision,
 } from "./monitor-core.ts";
 
 // ------------------------------------------------------------------ contract constants
@@ -66,13 +69,20 @@ export const WAIT_MAX_MS = 600_000;
 /** Custom entry type of the shutdown report (M-B4). */
 export const SHUTDOWN_ENTRY_TYPE = "monitor-shutdown";
 
+/** The delegations tool the poll guard counts (R9) — overridable via deps for tests. */
+export const POLL_GUARD_TOOL_NAME = "delegations";
+
+/** Env kill switch for the poll guard, read PER CALL (R9/N-4): 0 disables the guard. */
+export const POLL_GUARD_ENV = "PI_BADGER_MONITOR_POLL_MAX";
+
 /** Injectable timer seam so tests fire expiry synchronously (R7). */
 export interface MonitorScheduler {
 	setTimeout(handler: () => void, timeoutMs: number): unknown;
 	clearTimeout(handle: unknown): void;
 }
 
-/** Injectable seams: clock, scheduler, cap, and the tui-mode resolver for tests. */
+/** Injectable seams: clock, scheduler, cap, the tui-mode resolver for tests, and the poll
+ * guard configuration (the env kill switch and the counted tool name are per-call). */
 export interface MonitorDeps {
 	/** Injected clock for armedAt/expiry/waited math. Defaults to Date.now. */
 	now?: () => number;
@@ -82,6 +92,8 @@ export interface MonitorDeps {
 	maxMonitors?: number;
 	/** Test seam: resolve a tool context's mode; defaults to reading ctx.mode. */
 	mode?: (ctx: unknown) => string | undefined;
+	/** Poll-guard overrides (R9): window 120 s, max 3 allowed, counted tool "delegations". */
+	pollGuard?: { windowMs?: number; max?: number; toolName?: string };
 }
 
 /** Structural mirror of the subagent's transition payload — the monitor depends on the
@@ -667,6 +679,40 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		return box;
 	});
 
+	// ---------------------------------------------------------------- poll enforcement (R9)
+
+	// Passive registration at factory time (house precedent: the delegations status surface's
+	// tool_call handler) — the STATE starts empty and resets at session_shutdown (E-A2).
+	const pollTimestamps: number[] = [];
+	const pollToolName = deps.pollGuard?.toolName ?? POLL_GUARD_TOOL_NAME;
+	const pollWindowMs = deps.pollGuard?.windowMs ?? DEFAULT_POLL_WINDOW_MS;
+
+	/** The kill switch reads PER CALL (R9/N-4): unset or invalid → the configured default;
+	 * 0 → the guard is off entirely (no counting, so re-enabling starts a fresh window). */
+	const envPollMax = (): { max: number; enabled: boolean } => {
+		const fallback = deps.pollGuard?.max ?? DEFAULT_POLL_MAX;
+		const raw = process.env[POLL_GUARD_ENV];
+		if (raw === undefined || raw.trim() === "") return { max: fallback, enabled: true };
+		const value = Number(raw.trim());
+		if (!Number.isInteger(value) || value < 0) return { max: fallback, enabled: true };
+		if (value === 0) return { max: 0, enabled: false };
+		return { max: value, enabled: true };
+	};
+
+	pi.on("tool_call", (event) => {
+		const call = event as { toolName?: string; input?: { action?: unknown } } | undefined;
+		if (call?.toolName !== pollToolName) return undefined;
+		const action = call.input?.action;
+		if (action !== "list" && action !== "log") return undefined; // wait/abort never counted (E-A2)
+		const { max, enabled } = envPollMax();
+		if (!enabled) return undefined; // 0 disables — and does not count either
+		const nowMs = now();
+		const decision = pollingDecision(pollTimestamps, nowMs, { windowMs: pollWindowMs, max, enabled: true });
+		pollTimestamps.push(nowMs); // blocked attempts count too (R9/M-3)
+		if (decision.action === "block") return { block: true, reason: decision.reason };
+		return undefined;
+	});
+
 	// ---------------------------------------------------------------- shutdown
 
 	pi.on("session_shutdown", () => {
@@ -685,6 +731,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		// nothing sends after shutdown.
 		for (const wait of [...pendingWaits]) wait.settle("aborted");
 		delegationViews.clear();
+		pollTimestamps.length = 0; // the enforcement window is per-session (E-A2/S-9a)
 		pi.appendEntry(SHUTDOWN_ENTRY_TYPE, { monitors: report });
 	});
 
