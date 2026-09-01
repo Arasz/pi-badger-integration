@@ -21,6 +21,7 @@ subtree (pi discovers `~/.pi/agent/extensions/<name>/index.ts` only).
 | session-signals (marker `!` importance — mid-run abort; delegation working status in the footer) | `extensions/session-signals/` | `~/.pi/agent/extensions/session-signals/` |
 | shift-enter-newline (Shift+Enter newline for terminals that cannot report it, e.g. JetBrains IDE terminal) | `extensions/shift-enter-newline/` | `~/.pi/agent/extensions/shift-enter-newline/` |
 | subagent (delegation to ai-badger personas scaffolded into `<project>/.pi/agents/`; background runs, progress and logs — see below) | `extensions/subagent/` | `~/.pi/agent/extensions/subagent/` |
+| monitor (one-shot predicate monitors over delegation transitions, the idle `wait` tool, and manual-polling enforcement — see below) | `extensions/monitor/` | `~/.pi/agent/extensions/monitor/` |
 
 Still ai-badger-owned: the adapter is vendored + tested in ai-badger's
 `features/pi/` (see the three-copy model below).
@@ -69,6 +70,23 @@ is injected after a restart. Run ids are never reused (skip-to-next-free over th
 directory), so `delegations log d-N` stays unambiguous across restarts. One documented
 limitation: `/tree` navigation away from the delegating branch hides that branch's
 receipts — the log directory remains the way to find those runs.
+
+## The monitor extension: predicate wake-ups
+
+The `monitor` tool (TUI-only) arms one-shot predicate monitors over delegation
+transitions. `register` takes a JS predicate expression (4 KB cap) evaluated as
+`return (expr)` in a fresh sandbox against `{ delegations, monitors }` on every
+`delegation-transition` event — no wall-clock input, transitions are the only trigger. The
+snapshot's `delegations` is the whole fleet this session has seen (terminal records stay),
+so an "all settled" predicate sees every delegation's current state. The FIRST truthy
+evaluation — including at registration, when the condition already holds — removes the
+monitor and delivers one `monitor-event` follow-up (unbatched, wakes the agent). The
+predicate must evaluate to a primitive: a promise or object is an error card that disarms
+the monitor. At most 8 monitors are active (9th register rejects naming them); `list`
+shows them, `cancel <id>` disarms. A monitor with no `timeoutMs` expires after 10 minutes
+(max 60): the expiry delivers an `expired` card and removes it. A throwing predicate
+delivers an `error` card once and is never retried. Outside the TUI every `monitor`
+action rejects loudly — there is no idle session to wake.
 
 ## One-time cleanup after the switch to directory installs (do once, by hand)
 
