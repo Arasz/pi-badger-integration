@@ -547,26 +547,94 @@ export type AdmissionDecision =
   | { action: "queue"; queuePosition: number }
   | { action: "reject"; reason: string };
 
-export function emptyAdmission(): AdmissionState {
-  return { running: [], queue: [] };
+// ------------------------------------------- one queue of groups (plan v2 R2/R3/R4)
+
+/** Env override that lifts the running cap (R3); the oversize-parallel rejection names it. */
+export const PARALLEL_GROUP_CAP_ENV = "PI_BADGER_SUBAGENT_MAX_CONCURRENT";
+
+export type GroupMode = "serial" | "parallel";
+
+/**
+ * One queue entry (plan v2 R2): every queued delegation belongs to a group. A serial group
+ * runs its members one at a time, in order; a parallel group is admitted atomically or not at
+ * all. The next group dequeues only when the whole previous group settled. A plain single
+ * delegation is a one-element serial group.
+ */
+export interface QueueGroup {
+  groupId: string;
+  mode: GroupMode;
+  /** Members currently admitted (running). */
+  members: string[];
+  /** Members still waiting to be admitted, in order. */
+  pending: string[];
+}
+
+/**
+ * Admission state with the group FIFO. Invariant: `queue` is the flat pending list in group
+ * order — `queue === groups.flatMap(g => g.pending)` — maintained in lockstep by every function
+ * below, so `liveQueuePosition` is always the live flat index. Every mutation of this state
+ * MUST go through these functions; hand-edited copies silently drop `groups`.
+ */
+export interface GroupAdmissionState extends AdmissionState {
+  groups: QueueGroup[];
+}
+
+export function emptyAdmission(): GroupAdmissionState {
+  return { running: [], queue: [], groups: [] };
+}
+
+/** The waiting line starts at the first group with pending members — the queue head. */
+function queueHeadIndex(groups: QueueGroup[]): number {
+  return groups.findIndex((g) => g.pending.length > 0);
+}
+
+/**
+ * Whether the waiting line's head cannot proceed right now (plan v2 R2 ★ run-now rule):
+ * a serial head mid-flight (a member is running) or with no free slot is blocked; a parallel
+ * head whose pending members do not all fit is blocked. Fully-running groups are not queue
+ * entries and never block — a run-now delegate may use a free slot behind one, which is what
+ * keeps single-run behavior (row 22) unchanged. A head that could admit right now cannot
+ * persist: every mutation drains.
+ */
+function waitingHeadBlocked(state: GroupAdmissionState, caps: AdmissionCaps): boolean {
+  const head = state.groups.find((g) => g.pending.length > 0);
+  if (!head) return false;
+  if (head.mode === "serial") return head.members.length > 0 || state.running.length >= caps.cap;
+  return state.running.length + head.pending.length > caps.cap; // parallel: waits for a full fit
 }
 
 /**
  * Apply one request to the admission state (row 22). Pure: returns the next state rather than
  * mutating, so the registry stays free to drop rejected requests. Rejection carries the
  * guidance the caller surfaces verbatim to blocking and background calls alike (T58).
+ *
+ * The request is a run-now single = a one-element serial group appended at the FIFO tail. It
+ * admits iff a slot is free AND the waiting head is not slot-blocked (plan v2 R2 ★ M2): a head
+ * waiting for members-to-settle or for a full parallel fit blocks run-now too. With an empty
+ * queue this is exactly the row-22 behavior.
  */
 export function admitRequest(
-  state: AdmissionState,
+  state: GroupAdmissionState,
   id: string,
   caps: AdmissionCaps,
-): { state: AdmissionState; decision: AdmissionDecision } {
-  if (state.running.length < caps.cap) {
-    return { state: { running: [...state.running, id], queue: state.queue }, decision: { action: "admit" } };
+): { state: GroupAdmissionState; decision: AdmissionDecision } {
+  if (state.running.length < caps.cap && !waitingHeadBlocked(state, caps)) {
+    return {
+      state: {
+        running: [...state.running, id],
+        queue: state.queue,
+        groups: [...state.groups, { groupId: id, mode: "serial", members: [id], pending: [] }],
+      },
+      decision: { action: "admit" },
+    };
   }
   if (state.queue.length < caps.queueCap) {
     return {
-      state: { running: state.running, queue: [...state.queue, id] },
+      state: {
+        running: state.running,
+        queue: [...state.queue, id],
+        groups: [...state.groups, { groupId: id, mode: "serial", members: [], pending: [id] }],
+      },
       decision: { action: "queue", queuePosition: state.queue.length + 1 },
     };
   }
@@ -577,20 +645,168 @@ export function admitRequest(
 }
 
 /**
- * Release one finished run and admit the queue head FIFO if a slot freed (row 22). At most
- * one run is admitted per release — a release frees exactly one slot; the registry repeats
- * the call if its own bookkeeping ever frees more.
+ * Pop fully-settled head groups, then admit from the head of the waiting line per its mode
+ * (plan v2 R2): a serial group admits its next member only when none of that group is running
+ * and a slot is free; a parallel group admits all pending members atomically only when every
+ * one fits. Fully-running groups are not queue entries — the waiting line starts at the first
+ * group with pending members, which is what keeps single-run release behavior (row 22) intact.
+ * If the waiting head cannot proceed, nothing behind it admits — later groups never overtake.
+ * Admission is committed to the returned state in full before the caller spawns anything (the
+ * batch-commit-before-spawn invariant, Q-B2): a synchronous settle inside a spawn finds every
+ * admitted id already in `running`.
+ */
+function drainAdmission(
+  state: GroupAdmissionState,
+  caps: AdmissionCaps,
+): { state: GroupAdmissionState; admitted: string[] } {
+  let { running, groups } = state;
+  let queue = state.queue;
+  const admitted: string[] = [];
+  for (;;) {
+    while (groups.length > 0 && groups[0]!.members.length === 0 && groups[0]!.pending.length === 0) {
+      groups = groups.slice(1); // a fully-settled head group collapses (Q-A5, and the all-aborted collapse Q-A6)
+    }
+    const headIndex = queueHeadIndex(groups);
+    if (headIndex === -1) break;
+    const head = groups[headIndex]!;
+    if (head.mode === "serial") {
+      if (head.members.length > 0 || running.length >= caps.cap) break;
+      const next = head.pending[0]!;
+      groups = [
+        ...groups.slice(0, headIndex),
+        { ...head, members: [next], pending: head.pending.slice(1) },
+        ...groups.slice(headIndex + 1),
+      ];
+      running = [...running, next];
+      queue = queue.filter((q) => q !== next);
+      admitted.push(next);
+      break; // a serial group runs one member at a time
+    }
+    if (running.length + head.pending.length > caps.cap) break;
+    const batch = head.pending;
+    groups = [
+      ...groups.slice(0, headIndex),
+      { ...head, members: [...head.members, ...batch], pending: [] },
+      ...groups.slice(headIndex + 1),
+    ];
+    running = [...running, ...batch];
+    queue = queue.filter((q) => !batch.includes(q));
+    admitted.push(...batch);
+    break;
+  }
+  return { state: { running, queue, groups }, admitted };
+}
+
+/**
+ * Release one finished run and drain admission (row 22 generalized, plan v2 R2). The released
+ * id leaves `running` and its group; settled head groups pop and the next group admits per its
+ * mode. `admitted` lists every id the drain admitted, in order — for singles that is zero or
+ * one id, for a parallel head up to the whole group. The registry spawns each admitted id after
+ * the whole admission state is committed.
  */
 export function releaseRun(
-  state: AdmissionState,
+  state: GroupAdmissionState,
   id: string,
   caps: AdmissionCaps,
-): { state: AdmissionState; admitted: string | undefined } {
+): { state: GroupAdmissionState; admitted: string[] } {
   const running = state.running.filter((r) => r !== id);
-  const queue = [...state.queue];
-  const next = running.length < caps.cap ? queue.shift() : undefined;
-  if (next !== undefined) running.push(next);
-  return { state: { running, queue }, admitted: next };
+  const groups = state.groups
+    .map((g) => ({
+      ...g,
+      members: g.members.filter((m) => m !== id),
+      pending: g.pending.filter((m) => m !== id),
+    }))
+    .filter((g) => g.members.length > 0 || g.pending.length > 0); // a fully-settled group collapses (Q-A6)
+  return drainAdmission({ running, queue: groups.flatMap((g) => g.pending), groups }, caps);
+}
+
+/**
+ * Remove one QUEUED member (a member-level abort, plan v2 R4 ★): the group continues with its
+ * remaining members, and a group left with neither running nor pending members collapses — the
+ * drain then lets the next group dequeue (Q-A6). `admitted` lists ids promoted by the collapse;
+ * the registry spawns them (unless it is shut down).
+ */
+export function removePending(
+  state: GroupAdmissionState,
+  id: string,
+  caps: AdmissionCaps,
+): { state: GroupAdmissionState; admitted: string[] } {
+  const queue = state.queue.filter((q) => q !== id);
+  const groups = state.groups
+    .map((g) => (g.pending.includes(id) ? { ...g, pending: g.pending.filter((m) => m !== id) } : g))
+    .filter((g) => g.members.length > 0 || g.pending.length > 0); // an all-aborted group collapses (Q-A6)
+  return drainAdmission({ running: state.running, queue, groups }, caps);
+}
+
+export type GroupEnqueueDecision =
+  | { action: "accepted"; admittedNow: string[]; queued: Array<{ id: string; queuePosition: number }> }
+  | { action: "reject"; reason: string };
+
+/**
+ * Enqueue one whole group all-or-nothing (plan v2 R2/R3). Rejections leave the state untouched
+ * (same reference): a parallel group larger than the running cap (R3 — the reason names the
+ * cap, the env override and the split remedy), a group whose pending members would push the
+ * flat queue past `queueCap` (R2 ★ serial-overflow — names the cap and the split remedy), or a
+ * malformed member list. An accepted group dequeues immediately only on an idle system (empty
+ * group FIFO — Q-B4); behind any existing group it waits entirely for the next release — later
+ * groups never overtake, and an explicitly queued group never starts while it is being
+ * enqueued. `admittedNow` and `queued` (with the flat 1-based position each member holds at
+ * enqueue) are the per-member receipt inputs.
+ */
+export function enqueueGroup(
+  state: GroupAdmissionState,
+  groupId: string,
+  mode: GroupMode,
+  memberIds: string[],
+  caps: AdmissionCaps,
+): { state: GroupAdmissionState; decision: GroupEnqueueDecision } {
+  if (memberIds.length === 0) {
+    return { state, decision: { action: "reject", reason: "delegation group is empty" } };
+  }
+  if (new Set(memberIds).size !== memberIds.length) {
+    return { state, decision: { action: "reject", reason: "delegation group has duplicate members" } };
+  }
+  if (mode === "parallel" && memberIds.length > caps.cap) {
+    return {
+      state,
+      decision: {
+        action: "reject",
+        reason: `parallel delegation group of ${memberIds.length} members exceeds the running cap of ${caps.cap} (raise ${PARALLEL_GROUP_CAP_ENV} to lift it) — split it into groups of at most ${caps.cap} members`,
+      },
+    };
+  }
+  const idle = state.groups.length === 0; // nothing running, nothing pending (Q-B4's idle system)
+  const appended: GroupAdmissionState = {
+    running: state.running,
+    queue: [...state.queue, ...memberIds],
+    groups: [...state.groups, { groupId, mode, members: [], pending: [...memberIds] }],
+  };
+  const finalState = idle ? drainAdmission(appended, caps).state : appended;
+  if (finalState.queue.length > caps.queueCap) {
+    return {
+      state,
+      decision: {
+        action: "reject",
+        reason: `delegation group would push the queue past its cap of ${caps.queueCap} pending delegations — split it into smaller groups or wait for the queue to drain`,
+      },
+    };
+  }
+  const group = finalState.groups.find((g) => g.groupId === groupId)!;
+  const admittedNow = memberIds.filter((id) => !group.pending.includes(id));
+  const queued = memberIds
+    .filter((id) => group.pending.includes(id))
+    .map((id) => ({ id, queuePosition: finalState.queue.indexOf(id) + 1 }));
+  return { state: finalState, decision: { action: "accepted", admittedNow, queued } };
+}
+
+/**
+ * The live flat 1-based position of a pending member over the whole queue (plan v2 R2: `queue
+ * list` renders the LIVE recomputed index; receipts snapshot the index at enqueue). Undefined
+ * for ids that are not pending (running, settled or unknown).
+ */
+export function liveQueuePosition(state: GroupAdmissionState, id: string): number | undefined {
+  const index = state.queue.indexOf(id);
+  return index === -1 ? undefined : index + 1;
 }
 
 // ------------------------------------------------------------------ run-id allocation
