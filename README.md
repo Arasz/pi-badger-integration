@@ -85,7 +85,7 @@ receipts — the log directory remains the way to find those runs.
 
 The `monitor` tool (TUI-only) arms one-shot predicate monitors over delegation
 transitions. `register` takes a JS predicate expression (4 KB cap) evaluated as
-`return (expr)` in a fresh sandbox against `{ delegations, monitors }` on every
+`return (expr)` inside a function body (statements still fail at compile) in a fresh sandbox against `{ delegations, monitors }` on every
 `delegation-transition` event — no wall-clock input, transitions are the only trigger. The
 snapshot's `delegations` is the whole fleet this session has seen (terminal records stay),
 so an "all settled" predicate sees every delegation's current state. The FIRST truthy
