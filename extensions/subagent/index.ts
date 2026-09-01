@@ -123,6 +123,15 @@ export { clampRunTimeoutMs, RUN_TIMEOUT_MAX_MS } from "./delegation-core.ts";
 export interface Persona {
   name: string;
   description: string;
+  /**
+   * The persona's `model:` frontmatter pin, verbatim, or undefined when the file pins none.
+   * It is NOT resolved here: the pin is passed through as the child's `--model`, so pi's own
+   * CLI resolution (the same matcher `PI_MODEL` / `pi --model` use) maps an alias like
+   * `opus` to a concrete provider/model. An unresolvable pin is therefore a LOUD failure —
+   * the child exits 1 with `Error: Model "…" not found` — never a silent fall-back to the
+   * delegating session's model, which is the defect class this field exists to end.
+   */
+  model?: string;
   /** The file body below the frontmatter — appended to the child's system prompt. */
   systemPrompt: string;
   filePath: string;
@@ -142,7 +151,7 @@ export interface PersonaScan {
   duplicates?: string[];
 }
 
-type PersonaFrontmatter = { name?: unknown; description?: unknown };
+type PersonaFrontmatter = { name?: unknown; description?: unknown; model?: unknown };
 
 /**
  * One persona file, or the reason it is not one.
@@ -150,6 +159,9 @@ type PersonaFrontmatter = { name?: unknown; description?: unknown };
  * `parseFrontmatter` is pi's own reader, imported rather than reimplemented so this and the
  * files adjust_agents.py writes cannot drift apart over a YAML detail. `name` and `description`
  * are required because a delegation names an agent and the model picks one from descriptions.
+ * `model` is optional and only taken when it is a non-empty string — any other value leaves the
+ * persona without a pin rather than invalidating the file (the pin is a routing preference, not
+ * part of the persona's identity).
  */
 export function parsePersona(text: string, filePath: string): Persona | { error: string } {
   const { frontmatter, body } = parseFrontmatter<PersonaFrontmatter>(text);
@@ -159,9 +171,13 @@ export function parsePersona(text: string, filePath: string): Persona | { error:
   if (typeof frontmatter.description !== "string" || !frontmatter.description.trim()) {
     return { error: `${basename(filePath)} has no \`description\` in its frontmatter` };
   }
+  const model = typeof frontmatter.model === "string" && frontmatter.model.trim()
+    ? frontmatter.model.trim()
+    : undefined;
   return {
     name: frontmatter.name.trim(),
     description: frontmatter.description.trim(),
+    ...(model !== undefined ? { model } : {}),
     systemPrompt: body,
     filePath,
   };
@@ -235,10 +251,18 @@ export function personaList(personas: Persona[]): string {
  * the persona's body (pi appends it to the coding-assistant prompt rather than replacing it, so
  * the child keeps its tool guidance); `--` ends option parsing so a task starting with `-` is a
  * task.
+ *
+ * The `model` argument is the delegating session's model — the child's fallback. The persona's
+ * own `model:` pin (Persona.model) takes precedence when present: the pin is the point of the
+ * field, and dropping it back to the session's model would be the silent ignore this extension
+ * must never do. The pin is passed through verbatim; pi's CLI resolution owns alias →
+ * provider/model, and an unresolvable pin exits the child 1 with a clear "Model … not found"
+ * error rather than ever falling back to the session's model.
  */
 export function delegationArgs(persona: Persona, task: string, model?: string): string[] {
   const args = ["-p", "--mode", "json", "--no-session", "--exclude-tools", CHILD_EXCLUDED_TOOLS];
-  if (model) args.push("--model", model);
+  const resolvedModel = persona.model ?? model;
+  if (resolvedModel) args.push("--model", resolvedModel);
   if (persona.systemPrompt.trim()) args.push("--append-system-prompt", persona.systemPrompt);
   args.push("--", task);
   return args;
