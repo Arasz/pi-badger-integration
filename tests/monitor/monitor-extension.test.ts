@@ -21,8 +21,15 @@ import subagent from "../../extensions/subagent/index.ts";
 import { createFakePi, type FakePi } from "../helpers/fake-pi.ts";
 
 const tempDirs: string[] = [];
+
+/** Captured ui.notify calls — makeCtx's notify stub pushes here (M8: the harness captures
+ * notifications instead of dropping them, mirroring tests/subagent-extension.test.ts's
+ * h.notifications, plus the tone so command rows can assert info/warning/error). */
+const notifications: Array<{ message: string; type?: string }> = [];
+
 afterEach(() => {
   while (tempDirs.length) rmSync(tempDirs.pop()!, { recursive: true, force: true });
+  notifications.length = 0;
 });
 
 // ------------------------------------------------------------------ harness
@@ -115,7 +122,7 @@ function monitorTool(pi: FakePi): Execute {
 
 function makeCtx(mode = "tui"): unknown {
   return {
-    ui: { notify: () => {}, setWidget: () => {}, setStatus: () => {} },
+    ui: { notify: (message: string, type?: string) => notifications.push({ message, type }), setWidget: () => {}, setStatus: () => {} },
     mode,
     hasUI: mode === "tui" || mode === "rpc",
     cwd: "/p",
