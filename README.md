@@ -43,9 +43,10 @@ blocked by the monitor's enforcement). To keep a strict order, queue work with t
 task; running ones untouched), `list` (the queued groups with live positions). The whole
 queue tool is TUI-only. An explicit `background: false` in the TUI is rejected at execution
 time (`reason: "blocking-removed"`, no child runs) with guidance pointing at `queue`
-(ordering), `delegations wait` (spending idle time) and `delegations abort` (stopping
-runs). A synchronous panel is receipts plus `delegations wait ids`, which waits for ALL
-named ids. In headless modes (`-p`, json, rpc) delegation stays **blocking** — the result
+(ordering), the monitor extension's `wait` tool (spending idle time; user input interrupts
+it) and `delegations abort` (stopping runs). Every delegation enters the queue as a
+one-element serial group — on an idle system it starts immediately, otherwise it waits its
+turn behind queued groups; the queue is the only admission path. In headless modes (`-p`, json, rpc) delegation stays **blocking** — the result
 is the tool result, byte-compatible with the pre-background contract, plus `details.usage`;
 an explicit `background: true` outside the TUI degrades to blocking with a note in the tool
 result and `details.degraded`. There is no automatic wall-clock timeout: runs
@@ -57,8 +58,9 @@ settles as `aborted (lost)`.
 Checking on delegations:
 
 - **`delegations` tool** (LLM-facing): `list` (state, elapsed, current activity, usage),
-  `log <id>` (bounded tail + full path), `abort <id|all>`, `wait [ids] [timeoutMs ≤ 600s]`
-  (resolves with per-id snapshots; completion messages arrive regardless).
+  `log <id>` (bounded tail + full path), `abort <id|all>`. Results arrive on their own —
+  never poll: to spend idle waiting time, use the monitor extension's `wait` tool (user
+  input interrupts it) or register a monitor.
 - **`/delegations [log <id>] [abort <id|all>]`** (human-facing command).
 - **Widget** above the editor: one line per background running run (id, agent, elapsed,
   current activity, usage) plus a queued count, cleared when the session's runs end.

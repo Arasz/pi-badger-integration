@@ -545,7 +545,7 @@ const DelegateParams = Type.Object({
   background: Type.Optional(
     Type.Boolean({
       description:
-        "Compatibility only. In the TUI delegation is always background: an explicit background:false is rejected at execution time (reason 'blocking-removed') — use the queue tool for ordered work or delegations wait to wait for results. Outside the TUI an explicit background:true degrades to full blocking (details.degraded); headless modes block by default.",
+        "Compatibility only. In the TUI delegation is always background: an explicit background:false is rejected at execution time (reason 'blocking-removed') — use the queue tool for ordered work or the monitor extension's wait tool (user input interrupts it) to spend idle time until results land. Outside the TUI an explicit background:true degrades to full blocking (details.degraded); headless modes block by default.",
     }),
   ),
   timeoutMs: Type.Optional(
@@ -917,33 +917,32 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         sessionId = undefined;
       }
 
-      // f: 2026-09-02 — queue-only admission: EVERY delegation enters the queue as a
-      // one-element serial group. On an idle system the group drains immediately (identical UX
-      // to the old start-now path); behind other groups it waits its turn — there is no other
-      // admission path. registry.start() remains the programmatic API; the tool never bypasses.
-      const outcomes = await registry.enqueueGroup(
-        [
-          {
-            agent: persona.name,
-            task: params.task,
-            args: invocation.args,
-            command: invocation.command,
-            cwd: childCwd,
-            toolCallId,
-            ...(sessionId !== undefined ? { sessionId } : {}),
-            // The execute signal is the turn's own; ctx.signal is the fallback for a build that only
-            // populates the context. Either one aborting kills the child rather than orphaning it.
-            signal: signal ?? toolCtx.signal,
-            ...(params.timeoutMs !== undefined ? { timeoutMs: clampRunTimeoutMs(params.timeoutMs) } : {}),
-          },
-        ],
-        "serial",
-      );
-      const member = outcomes[0]!;
+      // f: 2026-09-02 — queue-only admission: EVERY delegation enters the ONE queue as a
+      // one-element serial group through the run-now single rule (registry.start →
+      // admitRequest): on an idle system it dequeues on enqueue (identical UX to the old
+      // start-now path); behind a slot-blocked head — the cap is full, or a serial group is
+      // mid-flight, or a parallel head cannot use the free slot — it queues its turn. There
+      // is no other admission path. A fully-running group is not a queue entry and never
+      // blocks (row 22 unchanged); enqueueGroup's wait-behind-any-group semantics are the
+      // queue tool's explicit add/add-parallel groups, not delegate's (design pin:
+      // "queue add/add-parallel keep explicit group semantics").
+      const outcome = await registry.start({
+        agent: persona.name,
+        task: params.task,
+        args: invocation.args,
+        command: invocation.command,
+        cwd: childCwd,
+        toolCallId,
+        ...(sessionId !== undefined ? { sessionId } : {}),
+        // The execute signal is the turn's own; ctx.signal is the fallback for a build that only
+        // populates the context. Either one aborting kills the child rather than orphaning it.
+        signal: signal ?? toolCtx.signal,
+        ...(params.timeoutMs !== undefined ? { timeoutMs: clampRunTimeoutMs(params.timeoutMs) } : {}),
+      });
 
-      if (!member.ok) {
+      if (!outcome.ok) {
         // R7: admission rejection (cap and queue both full) — loud guidance, never a receipt.
-        const message = `ai-badger: delegation rejected — ${member.reason}`;
+        const message = `ai-badger: delegation rejected — ${outcome.reason}`;
         toolCtx.ui.notify(message, "warning");
         return {
           content: text(message),
@@ -951,12 +950,6 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         };
       }
 
-      const outcome: DelegationReceipt = {
-        ok: true,
-        id: member.id,
-        record: member.record,
-        done: member.done,
-      };
       if (wantsBackground && !degraded) {
         return receiptResult(outcome, toolCallId);
       }

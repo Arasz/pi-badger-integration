@@ -7,11 +7,10 @@
  *
  *   - the LLM tool `delegations` (R6): list / log / abort — NO wait verb (f: 2026-09-02, the
  *     queue-model ruling: the only waiting surface is the monitor extension's `wait` tool,
- *     which user input interrupts; `delegations wait` ignored input and starved the loop)
- *     default, 600 s max, timeout resolving with per-id state snapshots and never an error;
- *     unknown ids are loud errors; a terminal id returns immediately; abort without an id is
- *     a usage error; `log` answers with a bounded tail of the run's log file plus the full
- *     path pointer, and "log unavailable" when there is no healthy log (R4 review CR6).
+ *     which user input interrupts; the removed verb blocked the loop and ignored input).
+ *     Unknown ids are loud errors; abort without an id is a usage error; `log` answers with
+ *     a bounded tail of the run's log file plus the full path pointer, and "log unavailable"
+ *     when there is no healthy log (R4 review CR6).
  *   - the human twin `/delegations [log <id>] [abort <id|all>]` with argument completions —
  *     every mutation goes through the same registry calls the tool uses (T78), so the tool
  *     and the command can never disagree about a transition.
@@ -115,7 +114,7 @@ function taskExcerpt(task: string): string {
 	return oneLine.length > 100 ? `${oneLine.slice(0, 100)}…` : oneLine;
 }
 
-/** One line per record for the LLM tool's list/wait output — phase plus the task it maps to.
+/** One line per record for the LLM tool's list output — phase plus the task it maps to.
  * When `probe` is given, RUNNING records with a pid gain a liveness segment (RR3): `alive`,
  * `unknown`, or `lost (dead pid)` for a dead-but-unsettled run; settled and queued records
  * skip the probe (N4). `contextWindow` (when known) renders `ctx:` as a share of the window. */
