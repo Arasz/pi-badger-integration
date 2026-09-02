@@ -172,6 +172,10 @@ export interface DelegationRecord {
   timeoutMs?: number;
   /** RR2: the applied watchdog threshold, stamped on a lost settle — the verdict names it. */
   watchdogMs?: number;
+  /** Model-pin fallback (f: 2026-09-02): present when the persona's `model:` pin failed to
+   * start the child (exit 1 + model-startup stderr + no progress event) and the run retried
+   * once on the fallback argv. The card names the rejection and the retry target. */
+  modelFallback?: string;
 }
 
 // ------------------------------------------------------------------ per-run timeout clamp

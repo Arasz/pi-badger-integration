@@ -131,9 +131,15 @@ export interface Persona {
    * The persona's `model:` frontmatter pin, verbatim, or undefined when the file pins none.
    * It is NOT resolved here: the pin is passed through as the child's `--model`, so pi's own
    * CLI resolution (the same matcher `PI_MODEL` / `pi --model` use) maps an alias like
-   * `opus` to a concrete provider/model. An unresolvable pin is therefore a LOUD failure —
-   * the child exits 1 with `Error: Model "…" not found` — never a silent fall-back to the
-   * delegating session's model, which is the defect class this field exists to end.
+   * `opus` to a concrete provider/model.
+   *
+   * f: 2026-09-02 (owner ruling — supersedes the former LOUD-failure contract): the model
+   * part is FULLY OPTIONAL — a pin must never fail a delegation. pi's alias resolution is
+   * credential-blind on its fuzzy path (the d-324 class: bare `opus` resolved to
+   * amazon-bedrock, which has no credentials, and the child died at the auth gate), so the
+   * runner retries once on the parent model when a pin fails to START
+   * (`fallbackArgsFor` + the runner's model-fallback retry) and RECORDS the fallback on the
+   * result note — never silent, never fatal.
    */
   model?: string;
   /** The file body below the frontmatter — appended to the child's system prompt. */
@@ -265,11 +271,12 @@ function unknownPersonaMessage(agent: string, agentsDir: string, personas: Array
  * task.
  *
  * The `model` argument is the delegating session's model — the child's fallback. The persona's
- * own `model:` pin (Persona.model) takes precedence when present: the pin is the point of the
- * field, and dropping it back to the session's model would be the silent ignore this extension
- * must never do. The pin is passed through verbatim; pi's CLI resolution owns alias →
- * provider/model, and an unresolvable pin exits the child 1 with a clear "Model … not found"
- * error rather than ever falling back to the session's model.
+ * own `model:` pin (Persona.model) takes precedence when present. f: 2026-09-02: the pin is
+ * best-effort, not a hard requirement — when the pinned model cannot START the child (the
+ * d-324 class: pi's credential-blind alias resolution picked an unauthenticated provider),
+ * the runner retries once on the parent model via `fallbackArgsFor` and records the fallback
+ * on the result note. A pin therefore never fails a delegation, and the fallback is never
+ * silent.
  */
 export function delegationArgs(persona: Pick<Persona, "systemPrompt" | "model">, task: string, model?: string): string[] {
   const args = ["-p", "--mode", "json", "--no-session", "--exclude-tools", CHILD_EXCLUDED_TOOLS];
@@ -278,6 +285,28 @@ export function delegationArgs(persona: Pick<Persona, "systemPrompt" | "model">,
   if (persona.systemPrompt.trim()) args.push("--append-system-prompt", persona.systemPrompt);
   args.push("--", task);
   return args;
+}
+
+/**
+ * The model-pin fallback argv (f: 2026-09-02), derived FROM the primary argv — one argv
+ * builder, no drift. Returns undefined when there is nothing to fall back FROM: the persona
+ * pins no model (the primary argv already runs the parent model), or the pinned value is not
+ * the argv's `--model` value (defensive — the tool layer is the only argv builder). With a
+ * parent model the pin value is swapped; without one the `--model` pair is dropped and the
+ * child picks its own default. Pure: the primary argv is never mutated.
+ */
+export function fallbackArgsFor(
+  args: string[],
+  persona: Pick<Persona, "model">,
+  model: string | undefined,
+): string[] | undefined {
+  if (!persona.model) return undefined;
+  const index = args.indexOf("--model");
+  if (index < 0 || index + 1 >= args.length || args[index + 1] !== persona.model) return undefined;
+  const fallback = [...args];
+  if (model) fallback[index + 1] = model;
+  else fallback.splice(index, 2);
+  return fallback;
 }
 
 /**
@@ -383,8 +412,15 @@ function extensionVersion(): string {
 /**
  * The completion verdict line of a delegation-result card (R5). State-driven: completed with a
  * non-zero exit renders "exited N"; the silent-JSON variant names itself loudly (R3/CR4).
+ * f: 2026-09-02: a model-pin fallback appends its recorded reason — the card says the pin was
+ * rejected and what the run retried on, so the fallback is never silent.
  */
 export function notificationVerdict(note: DelegationNote): string {
+  const verdict = notificationStateVerdict(note);
+  return note.modelFallback !== undefined ? `${verdict} ${note.modelFallback}.` : verdict;
+}
+
+function notificationStateVerdict(note: DelegationNote): string {
   const duration = note.durationMs !== undefined ? ` in ${formatDuration(note.durationMs)}` : "";
   switch (note.state) {
     case "aborted":
@@ -828,7 +864,11 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     agentsDirFor: (cwd) => join(cwd, ...AGENTS_DIR),
     unknownPersonaMessage: (agent, agentsDir, personas) => unknownPersonaMessage(agent, agentsDir, personas),
     validateChildCwd,
-    buildInvocation: (persona, task, model) => piInvocation(delegationArgs(persona, task, model)),
+    buildInvocation: (persona, task, model) => {
+      const args = delegationArgs(persona, task, model);
+      const invocation = piInvocation(args);
+      return { command: invocation.command, args: invocation.args, fallbackArgs: fallbackArgsFor(invocation.args, persona, model) };
+    },
   };
   registerDelegationQueue(pi, registry, queueOpts);
 
@@ -954,7 +994,9 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       const degraded = wantsBackground && toolCtx.mode !== "tui";
 
       const model = toolCtx.model ? `${toolCtx.model.provider}/${toolCtx.model.id}` : undefined;
-      const invocation = piInvocation(delegationArgs(persona, params.task, model));
+      const args = delegationArgs(persona, params.task, model);
+      const invocation = piInvocation(args);
+      const fallbackArgs = fallbackArgsFor(invocation.args, persona, model);
       let sessionId: string | undefined;
       try {
         sessionId = toolCtx.sessionManager?.getSessionId();
@@ -975,6 +1017,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         agent: persona.name,
         task: params.task,
         args: invocation.args,
+        ...(fallbackArgs !== undefined ? { fallbackArgs } : {}),
         command: invocation.command,
         cwd: childCwd,
         toolCallId,

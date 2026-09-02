@@ -33,6 +33,10 @@ export interface QueuePersona {
   name: string;
   description: string;
   systemPrompt: string;
+  /** The persona's `model:` pin, when the file pinned one (f: 2026-09-02 — buildInvocation
+   * derives the model-fallback argv from it). index.ts's full Persona scan satisfies this
+   * structurally. */
+  model?: string;
 }
 
 /** Structural view of the persona scan (index.ts's PersonaScan). */
@@ -59,8 +63,13 @@ export interface DelegationQueueOpts {
   /** validateChildCwd: the failure reason, or undefined when the cwd is a usable directory (T74). */
   validateChildCwd(cwd: string): string | undefined;
   /** The child invocation for one member; `model` is the resolved model string (the group-level
-   * override, else the session model — the delegate default). */
-  buildInvocation(persona: QueuePersona, task: string, model: string | undefined): { command: string; args: string[] };
+   * override, else the session model — the delegate default). `fallbackArgs` (f: 2026-09-02)
+   * is the model-pin retry argv — derived beside `args`, passed through to the runner. */
+  buildInvocation(
+    persona: QueuePersona,
+    task: string,
+    model: string | undefined,
+  ): { command: string; args: string[]; fallbackArgs?: string[] };
 }
 
 /** The slice of pi's execute context the queue tool reads. */
@@ -269,6 +278,7 @@ export function registerDelegationQueue(
 				agent: persona.name,
 				task,
 				args: invocation.args,
+				...(invocation.fallbackArgs !== undefined ? { fallbackArgs: invocation.fallbackArgs } : {}),
 				command: invocation.command,
 				cwd: childCwd,
 				toolCallId,

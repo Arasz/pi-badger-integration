@@ -59,6 +59,9 @@ export interface StartRequest {
   task: string;
   /** Full child argv (tool layer builds it; row 1). */
   args: string[];
+  /** Model-pin fallback argv (f: 2026-09-02): pass-through to the runner's one-shot retry
+   * when the pin cannot start the child; tool layer builds it beside `args`. */
+  fallbackArgs?: string[];
   command?: string;
   cwd: string;
   toolCallId?: string;
@@ -405,6 +408,7 @@ export class DelegationRegistry {
       agent: request.agent,
       task: request.task,
       args: request.args,
+      ...(request.fallbackArgs !== undefined ? { fallbackArgs: request.fallbackArgs } : {}),
       ...(request.command !== undefined ? { command: request.command } : {}),
       cwd: request.cwd,
       ...(request.toolCallId !== undefined ? { toolCallId: request.toolCallId } : {}),

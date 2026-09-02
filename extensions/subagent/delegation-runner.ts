@@ -66,6 +66,25 @@ export type SpawnFn = (command: string, args: string[], options: SpawnOptions) =
 export const defaultSpawn: SpawnFn = (command, args, options) =>
   nodeSpawn(command, args, { cwd: options.cwd, shell: false, stdio: ["ignore", "pipe", "pipe"] }) as unknown as ChildLike;
 
+// ------------------------------------------------- model-pin failure signature (f: 2026-09-02)
+
+/** The stderr signatures pi prints when the REQUESTED MODEL cannot start — the d-324 class
+ * (pi's credential-blind alias resolution picked amazon-bedrock for the bare alias `opus`, so
+ * a well-formed persona pin died at the auth gate before doing any work). The model-fallback
+ * retry arms only on these, never on ordinary task stderr. */
+const MODEL_STARTUP_FAILURE_RE =
+  /no api key found for|model "[^"]*" not found|is ambiguous across providers|unknown provider|no models available/i;
+
+export function isModelStartupFailure(rawStderr: string): boolean {
+  return MODEL_STARTUP_FAILURE_RE.test(rawStderr);
+}
+
+/** The value a tool-built argv passed as `--model <value>`, or undefined. */
+function modelFlagValue(args: string[]): string | undefined {
+  const index = args.indexOf("--model");
+  return index >= 0 && index + 1 < args.length ? args[index + 1] : undefined;
+}
+
 // ------------------------------------------------------------------ log tee seam
 
 /**
@@ -113,6 +132,9 @@ export interface DelegationNote {
   stdoutTail?: string;
   /** Capped stderr for non-zero exits (row 32). */
   stderrTail?: string;
+  /** Model-pin fallback (f: 2026-09-02): the recorded rejection + retry target when the
+   * persona's pin could not start the child. Rides the note so the card names it. */
+  modelFallback?: string;
   usage?: DelegationUsage;
   durationMs?: number;
   /** Absent when no sink was configured or the sink failed mid-run (T62). */
@@ -165,6 +187,14 @@ export interface RunRequest {
   task: string;
   /** Full child argv; the runner never builds argv (that is the tool layer's job, row 1). */
   args: string[];
+  /** Model-pin fallback argv (f: 2026-09-02, owner ruling "the model part is fully optional
+   * — never fail a delegation on it"): when the FIRST child closes exit-1 with a
+   * model-startup failure on stderr and no progress event was parsed, the runner respawns
+   * ONCE with these args under the SAME run id (one header, one exit line, one note — the
+   * retry is not a second delegation). Built by the tool layer beside `args` (row 1);
+   * absent or equal to `args` = no retry. The fallback is RECORDED (`record.modelFallback`),
+   * never silent and never fatal. */
+  fallbackArgs?: string[];
   command?: string;
   cwd: string;
   sessionId?: string;
@@ -237,6 +267,8 @@ interface RunState {
   rawStderr: string;
   buffer: string;
   warned: boolean;
+  /** Model-pin fallback spent — the retry fires at most once per run (f: 2026-09-02). */
+  retried: boolean;
   deferred: Deferred<DelegationRecord>;
   signal: AbortSignal | undefined;
   onAbort: (() => void) | undefined;
@@ -301,6 +333,7 @@ export class DelegationRunner {
       rawStderr: "",
       buffer: "",
       warned: false,
+      retried: false,
       deferred,
       signal: request.signal,
       onAbort: undefined,
@@ -337,16 +370,35 @@ export class DelegationRunner {
     if (child.pid !== undefined) state.record.pid = child.pid;
     this.writeHeader(state, child.pid);
 
+    this.wireChild(state, child);
+    this.armTimers(state, request);
+
+    if (request.signal) {
+      const onAbort = () => this.abortRun(state);
+      state.onAbort = onAbort;
+      request.signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    return handle;
+  }
+
+  /** Wire one spawned child's streams into the run state — shared by the first spawn and the
+   * model-fallback retry (f: 2026-09-02); the retry is the same run, same handlers. */
+  private wireChild(state: RunState, child: ChildLike): void {
     child.stdout?.on("data", (chunk) => this.feedStdout(state, chunk));
     child.stderr?.on("data", (chunk) => this.feedStderr(state, chunk));
     child.on("close", (code, signal) => this.onClose(state, code, signal));
     child.on("error", (error) => this.onChildError(state, error));
+  }
 
-    // RR4/S5: the timeout arms here, after a successful spawn — the value is re-clamped (never
-    // trust the caller's clamp: registry and direct-runner paths both land here), the clock
-    // starts at spawn, and expiry rides abortRun (R8's one kill path — no second kill
-    // implementation). finishSettle and onClose clear it; abortRun's settled guard absorbs a
-    // late fire (T81/T82).
+  /** Arm the per-run timeout and the liveness watchdog after a successful spawn. Re-armed by
+   * the model-fallback retry: the attempt clock restarts at the new spawn (RR4/S5 — "the
+   * clock starts at spawn"; a retry IS a spawn). */
+  private armTimers(state: RunState, request: RunRequest): void {
+    // RR4/S5: the value is re-clamped (never trust the caller's clamp: registry and
+    // direct-runner paths both land here); expiry rides abortRun (R8's one kill path — no
+    // second kill implementation). finishSettle and onClose clear it; abortRun's settled
+    // guard absorbs a late fire (T81/T82).
     const appliedTimeoutMs = clampRunTimeoutMs(request.timeoutMs);
     if (appliedTimeoutMs !== undefined) {
       state.record.timeoutMs = appliedTimeoutMs; // observable while running (T85)
@@ -365,14 +417,6 @@ export class DelegationRunner {
       state.watchdogMs = appliedWatchdogMs;
       this.armWatchdog(state);
     }
-
-    if (request.signal) {
-      const onAbort = () => this.abortRun(state);
-      state.onAbort = onAbort;
-      request.signal.addEventListener("abort", onAbort, { once: true });
-    }
-
-    return handle;
   }
 
   // ------------------------------------------------------------------ stream wiring
@@ -438,6 +482,12 @@ export class DelegationRunner {
       state.buffer = "";
       this.handleLine(state, tail);
     }
+    if (!state.settled && this.shouldRetryOnModelFailure(state, code, signal)) {
+      // f: 2026-09-02: the persona's model pin failed to START (the d-324 class) — respawn
+      // once on the fallback argv under the same run id instead of failing the delegation.
+      this.beginFallbackRetry(state);
+      return;
+    }
     this.writeTeeStreams(state); // final output belongs to the log even when already settled
     if (!state.settled) this.settleExit(state, code, signal);
   }
@@ -446,6 +496,56 @@ export class DelegationRunner {
     if (state.settled) return;
     // Asynchronous spawn failure (ENOENT et al.) — same treatment as a throwing spawnFn (row 33).
     this.settleSpawnError(state, error instanceof Error ? error.message : String(error));
+  }
+
+  // ------------------------------------------------------ model-pin fallback (f: 2026-09-02)
+
+  /** The retry arms only when ALL hold: a fallback argv exists and differs, the retry is not
+   * spent, the child died a natural exit-1, no PROGRESS event was parsed (pi emits a session
+   * header on stdout BEFORE resolving auth — the d-324 log proves it — so "no events" would
+   * never fire), and the stderr matches a model-startup failure signature. Ordinary task
+   * stderr never retries. */
+  private shouldRetryOnModelFailure(state: RunState, code: number | null, signal: string | null): boolean {
+    const fallbackArgs = state.request.fallbackArgs;
+    if (!fallbackArgs || state.retried) return false;
+    if (JSON.stringify(fallbackArgs) === JSON.stringify(state.request.args)) return false;
+    if (code !== 1 || signal !== null) return false;
+    if (state.events.some((event) => isProgressEvent(event))) return false;
+    return isModelStartupFailure(state.rawStderr);
+  }
+
+  /** Respawn ONCE on the fallback argv under the same run id: flush attempt-1's output to the
+   * tee, reset the per-attempt buffers, record the reason on the record, and re-wire + re-arm.
+   * The log keeps ONE run header and gets ONE exit line — the retry is not a second run, so
+   * reconstruction and accounting see exactly what they always saw. */
+  private beginFallbackRetry(state: RunState): void {
+    const request = state.request;
+    const fallbackArgs = request.fallbackArgs!;
+    const reason = (state.rawStderr.split("\n").find((line) => line.trim().length > 0) ?? "model startup failure").slice(0, 160);
+    const pin = modelFlagValue(request.args);
+    const target = modelFlagValue(fallbackArgs);
+    state.retried = true;
+    state.record.modelFallback = `--model ${pin ?? "?"} was rejected (${reason}) — retried on ${target ? `--model ${target}` : "the child's default model"}`;
+
+    // Attempt-1 output lands in the log first; then the buffers reset so the final flush and
+    // the failure-note tails describe the attempt that actually settled.
+    this.writeTeeStreams(state);
+    if (state.tee) state.tee.stderrLines = [];
+    state.stdoutAccum = "";
+    state.rawStderr = "";
+    state.buffer = "";
+    this.teeAppend(state, JSON.stringify({ type: "stderr", text: `ai-badger: ${state.record.modelFallback}` }));
+
+    try {
+      const child = this.spawnFn(request.command ?? "pi", fallbackArgs, { cwd: request.cwd, shell: false, stdio: ["ignore", "pipe", "pipe"] });
+      state.child = child;
+      if (child.pid !== undefined) state.record.pid = child.pid;
+      this.wireChild(state, child);
+      this.armTimers(state, request);
+    } catch (error) {
+      // The command spawned once already — this is near-impossible; settle honestly if it happens.
+      this.settleSpawnError(state, error instanceof Error ? error.message : String(error));
+    }
   }
 
   // ------------------------------------------------------------------ kill paths (R8, review CR5)
@@ -630,6 +730,7 @@ export class DelegationRunner {
     if (record.timeoutMs !== undefined) note.timeoutMs = record.timeoutMs;
     if (record.watchdogMs !== undefined) note.watchdogMs = record.watchdogMs;
     if (record.spawnError !== undefined) note.spawnError = record.spawnError;
+    if (record.modelFallback !== undefined) note.modelFallback = record.modelFallback;
     if (answer.kind === "silent") {
       // R3/CR4: the quiet failure gets a loud marker plus the capped raw stdout.
       note.silentReason = answer.reason;
