@@ -374,6 +374,33 @@ export interface PollGuardConfig {
 
 /** Pure decision for one `delegations list|log` call: allow it, or block it with guidance. */
 export type PollingDecision = { readonly action: "allow" } | { readonly action: "block"; readonly reason: string };
+export type ManualWaitDecision = { readonly action: "allow" } | { readonly action: "block"; readonly reason: string };
+
+/**
+ * A shell wait command, as a command word at a command boundary: start of string, after
+ * `;`/`|`/`&`/newline, with optional env-var prefixes. `cat sleep`, `npm run sleep-test` and
+ * `sleepwalker` are not waits; `sleep 30`, `VAR=x sleep 5`, `a && sleep 30`, `sleep; echo` and
+ * powershell `Start-Sleep -Seconds 30` are (f: 2026-09-02 — any manual wait attempt is a
+ * main-loop park and gets redirected at the harness level).
+ */
+const SHELL_WAIT_COMMAND = /(?:^|[;|&]|\n)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:sleep|Start-Sleep)(?:[\s;&|]|$)/i;
+
+/**
+ * The manual-wait guard's pure half (f: 2026-09-02): a shell `sleep`/`Start-Sleep` parks the
+ * main loop — the exact cost the wait-tool rework exists to avoid — so it is redirected to the
+ * wait tool / monitor registration instead of executing. `undefined`/empty commands allow.
+ */
+export function manualWaitDecision(command: string | undefined): ManualWaitDecision {
+	if (command === undefined || command.trim() === "") return { action: "allow" };
+	if (!SHELL_WAIT_COMMAND.test(command)) return { action: "allow" };
+	return {
+		action: "block",
+		reason:
+			"Manual waiting blocked: `sleep` parks the main loop — the loop every tool call and monitor-event wake needs. " +
+			"Use the monitor extension's wait tool to spend idle time (user input interrupts it), register a monitor and end your turn " +
+			"to be woken by a monitor-event, or just end your turn.",
+	};
+}
 
 /**
  * Decide whether one more manual-polling call is allowed (R9): a sliding window over the
