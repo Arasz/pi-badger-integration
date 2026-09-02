@@ -826,10 +826,11 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       `separate pi process with its own context. Personas live in ${AGENTS_DIR.join("/")}/*.md;`,
       "call this with an unknown agent name to get the list of available ones.",
       "In the TUI the tool returns a receipt immediately and the result arrives as a followUp",
-      "message on its own — never poll for it (repeated delegations list/log is blocked); when",
-      "work must run in order, queue it with the queue tool (actions add/add-parallel); to spend",
-      "idle time until results land, use delegations wait; to stop a run, delegations abort. A",
-      "synchronous panel is receipts plus delegations wait ids, which waits for ALL named ids.",
+      "message on its own — never poll for it (repeated delegations list/log is blocked). EVERY",
+      "delegation enters the queue as a one-element serial group: on an idle system it starts",
+      "immediately, otherwise it waits its turn behind queued groups — there is no other",
+      "admission path; to spend idle time until results land, use the monitor extension's wait",
+      "tool (user input interrupts it) or register a monitor; to stop a run, delegations abort.",
       "Headless modes still block: there the result IS the tool result. A run is unbounded unless",
       "you pass timeoutMs, which bounds the run's wall-clock time and aborts it on expiry; use",
       "the delegations tool to inspect or abort running delegations.",
@@ -890,7 +891,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         const message =
           "ai-badger: blocking delegation was removed in the TUI — delegate returns a receipt immediately and the result arrives as a followUp message on its own. " +
           "To run work in a strict order, queue it with the queue tool (actions add/add-parallel). " +
-          "To spend idle time until results land, use delegations wait (it resolves when runs settle). " +
+          "To spend idle time until results land, use the monitor extension's wait tool (user input interrupts it) or register a monitor. " +
           "To stop a running delegation, use delegations abort <id> (or delegations abort all).";
         toolCtx.ui.notify(message, "warning");
         return {
@@ -916,23 +917,33 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         sessionId = undefined;
       }
 
-      const outcome: StartOutcome = await registry.start({
-        agent: persona.name,
-        task: params.task,
-        args: invocation.args,
-        command: invocation.command,
-        cwd: childCwd,
-        toolCallId,
-        ...(sessionId !== undefined ? { sessionId } : {}),
-        // The execute signal is the turn's own; ctx.signal is the fallback for a build that only
-        // populates the context. Either one aborting kills the child rather than orphaning it.
-        signal: signal ?? toolCtx.signal,
-        ...(params.timeoutMs !== undefined ? { timeoutMs: clampRunTimeoutMs(params.timeoutMs) } : {}),
-      });
+      // f: 2026-09-02 — queue-only admission: EVERY delegation enters the queue as a
+      // one-element serial group. On an idle system the group drains immediately (identical UX
+      // to the old start-now path); behind other groups it waits its turn — there is no other
+      // admission path. registry.start() remains the programmatic API; the tool never bypasses.
+      const outcomes = await registry.enqueueGroup(
+        [
+          {
+            agent: persona.name,
+            task: params.task,
+            args: invocation.args,
+            command: invocation.command,
+            cwd: childCwd,
+            toolCallId,
+            ...(sessionId !== undefined ? { sessionId } : {}),
+            // The execute signal is the turn's own; ctx.signal is the fallback for a build that only
+            // populates the context. Either one aborting kills the child rather than orphaning it.
+            signal: signal ?? toolCtx.signal,
+            ...(params.timeoutMs !== undefined ? { timeoutMs: clampRunTimeoutMs(params.timeoutMs) } : {}),
+          },
+        ],
+        "serial",
+      );
+      const member = outcomes[0]!;
 
-      if (!outcome.ok) {
+      if (!member.ok) {
         // R7: admission rejection (cap and queue both full) — loud guidance, never a receipt.
-        const message = `ai-badger: delegation rejected — ${outcome.reason}`;
+        const message = `ai-badger: delegation rejected — ${member.reason}`;
         toolCtx.ui.notify(message, "warning");
         return {
           content: text(message),
@@ -940,6 +951,12 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         };
       }
 
+      const outcome: DelegationReceipt = {
+        ok: true,
+        id: member.id,
+        record: member.record,
+        done: member.done,
+      };
       if (wantsBackground && !degraded) {
         return receiptResult(outcome, toolCallId);
       }
