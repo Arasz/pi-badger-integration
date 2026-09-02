@@ -270,7 +270,7 @@ function unknownPersonaMessage(agent: string, agentsDir: string, personas: Array
  * provider/model, and an unresolvable pin exits the child 1 with a clear "Model … not found"
  * error rather than ever falling back to the session's model.
  */
-export function delegationArgs(persona: Pick<Persona, "systemPrompt">, task: string, model?: string): string[] {
+export function delegationArgs(persona: Pick<Persona, "systemPrompt" | "model">, task: string, model?: string): string[] {
   const args = ["-p", "--mode", "json", "--no-session", "--exclude-tools", CHILD_EXCLUDED_TOOLS];
   const resolvedModel = persona.model ?? model;
   if (resolvedModel) args.push("--model", resolvedModel);
