@@ -124,7 +124,11 @@ The monitor extension also enforces the no-polling rule: a `tool_call` observer 
 `delegations list`/`log`/`results` calls (nothing else — `wait`, `abort`, `queue` and `monitor`
 calls are exempt) and blocks the 4th call inside a sliding 120 s window with guidance to
 use `wait` or a monitor instead; blocked attempts count too. `PI_BADGER_MONITOR_POLL_MAX`
-is read per call and `0` disables the guard; state resets on session shutdown.
+is read per call and `0` disables the guard; state resets on session shutdown. The same
+observer enforces the no-manual-wait rule (f: 2026-09-02): a shell `sleep`/`Start-Sleep` in a
+bash/powershell tool call parks the main loop and is blocked before it runs, redirected to
+`wait` or a monitor registration; the env kill switch `PI_BADGER_WAIT_GUARD=0` disables it,
+and blocked sleeps never count into the polling window.
 
 ## One-time cleanup after the switch to directory installs (do once, by hand)
 

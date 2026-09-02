@@ -1,6 +1,6 @@
 {
   "name": "ai-badger-monitor",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "description": "Background predicate monitors over delegation transitions: register a JS predicate, get woken by a monitor-event followUp when it first evaluates true. pi discovers the entry as ~/.pi/agent/extensions/<name>/index.ts; this manifest records metadata only and does not register the entry.",

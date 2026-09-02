@@ -35,7 +35,7 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { TRANSITION_CHANNEL } from "../subagent/index.ts";
-import { DEFAULT_POLL_MAX, DEFAULT_POLL_WINDOW_MS, MONITOR_TIMEOUT_DEFAULT_MS, clampMonitorCap, clampMonitorTimeoutMs, compilePredicate, composeMonitorEvent, evaluateMonitor, formatMonitorLifetime, pollingDecision, type DelegationView, type MonitorSnapshot } from "./monitor-core.ts";
+import { DEFAULT_POLL_MAX, DEFAULT_POLL_WINDOW_MS, MONITOR_TIMEOUT_DEFAULT_MS, clampMonitorCap, clampMonitorTimeoutMs, compilePredicate, composeMonitorEvent, evaluateMonitor, formatMonitorLifetime, manualWaitDecision, pollingDecision, type DelegationView, type MonitorSnapshot } from "./monitor-core.ts";
 
 // ------------------------------------------------------------------ contract constants
 
@@ -65,6 +65,7 @@ export const POLL_GUARD_TOOL_NAME = "delegations";
 
 /** Env kill switch for the poll guard, read PER CALL (R9/N-4): 0 disables the guard. */
 export const POLL_GUARD_ENV = "PI_BADGER_MONITOR_POLL_MAX";
+export const WAIT_GUARD_ENV = "PI_BADGER_WAIT_GUARD";
 
 /** Injectable timer seam so tests fire expiry synchronously (R7). */
 export interface MonitorScheduler {
@@ -786,6 +787,17 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 	/** The kill switch reads PER CALL (R9/N-4): unset or invalid → the configured default;
 	 * 0 → nothing counts while disabled, and earlier timestamps still count once re-enabled
 	 * until they age out of the window (pinned by the E-A2 env row). */
+	const waitGuardEnabled = (): boolean => {
+		const raw = process.env[WAIT_GUARD_ENV];
+		return raw === undefined || raw.trim() !== "0"; // "0" disables — the only kill switch
+	};
+
+	const shellCommandOf = (call: { toolName?: string; input?: { command?: unknown } } | undefined): string | undefined => {
+		if (call?.toolName === undefined || !/^(bash|powershell)$/i.test(call.toolName)) return undefined;
+		const command = call.input?.command;
+		return typeof command === "string" ? command : undefined;
+	};
+
 	const envPollMax = (): { max: number; enabled: boolean } => {
 		const fallback = deps.pollGuard?.max ?? DEFAULT_POLL_MAX;
 		const raw = process.env[POLL_GUARD_ENV];
@@ -797,7 +809,17 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 	};
 
 	pi.on("tool_call", (event) => {
-		const call = event as { toolName?: string; input?: { action?: unknown } } | undefined;
+		const call = event as { toolName?: string; input?: { action?: unknown; command?: unknown } } | undefined;
+		// Manual-wait guard first (f: 2026-09-02 — "any manual attempt should be redirected on the
+		// harness level"): a shell sleep parks the main loop, the exact cost the wait-tool rework
+		// exists to avoid. Never counts into the poll-guard window (W-G7).
+		if (waitGuardEnabled()) {
+			const command = shellCommandOf(call);
+			if (command !== undefined) {
+				const waitDecision = manualWaitDecision(command);
+				if (waitDecision.action === "block") return { block: true, reason: waitDecision.reason };
+			}
+		}
 		if (call?.toolName !== pollToolName) return undefined;
 		const action = call.input?.action;
 		if (action !== "list" && action !== "log" && action !== "results") return undefined; // wait/abort never counted (E-A2); results is a polling surface too (lane B, B-G1)
