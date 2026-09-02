@@ -387,6 +387,24 @@ describe("M-B5: the whole monitor tool is tui-only", () => {
   });
 });
 
+// ------------------------------------------------------------------ B-T: the tui-only rejection guidance
+
+describe("B-T: the tui-only rejection points at headless blocking, not the removed delegations wait", () => {
+  test("B-T1: the non-tui rejection never advertises delegations wait and names the delegate blocking semantics", async () => {
+    const { pi } = makeHarness();
+    const error: Error = await register(pi, { predicate: "false" }, "print").then(
+      () => {
+        throw new Error("expected the register to reject in print mode");
+      },
+      (reason) => reason as Error,
+    );
+    // lane A removed `delegations wait` — the guidance must not advertise a verb that no longer exists
+    expect(error.message).not.toMatch(/delegations wait/);
+    // and must point at what actually blocks headless: a delegate call blocks until settle
+    expect(error.message).toMatch(/blocks this turn until the delegation settles/);
+  });
+});
+
 // ------------------------------------------------------------------ renderer pin (P6 scope)
 
 describe("monitor-event renderer", () => {

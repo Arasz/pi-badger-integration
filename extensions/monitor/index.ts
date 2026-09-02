@@ -477,7 +477,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		if (resolveMode(ctx) === "tui") return;
 		throw new Error(
 			`the monitor tool is tui-only (action "${action}") — it wakes an idle interactive session and there is none in this mode. ` +
-				`Use delegations wait to block on a settle instead.`,
+				`A delegate call in this mode blocks this turn until the delegation settles (background degrades to blocking) — that is the way to wait here.`,
 		);
 	};
 
