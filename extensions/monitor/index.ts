@@ -32,7 +32,7 @@
  */
 
 import { Box, Text } from "@earendil-works/pi-tui";
-import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { TRANSITION_CHANNEL } from "../subagent/index.ts";
 import { DEFAULT_POLL_MAX, DEFAULT_POLL_WINDOW_MS, MONITOR_TIMEOUT_DEFAULT_MS, clampMonitorCap, clampMonitorTimeoutMs, compilePredicate, composeMonitorEvent, evaluateMonitor, formatMonitorLifetime, pollingDecision, type DelegationView, type MonitorSnapshot } from "./monitor-core.ts";
@@ -44,6 +44,9 @@ export const MONITOR_CUSTOM_TYPE = "monitor-event";
 
 /** The LLM-facing tool names this extension registers (also on the child denylist, R5). */
 export const MONITOR_TOOL_NAME = "monitor";
+
+/** The human command (mirrors /delegations): armed-monitor panel; `cancel <id>` disarms. */
+export const MONITOR_COMMAND_NAME = "monitors";
 
 /** The idle-wait tool (R8): pending-tool idiom, resolves on the first wake source. */
 export const WAIT_TOOL_NAME = "wait";
@@ -474,7 +477,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		if (resolveMode(ctx) === "tui") return;
 		throw new Error(
 			`the monitor tool is tui-only (action "${action}") — it wakes an idle interactive session and there is none in this mode. ` +
-				`Use delegations wait to block on a settle instead.`,
+				`A delegate call in this mode blocks this turn until the delegation settles (background degrades to blocking) — that is the way to wait here.`,
 		);
 	};
 
@@ -595,22 +598,17 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 
 	function listMonitors(ctx: unknown): ToolResult {
 		requireTui(ctx, "list");
-		if (armed.size === 0) return textResult("no active monitors.", { monitors: [] });
+		const views = armedList();
+		if (views.length === 0) return textResult("no active monitors.", { monitors: [] });
 		const nowMs = now();
-		const lines = [...armed.values()].map(
-			(record) =>
-				`${record.id}${record.name !== undefined ? ` (${record.name})` : ""} — ${record.predicate} — ` +
-				`armed ${formatMonitorLifetime(nowMs - record.armedAt)} ago, expires in ${formatMonitorLifetime(record.expiresAt - nowMs)}` +
-				`${record.interrupt ? ", interrupt" : ""}`,
+		const lines = views.map(
+			(view) =>
+				`${view.id}${view.name !== undefined ? ` (${view.name})` : ""} — ${view.predicate} — ` +
+				`armed ${formatMonitorLifetime(nowMs - view.armedAt)} ago, expires in ${formatMonitorLifetime(view.expiresAt - nowMs)}` +
+				`${view.interrupt ? ", interrupt" : ""}`,
 		);
 		return textResult(lines.join("\n"), {
-			monitors: [...armed.values()].map((record) => ({
-				id: record.id,
-				...(record.name !== undefined ? { name: record.name } : {}),
-				predicate: record.predicate,
-				armedAt: record.armedAt,
-				expiresAt: record.expiresAt,
-			})),
+			monitors: views.map(({ interrupt: _interrupt, ...rest }) => rest),
 		});
 	}
 
@@ -618,10 +616,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		requireTui(ctx, "cancel");
 		const id = params.id?.trim();
 		if (!id) throw new Error("monitor cancel needs an id — use monitor list for the active ids");
-		const record = armed.get(id);
-		if (!record) throw new Error(`no monitor ${id} — use monitor list for the active ids`);
-		armed.delete(id);
-		clearTimer(record);
+		const record = disarmMonitor(id);
 		return textResult(`Monitor ${id} cancelled.`, {
 			id,
 			...(record.name !== undefined ? { name: record.name } : {}),
@@ -659,6 +654,109 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		].join(" "),
 		parameters: WaitParams,
 		execute: executeWait,
+	});
+
+	// ---------------------------------------------------------------- command (mirrors /delegations)
+
+	/** Head-cap an excerpt at 100 chars with `…` after whitespace collapse — the sibling
+	 * /delegations panel's taskExcerpt discipline, applied to predicates here. */
+	function excerpt(text: string): string {
+		const oneLine = text.replace(/\s+/g, " ").trim();
+		return oneLine.length > 100 ? `${oneLine.slice(0, 100)}…` : oneLine;
+	}
+
+	/** The armed monitors as data, shared by the tool's list action and the /monitors command.
+	 * Deliberately NO requireTui gate here: the gate belongs to the tool entry (R10). The
+	 * command path calls this directly — commands are TUI by definition, and the command path
+	 * must not depend on command-ctx `.mode` (folded-plan ruling; runtime presence unverified
+	 * on this pi build — the installed types declare it, which is not a runtime guarantee). */
+	function armedList(): Array<{
+		id: string;
+		name?: string;
+		predicate: string;
+		interrupt: boolean;
+		armedAt: number;
+		expiresAt: number;
+	}> {
+		return [...armed.values()].map((record) => ({
+			id: record.id,
+			...(record.name !== undefined ? { name: record.name } : {}),
+			predicate: record.predicate,
+			interrupt: record.interrupt,
+			armedAt: record.armedAt,
+			expiresAt: record.expiresAt,
+		}));
+	}
+
+	/** Internal disarm WITHOUT the requireTui gate — the /monitors command calls this directly
+	 * (same ruling as armedList). Throws the tool's loud unknown-id error. */
+	function disarmMonitor(id: string): ArmedMonitor {
+		const record = armed.get(id);
+		if (!record) throw new Error(`no monitor ${id} — use monitor list for the active ids`);
+		armed.delete(id);
+		clearTimer(record);
+		return record;
+	}
+
+	/** The /monitors panel: one line per armed monitor — id, name, predicate excerpt, age,
+	 * time left. Same empty-state text as the tool's list. */
+	function monitorsPanel(): string {
+		const views = armedList();
+		if (views.length === 0) return "no active monitors.";
+		const nowMs = now();
+		return views
+			.map(
+				(view) =>
+					`${view.id}${view.name !== undefined ? ` (${view.name})` : ""} — ${excerpt(view.predicate)} — ` +
+					`armed ${formatMonitorLifetime(nowMs - view.armedAt)} ago, time left ${formatMonitorLifetime(view.expiresAt - nowMs)}`,
+			)
+			.join("\n");
+	}
+
+	/** The command surface's delivery wire (the /delegations precedent): notify with a tone
+	 * when there is UI; headless is a SILENT no-op — no invented notify channel. */
+	function commandResult(ctx: ExtensionContext, message: string, type: "info" | "warning" | "error"): void {
+		if (!ctx.hasUI) return;
+		ctx.ui.notify(message, type);
+	}
+
+	const MONITORS_USAGE_LINE = "usage: /monitors [cancel <id>]";
+
+	pi.registerCommand(MONITOR_COMMAND_NAME, {
+		description: "Armed monitor status; `cancel <id>` disarms one.",
+		getArgumentCompletions(argumentPrefix) {
+			const idPosition = /^cancel\s+(\S*)$/.exec(argumentPrefix);
+			if (idPosition) {
+				const token = idPosition[1]!;
+				const items = armedList()
+					.filter((view) => view.id.startsWith(token))
+					.map((view) => ({ value: view.id, label: `${view.id}${view.name !== undefined ? ` (${view.name})` : ""}` }));
+				return items.length > 0 ? items : null;
+			}
+			const first = argumentPrefix.trim();
+			const subcommands = ["cancel"]
+				.filter((verb) => verb.startsWith(first))
+				.map((verb) => ({ value: verb, label: verb, description: "disarm one monitor" }));
+			return subcommands.length > 0 ? subcommands : null;
+		},
+		async handler(args, ctx) {
+			const trimmed = args.trim();
+			if (!trimmed) {
+				commandResult(ctx, monitorsPanel(), "info");
+				return;
+			}
+			const match = /^cancel\s+(\S+)\s*$/.exec(trimmed);
+			if (!match) {
+				commandResult(ctx, MONITORS_USAGE_LINE, "info");
+				return;
+			}
+			try {
+				const record = disarmMonitor(match[1]!);
+				commandResult(ctx, `Monitor ${record.id} cancelled.`, "info");
+			} catch (error) {
+				commandResult(ctx, error instanceof Error ? error.message : String(error), "error");
+			}
+		},
 	});
 
 	// ---------------------------------------------------------------- renderer
@@ -702,7 +800,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		const call = event as { toolName?: string; input?: { action?: unknown } } | undefined;
 		if (call?.toolName !== pollToolName) return undefined;
 		const action = call.input?.action;
-		if (action !== "list" && action !== "log") return undefined; // wait/abort never counted (E-A2)
+		if (action !== "list" && action !== "log" && action !== "results") return undefined; // wait/abort never counted (E-A2); results is a polling surface too (lane B, B-G1)
 		const { max, enabled } = envPollMax();
 		if (!enabled) return undefined; // 0 disables — and does not count either
 		const nowMs = now();

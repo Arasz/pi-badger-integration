@@ -292,14 +292,14 @@ describe("T66 — background auto-resolution matrix (auto = background iff mode 
     expect(result.details.degraded).toBeUndefined();
   });
 
-  test("B-A1: background:false in tui → execute-time rejection (reason 'blocking-removed'), guidance names queue/wait/abort, NO child spawned", async () => {
+  test("B-A1: background:false in tui → execute-time rejection (reason 'blocking-removed'), guidance names the queue, the monitor wait tool and delegations abort, NO child spawned", async () => {
     h = makeHarness();
     const result = await callDelegate({ agent: "architect", task: "t", background: false }, makeCtx("tui"));
 
     expect((result.details as Record<string, unknown>).reason).toBe("blocking-removed");
     const guidance = contentOf(result);
     expect(guidance).toContain("queue"); // ordering → the queue tool
-    expect(guidance).toContain("delegations wait"); // spending idle time
+    expect(guidance).toContain("the monitor extension's wait tool (user input interrupts it)"); // spending idle time — the only waiting surface
     expect(guidance).toContain("delegations abort"); // stopping a running delegation
     expect(h.children).toHaveLength(0); // NO child spawned
     expect(h.api!.registry.list()).toHaveLength(0); // nothing enqueued either
@@ -307,6 +307,9 @@ describe("T66 — background auto-resolution matrix (auto = background iff mode 
 
   test("explicit background:true wins in tui → background receipt", async () => {
     h = makeHarness();
+    // f: 2026-09-02 — queue-only admission: on an idle system the delegate's one-element
+    // serial group dequeues on enqueue, so the receipt reads "running" (identical UX to the
+    // old start-now path; the queue is still the only admission path).
     const result = await callDelegate({ agent: "architect", task: "t", background: true }, makeCtx("tui"));
 
     expect(result.details.state).toBe("running");
@@ -373,6 +376,8 @@ describe("row 45 — tool result while running says running (receipt with id/too
 describe("T68 — receipt queued variant", () => {
   test("cap full → receipt says queued (position N), not started", async () => {
     h = makeHarness("tui", { cap: 1 });
+    // f: 2026-09-02 — queue-only admission: a slot-blocked head (cap full) queues the
+    // delegate's one-element serial group at position N — there is NO start-now bypass.
     const first = await callDelegate({ agent: "architect", task: "first" }, makeCtx(), undefined, "call-1");
     expect(first.details.state).toBe("running");
 
@@ -381,6 +386,31 @@ describe("T68 — receipt queued variant", () => {
     expect(second.details.queuePosition).toBe(1);
     expect(contentOf(second)).toContain("Delegation d-2 queued (position 1)");
     expect(h.children).toHaveLength(1);
+  });
+});
+
+// ------------------------------------------------------------------ M9: tool-level pins of queue-only admission
+
+describe("M9 — tool-level pins of queue-only admission (f: 2026-09-02)", () => {
+  test("delegate while a queue-tool serial group holds the head → receipt queued (position 2): no bypass even with free slots", async () => {
+    h = makeHarness(); // default caps 4/16 — three slots are free
+    await h.tools.get("queue")!.execute(
+      "call-q",
+      { action: "add", agent: "architect", tasks: ["head one", "head two"] },
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    // the serial head is mid-flight: head one runs, head two waits its turn (position 1)
+    expect(h.api!.registry.list().filter((r: any) => r.state === "queued")).toHaveLength(1);
+
+    // admission is synchronous — assert the receipt before settling any child
+    const result = await callDelegate({ agent: "architect", task: "the delegate" }, makeCtx(), undefined, "call-d");
+
+    expect(result.details.state).toBe("queued");
+    expect(result.details.queuePosition).toBe(2);
+    expect(contentOf(result)).toContain("Delegation d-3 queued (position 2)");
+    expect(h.children).toHaveLength(1); // NO bypass: the head group's first member is the only child
   });
 });
 
@@ -665,27 +695,140 @@ describe("T86–T91 — per-run timeout surfaces (deferral pkg P2)", () => {
 // ------------------------------------------------------------------ B-A3: description redirect wording
 
 describe("B-A3 — delegate + delegations descriptions pin the R1 redirect wording", () => {
-  test("the delegate description: followUps arrive on their own, never poll, queue for order, wait for idle, headless still blocks, receipts + delegations wait ids", () => {
+  test("the delegate description: followUps arrive on their own, never poll, one-element serial group admission, monitor-wait redirect for idle time, headless still blocks", () => {
     h = makeHarness();
     const description = String(h.tools.get("delegate")!.description);
 
     expect(description).toContain("followUp");
     expect(description).toContain("never poll");
-    expect(description).toContain("queue tool");
-    expect(description).toContain("delegations wait");
-    expect(description).toContain("delegations wait ids"); // the synchronous-panel idiom (all named ids)
+    expect(description).toContain("one-element serial group"); // queue-only admission (f: 2026-09-02)
+    expect(description).toContain("the monitor extension's wait tool (user input interrupts it)"); // the only waiting surface
     expect(description).toContain("Headless");
     expect(description).not.toContain("pass background: false to block"); // the removed instruction
   });
 
-  test("the delegations description carries the same redirect (results arrive on their own; never poll)", () => {
+  test("the delegations description carries the same redirect (results arrive on their own; never poll; the monitor wait tool replaces waiting)", () => {
     h = makeHarness();
     const description = String(h.tools.get("delegations")!.description);
 
     expect(description).toContain("followUp");
     expect(description).toContain("never poll");
-    expect(description).toContain("queue tool");
-    expect(description).toContain("delegations wait ids");
+    expect(description).toContain("the monitor extension's wait tool (user input interrupts it)");
+  });
+});
+
+// ------------------------------------------------------------------ M5: the structured result rides the cards
+
+describe("M5 — the structured result rides the delegation-result cards (f: 2026-09-02, option c)", () => {
+  test("a single completion card carries details.result built from the note; the human-readable content is unchanged", async () => {
+    h = makeHarness();
+    await callDelegate({ agent: "architect", task: "the task text" }, makeCtx());
+    h.children[0]!.write(`${assistantEnd("the final answer")}\n`);
+    h.children[0]!.exit(0);
+
+    expect(h.sent).toHaveLength(1);
+    const message = h.sent[0]!.message;
+    const details = message.details as Record<string, unknown>;
+    const result = details.result as Record<string, unknown>;
+    expect(result).toMatchObject({
+      parent_id: "sess-test",
+      delegation_id: "d-1",
+      task_summary: "the task text",
+      persona: "architect",
+      input: "the task text",
+      output: "the final answer",
+      timestamp: new Date(NOW).toISOString(), // the harness's injected clock — no phantom note finish time
+    });
+    expect(String(message.content)).toContain("completed"); // the card body is unchanged
+    expect(String(message.content)).toContain("the final answer");
+  });
+
+  test("every card of a batched flush carries its own result in details.notes[i].result — batched payloads are never dropped", async () => {
+    h = makeHarness("tui", { batchWindowMs: 100 });
+    for (let i = 1; i <= 3; i++) await callDelegate({ agent: "architect", task: `t${i}` }, makeCtx(), undefined, `call-${i}`);
+    burst(h.children);
+
+    expect(h.sent).toHaveLength(1); // the lead
+    await drainBatchWindow();
+
+    expect(h.sent).toHaveLength(2);
+    const batch = h.sent[1]!.message;
+    const notes = (batch.details as { batched: true; notes: Array<Record<string, unknown>> }).notes;
+    expect((batch.details as Record<string, unknown>).batched).toBe(true);
+    expect(notes).toHaveLength(2);
+    expect(notes.map((note) => (note.result as { delegation_id: string }).delegation_id)).toEqual(["d-2", "d-3"]);
+    expect((notes[0]!.result as { task_summary: string }).task_summary).toBe("t2");
+  });
+
+  test("a note held inside an open batch window is already queryable via delegations results — the cache put happens at delivery entry, before the flush", async () => {
+    h = makeHarness("tui", { batchWindowMs: 100 });
+    await callDelegate({ agent: "architect", task: "lead" }, makeCtx(), undefined, "call-1");
+    await callDelegate({ agent: "architect", task: "held" }, makeCtx(), undefined, "call-2");
+    burst(h.children);
+
+    expect(h.sent).toHaveLength(1); // the lead went out; d-2 is held inside the open window
+
+    const delegations = h.tools.get("delegations") as unknown as {
+      execute(toolCallId: string, params: Record<string, unknown>, signal: unknown, onUpdate: unknown, ctx: unknown): Promise<DelegateResult>;
+    };
+    const result = await delegations.execute("tc", { action: "results", id: "d-2" }, undefined, undefined, makeCtx());
+    const details = result.details as { result: { delegation_id: string; task_summary: string } | null };
+    expect(details.result?.delegation_id).toBe("d-2");
+    expect(details.result?.task_summary).toBe("held");
+
+    await drainBatchWindow(); // the held card still flushes, payload attached
+    expect(h.sent).toHaveLength(2);
+    const flushed = h.sent[1]!.message.details as Record<string, unknown>;
+    expect((flushed.result as { delegation_id: string }).delegation_id).toBe("d-2");
+  });
+
+  test("an aborted delegation's card still carries details.result — aborted notes enter the cache through the real wire", async () => {
+    h = makeHarness("tui", { cap: 1 });
+    await callDelegate({ agent: "architect", task: "first" }, makeCtx(), undefined, "call-1");
+    const queued = await callDelegate({ agent: "architect", task: "second" }, makeCtx(), undefined, "call-2");
+    const queuedId = queued.details.id as string;
+
+    h.api!.registry.abort(queuedId);
+
+    expect(h.sent).toHaveLength(1); // T69's aborted card, now pinned with its structured payload
+    const details = h.sent[0]!.message.details as {
+      state: string;
+      result?: { delegation_id: string; output?: unknown };
+    };
+    expect(details.state).toBe("aborted");
+    expect(details.result?.delegation_id).toBe(queuedId);
+    expect(typeof details.result?.output).toBe("string"); // the partial answer rides the card too
+  });
+});
+
+// ------------------------------------------------------------------ M10: rejection guidance redirects to the monitor wait tool
+
+describe("M10 — admission-rejection guidance names the monitor wait tool, never the removed verb (f: 2026-09-02)", () => {
+  test("a delegate rejected with cap and queue full carries the redirect in its reason", async () => {
+    h = makeHarness("tui", { cap: 1, queueCap: 1 });
+    await callDelegate({ agent: "architect", task: "one" }, makeCtx(), undefined, "call-1"); // running
+    await callDelegate({ agent: "architect", task: "two" }, makeCtx(), undefined, "call-2"); // queued
+    const rejected = await callDelegate({ agent: "architect", task: "three" }, makeCtx(), undefined, "call-3");
+
+    const text = String(rejected.content[0]!.text);
+    expect(text).toContain("delegation rejected");
+    expect(text).toContain("the monitor extension's wait tool");
+    expect(text).not.toMatch(/delegations wait/);
+  });
+
+  test("a queue add rejected the same way carries the same redirect", async () => {
+    h = makeHarness("tui", { cap: 1, queueCap: 1 });
+    await callDelegate({ agent: "architect", task: "one" }, makeCtx(), undefined, "call-1"); // fills the cap
+    const queue = h.tools.get("queue") as unknown as {
+      execute(toolCallId: string, params: Record<string, unknown>, signal: unknown, onUpdate: unknown, ctx: unknown): Promise<DelegateResult>;
+    };
+    await queue.execute("tc", { action: "add", agent: "architect", tasks: ["fill the queue"] }, undefined, undefined, makeCtx()); // fills the queue
+    const rejected = await queue.execute("tc", { action: "add", agent: "architect", tasks: ["over the cap"] }, undefined, undefined, makeCtx());
+
+    const text = String(rejected.content[0]!.text);
+    expect(text).toContain("queue rejected");
+    expect(text).toContain("the monitor extension's wait tool");
+    expect(text).not.toMatch(/delegations wait/);
   });
 });
 

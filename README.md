@@ -34,7 +34,8 @@ blocking was removed there: the tool returns immediately with a receipt (`d-<n>`
 running/queued) and the main agent loop stays interactive — the user can keep typing, the
 agent can keep working. When the child settles, its result lands in exactly one
 `delegation-result` follow-up message (exit code, answer tail capped at 8 KB, duration,
-token usage, log path) and wakes the agent; completions arriving inside a 2 s coalesce
+token usage, log path — the structured result rides the message's `details.result`) and
+wakes the agent; completions arriving inside a 2 s coalesce
 window share one batched message (lead card immediate, up to 6 cards per batch). Results
 arrive on their own — **never poll** for them (repeated `delegations list`/`log` polling is
 blocked by the monitor's enforcement). To keep a strict order, queue work with the
@@ -43,9 +44,10 @@ blocked by the monitor's enforcement). To keep a strict order, queue work with t
 task; running ones untouched), `list` (the queued groups with live positions). The whole
 queue tool is TUI-only. An explicit `background: false` in the TUI is rejected at execution
 time (`reason: "blocking-removed"`, no child runs) with guidance pointing at `queue`
-(ordering), `delegations wait` (spending idle time) and `delegations abort` (stopping
-runs). A synchronous panel is receipts plus `delegations wait ids`, which waits for ALL
-named ids. In headless modes (`-p`, json, rpc) delegation stays **blocking** — the result
+(ordering), the monitor extension's `wait` tool (spending idle time; user input interrupts
+it) and `delegations abort` (stopping runs). Every delegation enters the queue as a
+one-element serial group — on an idle system it starts immediately, otherwise it waits its
+turn behind a blocked queue head (cap full, a mid-flight serial group, or a parallel group that cannot use a slot); the queue is the only admission path. In headless modes (`-p`, json, rpc) delegation stays **blocking** — the result
 is the tool result, byte-compatible with the pre-background contract, plus `details.usage`;
 an explicit `background: true` outside the TUI degrades to blocking with a note in the tool
 result and `details.degraded`. There is no automatic wall-clock timeout: runs
@@ -57,8 +59,12 @@ settles as `aborted (lost)`.
 Checking on delegations:
 
 - **`delegations` tool** (LLM-facing): `list` (state, elapsed, current activity, usage),
-  `log <id>` (bounded tail + full path), `abort <id|all>`, `wait [ids] [timeoutMs ≤ 600s]`
-  (resolves with per-id snapshots; completion messages arrive regardless).
+  `log <id>` (bounded tail + full path), `abort <id|all>`, `results [id]` (the cached
+  structured result — `{parent_id, delegation_id, task_summary, persona, input, output,
+  timestamp}` — of one delegation, or, without an id, every result this session parented;
+  an in-memory cache of the LAST 8 results that dies with the session). Results also
+  arrive on their own — never poll: to spend idle waiting time, use the monitor
+  extension's `wait` tool (user input interrupts it) or register a monitor.
 - **`/delegations [log <id>] [abort <id|all>]`** (human-facing command).
 - **Widget** above the editor: one line per background running run (id, agent, elapsed,
   current activity, usage) plus a queued count, cleared when the session's runs end.
@@ -98,6 +104,11 @@ shows them, `cancel <id>` disarms. A monitor with no `timeoutMs` expires after 1
 delivers an `error` card once and is never retried. Outside the TUI every `monitor`
 action rejects loudly — there is no idle session to wake.
 
+For the human side, the **`/monitors` command** lists the armed monitors at a glance (id,
+name, predicate excerpt, age, time left); `cancel <id>` disarms one, and argument
+completion offers `cancel` plus the armed monitor ids. In headless modes it notifies
+nothing.
+
 The `wait` tool spends idle time without polling — and is allowed in every mode. It blocks
 the turn (the pending-tool idiom) until the FIRST of: a watched delegation settles (pass
 `ids` to scope the watch; the default is any live delegation), an armed monitor fires, the
@@ -110,7 +121,7 @@ monitor-event card and is never duplicated. A turn abort or session shutdown res
 wait as `observed: "aborted"`; nothing sends after shutdown.
 
 The monitor extension also enforces the no-polling rule: a `tool_call` observer counts
-`delegations list`/`log` calls (nothing else — `wait`, `abort`, `queue` and `monitor`
+`delegations list`/`log`/`results` calls (nothing else — `wait`, `abort`, `queue` and `monitor`
 calls are exempt) and blocks the 4th call inside a sliding 120 s window with guidance to
 use `wait` or a monitor instead; blocked attempts count too. `PI_BADGER_MONITOR_POLL_MAX`
 is read per call and `0` disables the guard; state resets on session shutdown.
