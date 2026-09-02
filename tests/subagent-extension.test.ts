@@ -307,6 +307,9 @@ describe("T66 — background auto-resolution matrix (auto = background iff mode 
 
   test("explicit background:true wins in tui → background receipt", async () => {
     h = makeHarness();
+    // f: 2026-09-02 — queue-only admission: on an idle system the delegate's one-element
+    // serial group dequeues on enqueue, so the receipt reads "running" (identical UX to the
+    // old start-now path; the queue is still the only admission path).
     const result = await callDelegate({ agent: "architect", task: "t", background: true }, makeCtx("tui"));
 
     expect(result.details.state).toBe("running");
@@ -373,6 +376,8 @@ describe("row 45 — tool result while running says running (receipt with id/too
 describe("T68 — receipt queued variant", () => {
   test("cap full → receipt says queued (position N), not started", async () => {
     h = makeHarness("tui", { cap: 1 });
+    // f: 2026-09-02 — queue-only admission: a slot-blocked head (cap full) queues the
+    // delegate's one-element serial group at position N — there is NO start-now bypass.
     const first = await callDelegate({ agent: "architect", task: "first" }, makeCtx(), undefined, "call-1");
     expect(first.details.state).toBe("running");
 
@@ -381,6 +386,31 @@ describe("T68 — receipt queued variant", () => {
     expect(second.details.queuePosition).toBe(1);
     expect(contentOf(second)).toContain("Delegation d-2 queued (position 1)");
     expect(h.children).toHaveLength(1);
+  });
+});
+
+// ------------------------------------------------------------------ M9: tool-level pins of queue-only admission
+
+describe("M9 — tool-level pins of queue-only admission (f: 2026-09-02)", () => {
+  test("delegate while a queue-tool serial group holds the head → receipt queued (position 2): no bypass even with free slots", async () => {
+    h = makeHarness(); // default caps 4/16 — three slots are free
+    await h.tools.get("queue")!.execute(
+      "call-q",
+      { action: "add", agent: "architect", tasks: ["head one", "head two"] },
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    // the serial head is mid-flight: head one runs, head two waits its turn (position 1)
+    expect(h.api!.registry.list().filter((r: any) => r.state === "queued")).toHaveLength(1);
+
+    // admission is synchronous — assert the receipt before settling any child
+    const result = await callDelegate({ agent: "architect", task: "the delegate" }, makeCtx(), undefined, "call-d");
+
+    expect(result.details.state).toBe("queued");
+    expect(result.details.queuePosition).toBe(2);
+    expect(contentOf(result)).toContain("Delegation d-3 queued (position 2)");
+    expect(h.children).toHaveLength(1); // NO bypass: the head group's first member is the only child
   });
 });
 
