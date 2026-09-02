@@ -431,6 +431,131 @@ describe("monitor-event renderer", () => {
   });
 });
 
+// ------------------------------------------------------------------ B-C: the /monitors command
+
+interface MonitorCommand {
+  description?: string;
+  getArgumentCompletions(prefix: string): Array<{ value: string; label: string; description?: string }> | null;
+  handler(args: string, ctx: unknown): Promise<void>;
+}
+
+function monitorsCommand(pi: FakePi): MonitorCommand {
+  const command = pi.commands.get("monitors");
+  if (!command) throw new Error("the monitor extension did not register a /monitors command");
+  return command as unknown as MonitorCommand;
+}
+
+describe("B-C: the /monitors command (mirrors /delegations)", () => {
+  test("B-C1: the command registers passively at factory load — present with a description, arming nothing", () => {
+    const { pi, scheduler } = makeHarness();
+    const command = monitorsCommand(pi); // throws (RED) while the command is unregistered
+    expect(command.description).toBeTypeOf("string");
+    expect(command.description!.length).toBeGreaterThan(0);
+    // a command is a passive surface: no transition subscription, no expiry timers, no sends
+    expect(pi.subscriptions).toHaveLength(0);
+    expect(scheduler.timers.size).toBe(0);
+    expect(pi.sent).toHaveLength(0);
+  });
+
+  test("B-C2: no arguments notifies the armed monitors — id, name, predicate excerpt, age, time left — as an info", async () => {
+    const { pi } = makeHarness();
+    const longPredicate = `delegations.some((d) => d.state === "running" && d.agent === "architect" && d.exitCode === null && d.id.length > 0)`;
+    expect(longPredicate.length).toBeGreaterThan(100);
+    await register(pi, { predicate: longPredicate, name: "wake-1" });
+    pi.clock.advance(45_000);
+
+    await monitorsCommand(pi).handler("", makeCtx());
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]!.type).toBe("info");
+    const message = notifications[0]!.message;
+    expect(message).toContain("m-1");
+    expect(message).toContain("(wake-1)");
+    expect(message).toContain("armed 45s ago");
+    expect(message).toContain("time left 9m 15s");
+    // the predicate is excerpted, not verbatim: head-capped with an ellipsis
+    expect(message).toContain(longPredicate.slice(0, 100));
+    expect(message).toContain("…");
+    expect(message).not.toContain(longPredicate);
+  });
+
+  test("B-C3: with nothing armed the panel says so", async () => {
+    const { pi } = makeHarness();
+    await monitorsCommand(pi).handler("", makeCtx());
+    expect(notifications).toEqual([{ message: expect.stringMatching(/no active monitors/i), type: "info" }]);
+  });
+
+  test("B-C4: cancel <id> disarms — the monitor list afterwards no longer shows it and its expiry timer is gone", async () => {
+    const { pi, scheduler } = makeHarness();
+    await register(pi, { predicate: "false", name: "doomed" });
+    await register(pi, { predicate: "false", name: "survivor" });
+    expect(scheduler.timers.size).toBe(2);
+
+    await monitorsCommand(pi).handler("cancel m-1", makeCtx());
+
+    expect(notifications).toEqual([{ message: expect.stringContaining("m-1"), type: "info" }]);
+    // asserted via the monitor list afterwards (the command and the tool must agree):
+    const listed = await monitorTool(pi)("tc-list", { action: "list" }, undefined, undefined, makeCtx());
+    expect(listed.content[0]!.text).not.toContain("doomed");
+    expect(listed.content[0]!.text).toContain("survivor");
+    expect(scheduler.timers.size).toBe(1); // the cancelled monitor's expiry timer is cleared
+  });
+
+  test("B-C5: cancel of an unknown id notifies a loud error naming the id", async () => {
+    const { pi } = makeHarness();
+    await monitorsCommand(pi).handler("cancel m-99", makeCtx());
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]!.type).toBe("error");
+    expect(notifications[0]!.message).toContain("m-99");
+  });
+
+  test("B-C6: malformed arguments notify the usage line as info, not an error", async () => {
+    const { pi } = makeHarness();
+    await monitorsCommand(pi).handler("cancel", makeCtx()); // cancel without an id
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]!.type).toBe("info");
+    expect(notifications[0]!.message).toMatch(/\/monitors/);
+  });
+
+  test("B-C7: headless the command notifies nothing — the panel is a silent no-op and cancel still disarms", async () => {
+    const { pi } = makeHarness();
+    await register(pi, { predicate: "false", name: "headless-doomed" });
+    const headless = makeCtx("print");
+
+    await monitorsCommand(pi).handler("", headless);
+    expect(notifications).toHaveLength(0); // no invented headless notify
+
+    await monitorsCommand(pi).handler("cancel m-1", headless);
+    expect(notifications).toHaveLength(0); // still silent
+    const listed = await monitorTool(pi)("tc-list", { action: "list" }, undefined, undefined, makeCtx());
+    expect(listed.content[0]!.text).toContain("no active monitors"); // the disarm itself still happened
+  });
+
+  test("B-C8: completions offer cancel and the armed monitor ids (mirroring /delegations)", async () => {
+    const { pi } = makeHarness();
+    const command = monitorsCommand(pi);
+    // first position: the cancel verb only
+    expect(command.getArgumentCompletions("")).toEqual([{ value: "cancel", label: "cancel", description: expect.anything() }]);
+    expect(command.getArgumentCompletions("c")).toEqual([{ value: "cancel", label: "cancel", description: expect.anything() }]);
+    expect(command.getArgumentCompletions("x")).toBeNull();
+
+    // no armed monitors → no id completions
+    expect(command.getArgumentCompletions("cancel ")).toBeNull();
+
+    await register(pi, { predicate: "false", name: "wake-1" });
+    await register(pi, { predicate: "false" });
+    expect(command.getArgumentCompletions("cancel ")).toEqual([
+      { value: "m-1", label: "m-1 (wake-1)" },
+      { value: "m-2", label: "m-2" },
+    ]);
+    expect(command.getArgumentCompletions("cancel m")).toHaveLength(2);
+    expect(command.getArgumentCompletions("cancel z")).toBeNull();
+    // only the id position completes ids: the bare prefix never leaks them
+    const barePrefix = command.getArgumentCompletions("");
+    expect(barePrefix!.every((item) => item.value !== "m-1")).toBe(true);
+  });
+});
+
 // ------------------------------------------------------------------ review folds (S1/S2)
 
 describe("review folds — snapshot isolation (S1)", () => {
