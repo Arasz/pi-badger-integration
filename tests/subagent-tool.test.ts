@@ -124,6 +124,22 @@ describe("delegationArgs", () => {
     expect(args.indexOf("--danger")).toBe(args.length - 1);
     expect(args.filter((a) => a === "--")).toHaveLength(1);
   });
+
+  test("persona `model:` pin takes precedence over the delegating session's model", () => {
+    // The pin is the point of the field: a persona that names a model must never silently run
+    // on the session's model. The session model is only the fallback when no pin exists.
+    const pinned = delegationArgs(
+      persona({ model: "opus" }), "Draft the plan", "openrouter/z-ai/glm-5.3-flash");
+    expect(pinned).toContain("--model");
+    expect(pinned[pinned.indexOf("--model") + 1]).toBe("opus");
+
+    // No pin → the session model is passed through unchanged (row 2's contract).
+    const unpinned = delegationArgs(persona(), "Draft the plan", "openrouter/z-ai/glm-5.3-flash");
+    expect(unpinned[unpinned.indexOf("--model") + 1]).toBe("openrouter/z-ai/glm-5.3-flash");
+
+    // No pin and no session model → no --model flag at all (the child picks its default).
+    expect(delegationArgs(persona(), "t")).not.toContain("--model");
+  });
 });
 
 describe("scanPersonas", () => {
@@ -178,6 +194,18 @@ describe("scanPersonas", () => {
     expect(scan.missingDir).toBe(join(dir, "nope", ...AGENTS_DIR));
     expect(scan.personas).toEqual([]);
     expect(scan.errors).toEqual([]);
+  });
+
+  test("a persona file's `model:` pin survives the directory scan", () => {
+    const agents = join(dir, ...AGENTS_DIR);
+    mkdirSync(agents, { recursive: true });
+    writeFileSync(join(agents, "pinned.md"), "---\nname: pinned\ndescription: P\nmodel: opus\n---\nbody\n");
+    writeFileSync(join(agents, "unpinned.md"), "---\nname: unpinned\ndescription: U\n---\nbody\n");
+
+    const scan = scanPersonas(dir);
+    expect(scan.errors).toEqual([]);
+    expect(scan.personas.find((p) => p.name === "pinned")?.model).toBe("opus");
+    expect(scan.personas.find((p) => p.name === "unpinned")?.model).toBeUndefined();
   });
 });
 
@@ -234,5 +262,34 @@ describe("parsePersona", () => {
       .toEqual({ error: "blank.md has no `name` in its frontmatter" });
     expect(parsePersona("---\nname: 42\ndescription: D\n---\nbody", "/p/blanker.md"))
       .toEqual({ error: "blanker.md has no `name` in its frontmatter" });
+  });
+
+  test("a `model:` pin parses into Persona.model, trimmed", () => {
+    const parsed = parsePersona(
+      "---\nname: architect\ndescription: D\nmodel: opus\n---\nbody", "/p/.pi/agents/architect.md");
+    expect(parsed).toEqual({
+      name: "architect",
+      description: "D",
+      model: "opus",
+      systemPrompt: "body",
+      filePath: "/p/.pi/agents/architect.md",
+    });
+    // Whitespace around the value is the file's, not part of the pin.
+    expect(parsePersona("---\nname: a\ndescription: D\nmodel: opus \n---\nb", "/p/a.md"))
+      .toMatchObject({ model: "opus" });
+  });
+
+  test("a blank, empty, or non-string `model:` is no pin at all — the persona still parses", () => {
+    // The pin is a routing preference, not part of the persona's identity: an unusable value
+    // leaves the persona unpinned (session model fallback) rather than invalidating the file.
+    for (const model of ['""', '"   "', "42", "[a, b]"]) {
+      const parsed = parsePersona(
+        `---\nname: a\ndescription: D\nmodel: ${model}\n---\nbody`, "/p/a.md");
+      expect("error" in parsed).toBe(false);
+      if (!("error" in parsed)) expect(parsed.model).toBeUndefined();
+    }
+    // No model key at all — the scaffolded shape — stays exactly as it was.
+    expect(parsePersona("---\nname: a\ndescription: D\n---\nbody", "/p/a.md"))
+      .toEqual({ name: "a", description: "D", systemPrompt: "body", filePath: "/p/a.md" });
   });
 });
