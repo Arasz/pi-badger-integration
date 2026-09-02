@@ -22,6 +22,7 @@ import {
 	composeMonitorEvent,
 	evaluateMonitor,
 	evaluatePredicate,
+	normalizePredicate,
 	type MonitorRecord,
 	type MonitorSnapshot,
 	type MonitorState,
@@ -123,6 +124,44 @@ describe("monitor predicate evaluation", () => {
 		expect(evaluatePredicate("false", snapshot())).toEqual({ kind: "value", value: false });
 		expect(evaluatePredicate("null", snapshot())).toEqual({ kind: "value", value: null });
 		expect(evaluatePredicate("undefined", snapshot())).toEqual({ kind: "value", value: undefined });
+	});
+});
+
+// ------------------------------------------------------------------ leading-return recovery
+
+describe("leading-return recovery (the predicate is a bare expression, not a statement)", () => {
+	test("a `return …` predicate — the old schema phrasing copied literally — now compiles", () => {
+		expect(compilePredicate("return (delegations.length > 0)")).toEqual({ kind: "ok" });
+		expect(compilePredicate("return delegations.length > 0")).toEqual({ kind: "ok" });
+	});
+
+	test("normalizePredicate strips one leading return and touches nothing else", () => {
+		expect(normalizePredicate("return (delegations.length > 0)")).toBe("delegations.length > 0");
+		expect(normalizePredicate('return delegations.some((d) => d.state === "completed")')).toBe(
+			'delegations.some((d) => d.state === "completed")',
+		);
+		// No word boundary (returnx), no leading return, empty remainder, smuggle-shaped tail:
+		// all pass through unchanged for compile to judge.
+		expect(normalizePredicate("returnx > 0")).toBe("returnx > 0");
+		expect(normalizePredicate("delegations.length > 0")).toBe("delegations.length > 0");
+		expect(normalizePredicate("return")).toBe("return");
+		expect(normalizePredicate("return;")).toBe("return;");
+		expect(normalizePredicate("return 1) } //x")).toBe("return 1) } //x");
+	});
+
+	test("a leading-return predicate that still fails rejects with guidance naming the mistake", () => {
+		const compiled = compilePredicate("return const x");
+		expect(compiled.kind).toBe("syntax-error");
+		if (compiled.kind === "syntax-error") {
+			expect(compiled.reason).toMatch(/do not write `return`/);
+			expect(compiled.reason).toContain("delegations.some");
+		}
+	});
+
+	test("the evaluator self-heals a stored `return …` predicate", () => {
+		const snap = snapshot([failedDelegation()]);
+		expect(evaluatePredicate("return (delegations.length > 0)", snap)).toEqual({ kind: "value", value: true });
+		expect(evaluatePredicate("return false", snap)).toEqual({ kind: "value", value: false });
 	});
 });
 

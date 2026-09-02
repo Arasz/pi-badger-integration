@@ -280,6 +280,33 @@ describe("QA F2: a predicate that is true at registration fires immediately (wir
   });
 });
 
+// ------------------------------------------------------------------ leading-return recovery (agent-facing predicate)
+
+describe("register normalizes a leading-return predicate (the old schema phrasing)", () => {
+  test("the receipt, the armed list and the fire card echo the bare expression, not `return …`", async () => {
+    const { pi } = makeHarness();
+    const receipt = await register(pi, {
+      predicate: 'return delegations.some((d) => d.state === "completed")',
+      name: "recovered",
+    });
+    expect(receipt.details.state).toBe("armed");
+    expect(receipt.details.predicate).toBe('delegations.some((d) => d.state === "completed")');
+    const listed = await monitorTool(pi)("tc-list", { action: "list" }, undefined, undefined, makeCtx());
+    expect(listed.content[0]!.text).toContain('delegations.some((d) => d.state === "completed")');
+    expect(listed.content[0]!.text).not.toMatch(/return/);
+
+    pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "completed"));
+    const cards = sentMonitorEvents(pi);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!.message.details).toMatchObject({ kind: "fired", predicate: 'delegations.some((d) => d.state === "completed")' });
+  });
+
+  test("a leading-return predicate whose remainder still fails rejects with guidance", async () => {
+    const { pi } = makeHarness();
+    await expect(register(pi, { predicate: "return const x" })).rejects.toThrow(/do not write `return`/);
+  });
+});
+
 // ------------------------------------------------------------------ M-B4
 
 describe("M-B4: cap, cancel and shutdown (combined subagent + monitor load)", () => {

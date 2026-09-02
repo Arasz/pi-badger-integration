@@ -98,10 +98,49 @@ function smugglesStatements(predicate: string): boolean {
 	}
 }
 
+/** True iff `(${expr})` compiles — the bare-expression gate, shared by recovery and peel. */
+function compilesAsBareExpression(expr: string): boolean {
+	try {
+		new Script(`(${expr})`, { filename: "monitor-predicate-bare" });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 /**
- * Compile `return (${predicate})` without running it. Registration calls this BEFORE
- * consuming the active-monitor cap: a statement (or an over-cap string) fails here with the
- * typed syntax error, so the caller can reject the registration for free.
+ * Recovery for the one known authoring mistake (agents read a schema that said "evaluated as
+ * `return (expr)`" and literally wrote `return …`): if the predicate starts with the `return`
+ * keyword and the REMAINDER compiles as a bare expression, the remainder is the
+ * obviously-intended predicate — return it trimmed, peeling the canonical `return (E)` form's
+ * wrapping parens. Everything else returns the input unchanged (no leading `return`, an
+ * identifier like `returnx` with no word boundary, an empty remainder like `return`/`return;`,
+ * a remainder that does not compile) so compile can reject with the guided reason.
+ * Compile-only, like the gates: the expression is never evaluated here.
+ */
+export function normalizePredicate(predicate: string): string {
+	const trimmed = predicate.trim();
+	if (!/^return\b/.test(trimmed)) return predicate;
+	const remainder = trimmed.replace(/^return\b/, "").trim();
+	if (remainder === "") return predicate;
+	const bare =
+		remainder.startsWith("(") && remainder.endsWith(")") ? remainder.slice(1, -1).trim() : remainder;
+	if (compilesAsBareExpression(bare)) return bare;
+	return compilesAsBareExpression(remainder) ? remainder : predicate;
+}
+
+/** The guidance appended when a leading-`return` predicate STILL fails to compile: the raw
+ * JS syntax error alone ("Unexpected token 'return'") gives the agent no recovery path. */
+const RETURN_GUIDANCE =
+	"— a monitor predicate is a bare expression: do not write `return`, pass the condition itself, " +
+	'e.g. delegations.some(d => d.state === "completed")';
+
+/**
+ * Compile the (normalized) predicate expression without running it. Registration calls this
+ * BEFORE consuming the active-monitor cap: a statement (or an over-cap string) fails here
+ * with the typed syntax error, so the caller can reject the registration for free. A leading
+ * `return` is recovered first (see `normalizePredicate`); when a leading-`return` predicate
+ * still fails, the reason names the mistake instead of surfacing a bare JS syntax error.
  */
 export function compilePredicate(predicate: string): PredicateCompileResult {
 	if (predicate.length > PREDICATE_MAX_CHARS) {
@@ -110,14 +149,17 @@ export function compilePredicate(predicate: string): PredicateCompileResult {
 			reason: `predicate is ${predicate.length} characters — over the ${PREDICATE_MAX_CHARS}-character cap`,
 		};
 	}
+	const normalized = normalizePredicate(predicate);
 	try {
-		new Script(wrapExpression(predicate), { filename: "monitor-predicate" });
-		if (smugglesStatements(predicate)) {
+		new Script(wrapExpression(normalized), { filename: "monitor-predicate" });
+		if (smugglesStatements(normalized)) {
 			return { kind: "syntax-error", reason: "predicate must be a single expression — statements are not allowed" };
 		}
 		return { kind: "ok" };
 	} catch (err) {
-		return { kind: "syntax-error", reason: err instanceof Error ? err.message : String(err) };
+		const reason = err instanceof Error ? err.message : String(err);
+		const guided = /^return\b/.test(predicate.trim()) ? `${reason} ${RETURN_GUIDANCE}` : reason;
+		return { kind: "syntax-error", reason: guided };
 	}
 }
 
@@ -129,8 +171,9 @@ function isNonPrimitive(value: unknown): boolean {
 }
 
 /**
- * Evaluate one predicate expression against the snapshot (R6). The expression is wrapped as
- * `return (${predicate})` and run in a FRESH vm context per call — the sandbox carries only
+ * Evaluate one predicate expression against the snapshot (R6). The expression is normalized
+ * (a leading `return` is recovered), then wrapped as `return (${predicate})` and run in a
+ * FRESH vm context per call — the sandbox carries only
  * the snapshot fields (`delegations`, `monitors`), so there is no process/require, no
  * cross-evaluation state and no shadowing machinery. Compile failure → syntax-error; a
  * runtime throw or vm timeout → eval-error; a thenable/non-primitive result → eval-error;
@@ -144,8 +187,10 @@ export function evaluatePredicate(predicate: string, snapshot: MonitorSnapshot):
 	let value: unknown;
 	try {
 		// One Script, built once and run (review N8): compiling then re-parsing the same source
-		// per evaluation doubles the parse for every monitor on every transition.
-		value = new Script(wrapExpression(predicate), { filename: "monitor-predicate" }).runInContext(context, {
+		// per evaluation doubles the parse for every monitor on every transition. The wrap uses
+		// the NORMALIZED string — the exact source compilePredicate validated — so a recovered
+		// `return …` predicate evaluates instead of erroring.
+		value = new Script(wrapExpression(normalizePredicate(predicate)), { filename: "monitor-predicate" }).runInContext(context, {
 			timeout: PREDICATE_TIMEOUT_MS,
 			displayErrors: true,
 		});

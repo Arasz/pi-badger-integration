@@ -35,7 +35,7 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { TRANSITION_CHANNEL } from "../subagent/index.ts";
-import { DEFAULT_POLL_MAX, DEFAULT_POLL_WINDOW_MS, MONITOR_TIMEOUT_DEFAULT_MS, clampMonitorCap, clampMonitorTimeoutMs, compilePredicate, composeMonitorEvent, evaluateMonitor, formatMonitorLifetime, manualWaitDecision, pollingDecision, type DelegationView, type MonitorSnapshot } from "./monitor-core.ts";
+import { DEFAULT_POLL_MAX, DEFAULT_POLL_WINDOW_MS, MONITOR_TIMEOUT_DEFAULT_MS, clampMonitorCap, clampMonitorTimeoutMs, compilePredicate, composeMonitorEvent, evaluateMonitor, formatMonitorLifetime, manualWaitDecision, normalizePredicate, pollingDecision, type DelegationView, type MonitorSnapshot } from "./monitor-core.ts";
 
 // ------------------------------------------------------------------ contract constants
 
@@ -545,7 +545,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		predicate: Type.Optional(
 			Type.String({
 				description:
-					"register: a JS expression evaluated as `return (expr)` against { delegations, monitors } in a fresh sandbox on every delegation transition. 4 KB cap; must evaluate to a primitive (a promise or object is an error and disarms the monitor).",
+					"register: a bare JS expression — NO `return` keyword, write the condition itself, e.g. `delegations.some(d => d.state === \"completed\")` — evaluated against { delegations, monitors } on every delegation transition. 4 KB cap; must evaluate to a primitive (a promise or object is an error and disarms the monitor). A leading `return` is stripped when the remainder compiles; anything else is rejected with guidance naming the mistake.",
 			}),
 		),
 		name: Type.Optional(
@@ -587,11 +587,15 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 
 	function registerMonitor(params: MonitorParams, ctx: unknown): ToolResult {
 		requireTui(ctx, "register");
-		const predicate = params.predicate;
-		if (typeof predicate !== "string" || !predicate.trim()) {
-			throw new Error("monitor register needs a predicate — a JS expression evaluated against the snapshot on every delegation transition");
+		const raw = params.predicate;
+		if (typeof raw !== "string" || !raw.trim()) {
+			throw new Error("monitor register needs a predicate — a bare JS expression (no `return`) evaluated against the snapshot on every delegation transition");
 		}
-		// Compile-check FIRST: a syntax error or an over-cap string rejects without consuming the cap (R6).
+		// Recover the one known authoring mistake (a leading `return`, the old schema's phrasing
+		// copied literally) and store the CLEAN expression: list, cards and the receipt echo the
+		// bare predicate the monitor actually evaluates. Compile-check FIRST — a syntax error or
+		// an over-cap string rejects without consuming the cap (R6).
+		const predicate = normalizePredicate(raw);
 		const compiled = compilePredicate(predicate);
 		if (compiled.kind === "syntax-error") {
 			throw new Error(`monitor rejected — invalid predicate: ${compiled.reason}`);
@@ -685,7 +689,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		label: "Monitor",
 		description: [
 			"Arm one-shot predicate monitors over background delegations. Actions:",
-			"register predicate (evaluate a JS expression against { delegations, monitors } on every delegation transition;",
+			"register predicate — a bare JS expression (no `return`), evaluated against { delegations, monitors } on every delegation transition;",
 			"the FIRST true evaluation sends one monitor-event followUp and removes the monitor — one-shot, edge-triggered,",
 			"including at registration when the condition is already true),",
 			"list (armed monitors), cancel id (disarm one).",
