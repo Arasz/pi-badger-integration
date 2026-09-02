@@ -51,8 +51,11 @@ export const MONITOR_COMMAND_NAME = "monitors";
 /** The idle-wait tool (R8): pending-tool idiom, resolves on the first wake source. */
 export const WAIT_TOOL_NAME = "wait";
 
-/** Default wait ceiling before the fleet snapshot resolves (R8: 120 s). */
-export const WAIT_DEFAULT_MS = 120_000;
+/** Default wait ceiling before the fleet snapshot resolves (R8, f: 2026-09-02: 5 min). */
+export const WAIT_DEFAULT_MS = 300_000;
+
+/** Reserved name of the idle-wait timer monitor (W-A7): visible in monitor list / /monitors. */
+export const WAIT_TIMER_MONITOR_NAME = "wait-timer";
 
 /** Upper bound of a wait (R8: 600 s, clamped not rejected). */
 export const WAIT_MAX_MS = 600_000;
@@ -128,6 +131,8 @@ interface PendingWait {
 	ids?: string[];
 	startedAt: number;
 	settled: boolean;
+	/** W-A7: the idle fleet's auto-armed wait-timer monitor, disarmed silently with the wait. */
+	timerMonitorId?: string;
 	settle(observed: "delegation" | "monitor" | "input" | "timeout" | "empty" | "aborted", records?: DelegationView[]): void;
 	unsubscribe: () => void;
 	timer?: unknown;
@@ -146,7 +151,7 @@ function textResult(text: string, details: Record<string, unknown>): ToolResult 
 }
 
 /**
- * Clamp a wait request (R8): undefined or non-finite → the 120 s default; anything above the
+ * Clamp a wait request (R8): undefined or non-finite → the 5 min default; anything above the
  * 600 s cap is clamped there; 0 and in-range values pass through. Clamped, never rejected.
  */
 function clampWaitMs(timeoutMs: number | undefined): number {
@@ -295,7 +300,10 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 	const fleetSnapshot = (): DelegationView[] => [...delegationViews.values()];
 
 	/** Empty means NO source can ever fire: no live delegation in scope and no armed monitor.
-	 * Input/timeout do not count — waiting just to time out is what "empty" exists to prevent. */
+	 * Input/timeout do not count — waiting just to time out is what "empty" exists to prevent.
+	 * W-A7: in tui an idle wait arms a wait-timer monitor instead (sleeping IS the request);
+	 * `empty` survives as the non-tui fallback (the cap floor is 1, so an idle fleet never
+	 * hits it). */
 	const nothingToWaitFor = (ids: string[] | undefined): boolean => {
 		const views = fleetSnapshot();
 		const inScope = ids ? views.filter((view) => ids.includes(view.id)) : views;
@@ -310,7 +318,45 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			wait.timer = undefined;
 		}
 		if (wait.signal && wait.onAbort) wait.signal.removeEventListener("abort", wait.onAbort);
+		// W-A7: a still-armed wait-timer monitor disarms SILENTLY with the wait — its expiry
+		// card must not arrive after the tool result it was backing (the wait's own timeout won
+		// the race; an expired card now would wake a turn that already moved on).
+		if (wait.timerMonitorId !== undefined) {
+			const timerRecord = armed.get(wait.timerMonitorId);
+			if (timerRecord) {
+				armed.delete(timerRecord.id);
+				clearTimer(timerRecord);
+			}
+			wait.timerMonitorId = undefined;
+		}
 		pendingWaits.delete(wait);
+	};
+
+	/** W-A7 (f: 2026-09-02): the default wait implementation for an idle fleet — arm a one-shot
+	 * timer monitor (never-firing `false` predicate, lifetime = the wait's clamped timeout) so
+	 * the wait has something to wait for: one scheduler timer, no polling, visible in monitor
+	 * list and /monitors, cancellable like any monitor. The wait keeps blocking; its own
+	 * timeout below resolves the tool and cleanupWait disarms the timer silently. Returns
+	 * false — arming nothing — outside tui (R10: a followUp wire has no idle session to wake
+	 * there); the caller falls back to the immediate `empty` resolve. (No cap check: this path
+	 * only runs when armed.size === 0, and the cap floor is 1 — an armed monitor would already
+	 * be something to wait for.) */
+	const armWaitTimerMonitor = (wait: PendingWait, timeoutMs: number, ctx: unknown): boolean => {
+		if (resolveMode(ctx) !== "tui") return false;
+		const nowMs = now();
+		const record: ArmedMonitor = {
+			id: `m-${++monitorSeq}`,
+			name: WAIT_TIMER_MONITOR_NAME,
+			predicate: "false",
+			interrupt: false,
+			armedAt: nowMs,
+			timeoutMs,
+			expiresAt: nowMs + timeoutMs,
+		};
+		record.timer = scheduler.setTimeout(() => onExpiry(record.id), timeoutMs);
+		armed.set(record.id, record);
+		wait.timerMonitorId = record.id;
+		return true;
 	};
 
 	/** The monitor fire path wakes every pending wait — AFTER the current synchronous dispatch
@@ -380,7 +426,8 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		_onUpdate: unknown,
 		ctx: unknown,
 	): Promise<ToolResult> {
-		void ctx; // wait is allowed in EVERY mode (self-degrading) — no gate on purpose (R8)
+		// Wait is allowed in EVERY mode (self-degrading) — no gate on purpose (R8); the mode is
+		// read only to pick the idle timer arm (W-A7), never to reject.
 		const ids = (params.ids ?? []).map((id) => String(id).trim()).filter((id) => id.length > 0);
 		const timeoutMs = clampWaitMs(params.timeoutMs);
 		const startedAt = now();
@@ -441,7 +488,12 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 						return;
 					}
 				}
-				if (nothingToWaitFor(wait.ids)) finish("empty");
+				// W-A7: an idle fleet no longer resolves empty in tui — arm the wait-timer monitor
+				// and keep blocking. Non-tui (R10: no idle session for a followUp to wake) keeps the
+				// immediate `empty` fallback.
+				if (nothingToWaitFor(wait.ids) && !armWaitTimerMonitor(wait, timeoutMs, ctx)) {
+					finish("empty");
+				}
 			});
 		});
 	}
@@ -469,6 +521,10 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			...(record.name !== undefined ? { name: record.name } : {}),
 			lifetimeMs: Math.max(0, now() - record.armedAt),
 		});
+		// W-A7: expiry is a monitor wake too — fired cards wake pending waits already, and the
+		// idle wait's timer monitor relies on this when its expiry wins the race against the
+		// wait's own timeout.
+		notifyWaitsOfMonitorFire();
 	};
 
 	// ---------------------------------------------------------------- tool
@@ -649,9 +705,11 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		description: [
 			"Spend idle time without polling: block this turn until the FIRST of — a watched delegation settles",
 			"(ids filter; default any live delegation), an armed monitor fires, the user sends a message, or the timeout",
-			"(default 120s, max 600s — the timeout resolves with a fleet snapshot, never an error). With nothing live and",
-			"nothing armed it resolves immediately with observed 'empty'. Allowed in every mode. The result is a terse",
-			"pointer: a monitor wake's payload rides the monitor-event card, never this result.",
+			"(default 5 min, max 600s, clamped — the timeout resolves with a fleet snapshot, never an error). With nothing",
+			"live and nothing armed (tui) it arms a `wait-timer` monitor for the timeout and keeps blocking — pass the",
+			"wait time as timeoutMs; outside tui it resolves immediately with observed 'empty'.",
+			"Allowed in every mode. The result is a terse pointer: a monitor wake's payload rides the monitor-event card,",
+			"never this result.",
 		].join(" "),
 		parameters: WaitParams,
 		execute: executeWait,

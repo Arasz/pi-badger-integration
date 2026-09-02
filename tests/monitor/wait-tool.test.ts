@@ -200,8 +200,8 @@ describe("W-A2: timeout and the empty fleet", () => {
     pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running"));
     const pending = waitTool(pi)("tc-wait", {}, undefined, undefined, makeCtx());
     await tick();
-    expect(scheduler.timers.size).toBe(1);
-    expect([...scheduler.timers.values()][0]!.ms).toBe(120_000); // default
+    expect(scheduler.timers.size).toBe(1); // something live: the wait's own timeout only, no timer monitor
+    expect([...scheduler.timers.values()][0]!.ms).toBe(300_000); // the 5 min default (W-A7)
     scheduler.fire([...scheduler.timers.keys()][0]!);
 
     const result = await pending;
@@ -223,13 +223,77 @@ describe("W-A2: timeout and the empty fleet", () => {
     await pending;
   });
 
-  test("nothing live and nothing armed resolves immediately observed:empty with guidance", async () => {
+  test("W-A7: nothing live and nothing armed arms a wait-timer monitor and keeps blocking (tui)", async () => {
     const { pi, scheduler } = makeHarness();
-    const result = await waitTool(pi)("tc-wait", {}, undefined, undefined, makeCtx());
-    expect(result.details).toMatchObject({ observed: "empty", waitedMs: 0 });
-    expect(result.details.records).toBeUndefined();
-    expect(result.content[0]!.text).toMatch(/nothing to wait for/i);
-    expect(scheduler.timers.size).toBe(0); // no timer left behind
+    let settled = false;
+    const pending = waitTool(pi)("tc-wait", {}, undefined, undefined, makeCtx()).then((r) => {
+      settled = true;
+      return r;
+    });
+    await tick();
+    expect(settled).toBe(false); // no immediate empty — the wait sleeps
+    expect(scheduler.timers.size).toBe(2); // the wait's own timeout AND the timer monitor's expiry
+    const list = await monitorTool(pi)("tc-list", { action: "list" }, undefined, undefined, makeCtx());
+    expect(list.content[0]!.text).toMatch(/wait-timer/); // visible: name + never-firing predicate
+    expect(list.content[0]!.text).toMatch(/\bfalse\b/);
+
+    scheduler.fire([...scheduler.timers.keys()][0]!); // the wait's own timeout (armed first)
+    const result = await pending;
+    expect(result.details.observed).toBe("timeout");
+    expect(scheduler.timers.size).toBe(0); // the timer monitor disarmed with the wait
+    expect(sentMonitorEvents(pi)).toHaveLength(0); // silently: no expired card after the result
+  });
+
+  test("W-A7: if the timer monitor's expiry wins the race, the wait resolves monitor and the expired card arrives", async () => {
+    const { pi, scheduler } = makeHarness();
+    const pending = waitTool(pi)("tc-wait", {}, undefined, undefined, makeCtx());
+    await tick();
+    const handles = [...scheduler.timers.keys()];
+    scheduler.fire(handles[1]!); // the timer monitor's expiry (inserted second)
+
+    const result = await pending;
+    expect(result.details.observed).toBe("monitor");
+    expect(result.details.records).toBeUndefined(); // the payload rides the card, never the result
+    const events = sentMonitorEvents(pi);
+    expect(events).toHaveLength(1);
+    expect((events[0]!.details as { kind?: string }).kind).toBe("expired");
+    expect(scheduler.timers.size).toBe(0); // the wait's own timeout cleaned up by the wake
+  });
+
+  test("W-A7: cancelling the wait-timer monitor does not strand the wait — its own timeout still resolves", async () => {
+    const { pi, scheduler } = makeHarness();
+    const pending = waitTool(pi)("tc-wait", { timeoutMs: 5_000 }, undefined, undefined, makeCtx());
+    await tick();
+    await monitorTool(pi)("tc-cancel", { action: "cancel", id: "m-1" }, undefined, undefined, makeCtx());
+    expect(scheduler.timers.size).toBe(1); // only the wait's own timeout remains
+
+    scheduler.fire([...scheduler.timers.keys()][0]!);
+    const result = await pending;
+    expect(result.details.observed).toBe("timeout");
+    expect(scheduler.timers.size).toBe(0);
+    expect(sentMonitorEvents(pi)).toHaveLength(0);
+  });
+
+  test("W-A7: a monitor expiring mid-wait wakes the wait with the expired card", async () => {
+    const { pi, scheduler } = makeHarness();
+    startSession(pi);
+    pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running")); // something live: no auto-arm
+    await monitorTool(pi)(
+      "tc-register",
+      { action: "register", predicate: "false", timeoutMs: 10_000 },
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    const pending = waitTool(pi)("tc-wait", {}, undefined, undefined, makeCtx());
+    await tick();
+    const expiry = [...scheduler.timers.entries()].find(([, timer]) => timer.ms === 10_000);
+    expect(expiry).toBeDefined(); // the user monitor's expiry, distinct from the wait's 300 s timeout
+
+    scheduler.fire(expiry![0]!);
+    const result = await pending;
+    expect(result.details.observed).toBe("monitor"); // expiry is a monitor wake too (W-A7)
+    expect(sentMonitorEvents(pi)).toHaveLength(1);
   });
 
   test("wait is allowed in every mode (self-degrading): print mode waits, never rejects", async () => {
@@ -368,9 +432,11 @@ describe("W-A6: the user-input source", () => {
 
   test("an input handler is armed once and does not consume or transform the input", async () => {
     const { pi } = makeHarness();
-    const first = await waitTool(pi)("tc-wait", {}, undefined, undefined, makeCtx()); // arms the input source
+    // print mode keeps these rows on the immediate-empty path — in tui an idle wait arms the
+    // W-A7 timer monitor and blocks; the input source arms at execute start in EVERY mode.
+    const first = await waitTool(pi)("tc-wait", {}, undefined, undefined, makeCtx("print")); // arms the input source
     expect(first.details.observed).toBe("empty");
-    const second = await waitTool(pi)("tc-wait", {}, undefined, undefined, makeCtx());
+    const second = await waitTool(pi)("tc-wait", {}, undefined, undefined, makeCtx("print"));
     expect(second.details.observed).toBe("empty");
     expect(pi.handlers.get("input")).toHaveLength(1); // armed once, persistent, no-op when idle
   });
