@@ -34,7 +34,8 @@ blocking was removed there: the tool returns immediately with a receipt (`d-<n>`
 running/queued) and the main agent loop stays interactive — the user can keep typing, the
 agent can keep working. When the child settles, its result lands in exactly one
 `delegation-result` follow-up message (exit code, answer tail capped at 8 KB, duration,
-token usage, log path) and wakes the agent; completions arriving inside a 2 s coalesce
+token usage, log path — the structured result rides the message's `details.result`) and
+wakes the agent; completions arriving inside a 2 s coalesce
 window share one batched message (lead card immediate, up to 6 cards per batch). Results
 arrive on their own — **never poll** for them (repeated `delegations list`/`log` polling is
 blocked by the monitor's enforcement). To keep a strict order, queue work with the
@@ -58,9 +59,12 @@ settles as `aborted (lost)`.
 Checking on delegations:
 
 - **`delegations` tool** (LLM-facing): `list` (state, elapsed, current activity, usage),
-  `log <id>` (bounded tail + full path), `abort <id|all>`. Results arrive on their own —
-  never poll: to spend idle waiting time, use the monitor extension's `wait` tool (user
-  input interrupts it) or register a monitor.
+  `log <id>` (bounded tail + full path), `abort <id|all>`, `results [id]` (the cached
+  structured result — `{parent_id, delegation_id, task_summary, persona, input, output,
+  timestamp}` — of one delegation, or, without an id, every result this session parented;
+  an in-memory cache of the LAST 8 results that dies with the session). Results also
+  arrive on their own — never poll: to spend idle waiting time, use the monitor
+  extension's `wait` tool (user input interrupts it) or register a monitor.
 - **`/delegations [log <id>] [abort <id|all>]`** (human-facing command).
 - **Widget** above the editor: one line per background running run (id, agent, elapsed,
   current activity, usage) plus a queued count, cleared when the session's runs end.
