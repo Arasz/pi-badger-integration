@@ -38,8 +38,6 @@ import {
   probePid,
   registerDelegationStatus,
   widgetLines,
-  WAIT_DEFAULT_MS,
-  WAIT_MAX_MS,
   type PidLiveness,
 } from "../extensions/subagent/delegation-status.ts";
 import {
@@ -386,35 +384,6 @@ describe("T76: delegations tool contract details (review CR10)", () => {
 		expect(fx.harness.tools.has("delegations")).toBe(true);
 	});
 
-	test("wait timeout resolves with per-id snapshots, never an error", async () => {
-		const fx = makeFixture();
-		await startBackground(fx, "d-1");
-
-		const result = await delegationsTool(fx).execute({ action: "wait", ids: ["d-1"], timeoutMs: 50 });
-		// The frozen panel grammar renders a running record as its elapsed clock — the snapshot
-		// resolved, no error was thrown, and the record's identity and task ride along.
-		expect(result.content[0]!.text).toBe("d-1 architect — 0s — task: do the thing");
-	}, 10_000);
-
-	test("wait on an unknown id is a loud error, not a silent snapshot", async () => {
-		const fx = makeFixture();
-		await expect(delegationsTool(fx).execute({ action: "wait", ids: ["d-nope"], timeoutMs: 10 })).rejects.toThrow(/unknown delegation id "d-nope"/);
-	});
-
-	test("wait on a terminal id returns immediately with the settled state", async () => {
-		const fx = makeFixture();
-		await startBackground(fx, "d-1");
-		fx.children[0]!.exit(0);
-
-		const result = await delegationsTool(fx).execute({ action: "wait", ids: ["d-1"] }); // default 120 s must not hang
-		expect(result.content[0]!.text).toContain("d-1 architect — done");
-	}, 10_000);
-
-	test("wait bounds: default 120 s, capped at 600 s (R6)", () => {
-		expect(WAIT_DEFAULT_MS).toBe(120_000);
-		expect(WAIT_MAX_MS).toBe(600_000);
-	});
-
 	test("abort without an id is a usage error", async () => {
 		const fx = makeFixture();
 		await expect(delegationsTool(fx).execute({ action: "abort" })).rejects.toThrow(/abort needs a run id/);
@@ -596,7 +565,7 @@ describe("T78: the /delegations command shares the registry path with the tool",
 // ------------------------------------------------------------------ T89/T91: timeout surfaces (deferral pkg P2)
 
 describe("T89/T91 — timeout surfaces on the delegations tool (deferral pkg P2)", () => {
-	test("T89: list/wait renders a timed-out run as 'aborted (timeout)'", async () => {
+	test("T89: list renders a timed-out run as 'aborted (timeout)'", async () => {
 		const fx = makeFixture();
 		await fx.registry.start(startRequest({ id: "d-1", toolCallId: "tc-1", timeoutMs: 5 }));
 		await drainRegistryTimers();

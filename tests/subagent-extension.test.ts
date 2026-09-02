@@ -292,14 +292,14 @@ describe("T66 — background auto-resolution matrix (auto = background iff mode 
     expect(result.details.degraded).toBeUndefined();
   });
 
-  test("B-A1: background:false in tui → execute-time rejection (reason 'blocking-removed'), guidance names queue/wait/abort, NO child spawned", async () => {
+  test("B-A1: background:false in tui → execute-time rejection (reason 'blocking-removed'), guidance names the queue, the monitor wait tool and delegations abort, NO child spawned", async () => {
     h = makeHarness();
     const result = await callDelegate({ agent: "architect", task: "t", background: false }, makeCtx("tui"));
 
     expect((result.details as Record<string, unknown>).reason).toBe("blocking-removed");
     const guidance = contentOf(result);
     expect(guidance).toContain("queue"); // ordering → the queue tool
-    expect(guidance).toContain("delegations wait"); // spending idle time
+    expect(guidance).toContain("the monitor extension's wait tool (user input interrupts it)"); // spending idle time — the only waiting surface
     expect(guidance).toContain("delegations abort"); // stopping a running delegation
     expect(h.children).toHaveLength(0); // NO child spawned
     expect(h.api!.registry.list()).toHaveLength(0); // nothing enqueued either
@@ -665,27 +665,25 @@ describe("T86–T91 — per-run timeout surfaces (deferral pkg P2)", () => {
 // ------------------------------------------------------------------ B-A3: description redirect wording
 
 describe("B-A3 — delegate + delegations descriptions pin the R1 redirect wording", () => {
-  test("the delegate description: followUps arrive on their own, never poll, queue for order, wait for idle, headless still blocks, receipts + delegations wait ids", () => {
+  test("the delegate description: followUps arrive on their own, never poll, one-element serial group admission, monitor-wait redirect for idle time, headless still blocks", () => {
     h = makeHarness();
     const description = String(h.tools.get("delegate")!.description);
 
     expect(description).toContain("followUp");
     expect(description).toContain("never poll");
-    expect(description).toContain("queue tool");
-    expect(description).toContain("delegations wait");
-    expect(description).toContain("delegations wait ids"); // the synchronous-panel idiom (all named ids)
+    expect(description).toContain("one-element serial group"); // queue-only admission (f: 2026-09-02)
+    expect(description).toContain("the monitor extension's wait tool (user input interrupts it)"); // the only waiting surface
     expect(description).toContain("Headless");
     expect(description).not.toContain("pass background: false to block"); // the removed instruction
   });
 
-  test("the delegations description carries the same redirect (results arrive on their own; never poll)", () => {
+  test("the delegations description carries the same redirect (results arrive on their own; never poll; the monitor wait tool replaces waiting)", () => {
     h = makeHarness();
     const description = String(h.tools.get("delegations")!.description);
 
     expect(description).toContain("followUp");
     expect(description).toContain("never poll");
-    expect(description).toContain("queue tool");
-    expect(description).toContain("delegations wait ids");
+    expect(description).toContain("the monitor extension's wait tool (user input interrupts it)");
   });
 });
 
