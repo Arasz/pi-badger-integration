@@ -169,7 +169,7 @@ export class DelegationRegistry {
       // rejection renders as an error result in P3 — never a receipt).
       return {
         ok: false,
-        reason: `${step.decision.reason} — wait for a running delegation to finish (delegations wait) or abort one (delegations abort <id>), then retry`,
+        reason: `${step.decision.reason} — wait for a running delegation to finish (the monitor extension's wait tool observes it) or abort one (delegations abort <id>), then retry`,
       };
     }
     this.admission = step.state;
@@ -223,7 +223,7 @@ export class DelegationRegistry {
     if (step.decision.action === "reject") {
       // All-or-nothing: nothing was registered — every member gets the rejection verbatim
       // (with the same guidance start() appends, surfaced to callers unchanged).
-      const reason = `${step.decision.reason} — wait for a running delegation to finish (delegations wait) or abort one (delegations abort <id>), then retry`;
+      const reason = `${step.decision.reason} — wait for a running delegation to finish (the monitor extension's wait tool observes it) or abort one (delegations abort <id>), then retry`;
       return requests.map(() => ({ ok: false as const, reason }));
     }
     this.admission = step.state; // the whole drain committed before any spawn (Q-B2)

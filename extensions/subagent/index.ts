@@ -72,6 +72,7 @@ import {
 } from "./delegation-registry.ts";
 import type { DelegationNote, DelegationProgress, SpawnFn } from "./delegation-runner.ts";
 import { registerDelegationStatus } from "./delegation-status.ts";
+import { DelegationResultCache } from "./result-cache.ts";
 import { registerDelegationQueue, type DelegationQueueOpts } from "./delegation-queue.ts";
 import { type AgentToolUpdateCallback, type ExtensionAPI, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -545,7 +546,7 @@ const DelegateParams = Type.Object({
   background: Type.Optional(
     Type.Boolean({
       description:
-        "Compatibility only. In the TUI delegation is always background: an explicit background:false is rejected at execution time (reason 'blocking-removed') — use the queue tool for ordered work or delegations wait to wait for results. Outside the TUI an explicit background:true degrades to full blocking (details.degraded); headless modes block by default.",
+        "Compatibility only. In the TUI delegation is always background: an explicit background:false is rejected at execution time (reason 'blocking-removed') — use the queue tool for ordered work or the monitor extension's wait tool (user input interrupts it) to spend idle time until results land. Outside the TUI an explicit background:true degrades to full blocking (details.degraded); headless modes block by default.",
     }),
   ),
   timeoutMs: Type.Optional(
@@ -625,13 +626,18 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
 
   /** One followUp for 1..n cards: a single card is the v1 shape byte-identical (T92); 2+ cards
    * render as one batched message with per-card notes in details (RR3). Empty input sends
-   * nothing — a window expiry over an empty buffer is a no-op, never an empty batch (T98). */
+   * nothing — a window expiry over an empty buffer is a no-op, never an empty batch (T98).
+   * f: 2026-09-02 (option c): each card also carries its structured result — the SINGLE shape
+   * on `details.result`, the batched shape on `details.notes[i].result` — read back from the
+   * result cache (never re-built, so a card's entry is byte-identical to the cached one).
+   * This function never puts: the cache was filled at each note's deliverNote entry. */
   const sendCards = (cards: DelegationNote[]): void => {
     if (cards.length === 0) return;
     if (cards.length === 1) {
       const note = cards[0]!;
+      const entry = resultCache.byId(note.id);
       pi.sendMessage(
-        { customType: RESULT_CUSTOM_TYPE, content: notificationContent(note, undefined, statusApi.contextWindow()), display: true, details: { ...note } },
+        { customType: RESULT_CUSTOM_TYPE, content: notificationContent(note, undefined, statusApi.contextWindow()), display: true, details: { ...note, ...(entry ? { result: entry } : {}) } },
         { deliverAs: "followUp", triggerTurn: true },
       );
       return;
@@ -641,7 +647,10 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         customType: RESULT_CUSTOM_TYPE,
         content: composeBatchContent(cards, undefined, statusApi.contextWindow()),
         display: true,
-        details: { batched: true, notes: cards.map((card) => ({ ...card })) },
+        details: { batched: true, notes: cards.map((card) => {
+          const entry = resultCache.byId(card.id);
+          return { ...card, ...(entry ? { result: entry } : {}) };
+        }) },
       },
       { deliverAs: "followUp", triggerTurn: true },
     );
@@ -666,6 +675,11 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       const oldest = notes.keys().next().value;
       if (oldest !== undefined) notes.delete(oldest);
     }
+    // f: 2026-09-02 (option c): the structured result is cached at the delivery ENTRY, before
+    // the batch-window branch — a note held inside an open window is already queryable via
+    // `delegations results`, and a sendMessage failure still leaves the result cached.
+    // flushHeldNotes/sendCards never put; they only read the cache back onto the cards.
+    resultCache.put(note, { now });
     if (batchWindowTimer === undefined) {
       sendCards([note]);
       batchWindowTimer = setTimeout(() => {
@@ -758,6 +772,12 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     pi.appendEntry(RECONSTRUCTION_ENTRY_TYPE, { runs: summaries, rendered });
   });
 
+  /** f: 2026-09-02 (option c): the in-memory result cache — ring of the LAST 8 structured
+   * results, dual-indexed by delegation_id and parent_id. Filled at deliverNote's entry; read
+   * by the cards (details.result) and by the delegations tool's `results` action through the
+   * status seam below. In-memory only: it dies with the session. */
+  const resultCache = new DelegationResultCache();
+
   // R8: session_shutdown = SIGTERM → grace → SIGKILL via the registry, which also drops every
   // notification from here on (row 38) and empties the records. The held batch rides out FIRST
   // — those notes were accepted through the wire before the shutdown (T98/T104). Delegations do
@@ -773,7 +793,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   // frozen signature — the one instance of the registry this session constructed. RR4: the
   // status surface consults the log dir through the same reconstruction session_start uses,
   // so an empty registry still surfaces stale runs (the net that survives a dead runner).
-  const statusApi = registerDelegationStatus(pi, registry, { staleRuns: () => reconstructFromLogDir(logDir, now(), { prune: false }) });
+  const statusApi = registerDelegationStatus(pi, registry, { staleRuns: () => reconstructFromLogDir(logDir, now(), { prune: false }), resultCache });
 
   // Plan v2 R4: the `queue` tool (delegation-queue.ts) rides the SAME registry instance. Its
   // opts extract everything it shares with the delegate tool — the persona scan, the
@@ -917,33 +937,32 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         sessionId = undefined;
       }
 
-      // f: 2026-09-02 — queue-only admission: EVERY delegation enters the queue as a
-      // one-element serial group. On an idle system the group drains immediately (identical UX
-      // to the old start-now path); behind other groups it waits its turn — there is no other
-      // admission path. registry.start() remains the programmatic API; the tool never bypasses.
-      const outcomes = await registry.enqueueGroup(
-        [
-          {
-            agent: persona.name,
-            task: params.task,
-            args: invocation.args,
-            command: invocation.command,
-            cwd: childCwd,
-            toolCallId,
-            ...(sessionId !== undefined ? { sessionId } : {}),
-            // The execute signal is the turn's own; ctx.signal is the fallback for a build that only
-            // populates the context. Either one aborting kills the child rather than orphaning it.
-            signal: signal ?? toolCtx.signal,
-            ...(params.timeoutMs !== undefined ? { timeoutMs: clampRunTimeoutMs(params.timeoutMs) } : {}),
-          },
-        ],
-        "serial",
-      );
-      const member = outcomes[0]!;
+      // f: 2026-09-02 — queue-only admission: EVERY delegation enters the ONE queue as a
+      // one-element serial group through the run-now single rule (registry.start →
+      // admitRequest): on an idle system it dequeues on enqueue (identical UX to the old
+      // start-now path); behind a slot-blocked head — the cap is full, or a serial group is
+      // mid-flight, or a parallel head cannot use the free slot — it queues its turn. There
+      // is no other admission path. A fully-running group is not a queue entry and never
+      // blocks (row 22 unchanged); enqueueGroup's wait-behind-any-group semantics are the
+      // queue tool's explicit add/add-parallel groups, not delegate's (design pin:
+      // "queue add/add-parallel keep explicit group semantics").
+      const outcome = await registry.start({
+        agent: persona.name,
+        task: params.task,
+        args: invocation.args,
+        command: invocation.command,
+        cwd: childCwd,
+        toolCallId,
+        ...(sessionId !== undefined ? { sessionId } : {}),
+        // The execute signal is the turn's own; ctx.signal is the fallback for a build that only
+        // populates the context. Either one aborting kills the child rather than orphaning it.
+        signal: signal ?? toolCtx.signal,
+        ...(params.timeoutMs !== undefined ? { timeoutMs: clampRunTimeoutMs(params.timeoutMs) } : {}),
+      });
 
-      if (!member.ok) {
+      if (!outcome.ok) {
         // R7: admission rejection (cap and queue both full) — loud guidance, never a receipt.
-        const message = `ai-badger: delegation rejected — ${member.reason}`;
+        const message = `ai-badger: delegation rejected — ${outcome.reason}`;
         toolCtx.ui.notify(message, "warning");
         return {
           content: text(message),
@@ -951,12 +970,6 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         };
       }
 
-      const outcome: DelegationReceipt = {
-        ok: true,
-        id: member.id,
-        record: member.record,
-        done: member.done,
-      };
       if (wantsBackground && !degraded) {
         return receiptResult(outcome, toolCallId);
       }
