@@ -1,7 +1,7 @@
 /**
  * Wiring tests for the monitor extension's manual-polling enforcement (plan v2 rows E-A1/E-A2,
  * ruling R9). The decision itself is the pure core's `pollingDecision` (M-A4, wave 1); these
- * rows pin the WIRING: the handler counts only the delegations tool's list/log actions, the
+ * rows pin the WIRING: the handler counts only the delegations tool's list/log/results actions, the
  * env kill switch is read per call, state resets on session_shutdown, and — the drift guard —
  * the guard is exercised with the tool name AS the subagent factory registered it, read from
  * the harness's pi.tools (never a hardcoded string). Both factories load on one fake-pi.
@@ -117,6 +117,19 @@ describe("E-A1: the poll guard blocks the 4th counted call in the window", () =>
     expect(fireToolCall(pi, delegations, { action: "log", id: "d-1" })).toBeUndefined();
     expect(fireToolCall(pi, delegations, { action: "list" })).toBeUndefined();
     expect(fireToolCall(pi, delegations, { action: "log", id: "d-1" })?.block).toBe(true);
+  });
+
+  test("B-G1: the delegations results action counts in the same window — the 4th results call in 120 s is blocked", () => {
+    const { pi } = makeCombinedHarness();
+    const delegations = registeredDelegationsName(pi); // drift guard: never a hardcoded string
+    // lane A's results action (one no-id call returns everything) is a polling surface like
+    // list/log: three are allowed, the fourth inside the window is blocked with the guidance.
+    expect(fireToolCall(pi, delegations, { action: "results" })).toBeUndefined();
+    expect(fireToolCall(pi, delegations, { action: "results" })).toBeUndefined();
+    expect(fireToolCall(pi, delegations, { action: "list" })).toBeUndefined();
+    const blocked = fireToolCall(pi, delegations, { action: "results" });
+    expect(blocked?.block).toBe(true);
+    expect(blocked?.reason).toMatch(/manual polling blocked/i);
   });
 
   test("the window slides: past 120 s the same calls are allowed again", () => {

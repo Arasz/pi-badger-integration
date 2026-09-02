@@ -800,7 +800,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		const call = event as { toolName?: string; input?: { action?: unknown } } | undefined;
 		if (call?.toolName !== pollToolName) return undefined;
 		const action = call.input?.action;
-		if (action !== "list" && action !== "log") return undefined; // wait/abort never counted (E-A2)
+		if (action !== "list" && action !== "log" && action !== "results") return undefined; // wait/abort never counted (E-A2); results is a polling surface too (lane B, B-G1)
 		const { max, enabled } = envPollMax();
 		if (!enabled) return undefined; // 0 disables — and does not count either
 		const nowMs = now();
