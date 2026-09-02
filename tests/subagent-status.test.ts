@@ -108,7 +108,7 @@ function makePi(): StatusHarness {
 	return { pi, handlers, tools, commands, bus, busLog, fire };
 }
 
-function makeCtx(): { ctx: Record<string, unknown>; ui: UiCapture } {
+function makeCtx(sessionId = "sess-test"): { ctx: Record<string, unknown>; ui: UiCapture } {
 	const ui: UiCapture = { widgets: [], statuses: [], notifications: [] };
 	const ctx = {
 		hasUI: true,
@@ -116,7 +116,7 @@ function makeCtx(): { ctx: Record<string, unknown>; ui: UiCapture } {
 		cwd: "/p",
 		// M7: the no-id `results` action groups by the CURRENT session id — the tool context
 		// carries the session manager the same way the real pi context does.
-		sessionManager: { getSessionId: () => "sess-test" },
+		sessionManager: { getSessionId: () => sessionId },
 		ui: {
 			notify: (message: string, type = "info") => ui.notifications.push({ message, type }),
 			setStatus: (key: string, text: string | undefined) => ui.statuses.push([key, text]),
@@ -221,11 +221,11 @@ function lastWidget(fx: Fixture): [string, string[] | undefined] | undefined {
 }
 
 /** The captured delegations tool (typed loosely; the suite only exercises its execute). */
-function delegationsTool(fx: Fixture): { execute: (params: Record<string, unknown>) => ReturnType<ToolRecord["execute"]> } {
+function delegationsTool(fx: Fixture, ctxOverride?: Record<string, unknown>): { execute: (params: Record<string, unknown>) => ReturnType<ToolRecord["execute"]> } {
 	const tool = fx.harness.tools.get(DELEGATIONS_TOOL_NAME);
 	if (!tool) throw new Error("delegations tool not registered");
 	return {
-		execute: (params) => tool.execute("tool-call-id", params as never, undefined as never, undefined as never, fx.ctx as never),
+		execute: (params) => tool.execute("tool-call-id", params as never, undefined as never, undefined as never, (ctxOverride ?? fx.ctx) as never),
 	};
 }
 
@@ -495,6 +495,20 @@ describe("M6/M7 — the delegations results action over the in-memory cache (f: 
 		expect(result.content[0]!.text).not.toContain("d-3");
 	});
 
+	test("the no-id group key derives from the ctx's sessionManager — a sess-Z ctx never sees sess-test decoys seeded first", async () => {
+		const fx = makeFixture();
+		seedResult(fx, "d-1", "sess-test", NOW + 1); // decoys FIRST: a data-derived grouping would return these
+		seedResult(fx, "d-2", "sess-Z", NOW + 2);
+
+		const { ctx } = makeCtx("sess-Z");
+		const result = await delegationsTool(fx, ctx).execute({ action: "results" });
+
+		const details = result.details as { parentId: string; results: DelegationResultEntry[] };
+		expect(details.parentId).toBe("sess-Z"); // from the ctx, not from cache.all()[0]
+		expect(details.results.map((entry) => entry.delegation_id)).toEqual(["d-2"]);
+		expect(result.content[0]!.text).not.toContain("d-1");
+	});
+
 	test("results without an id and no sessionManager on the context → an empty group, not a throw", async () => {
 		const fx = makeFixture();
 		seedResult(fx, "d-1", "sess-test", NOW + 1);
@@ -539,6 +553,19 @@ describe("M6/M7 — the delegations results action over the in-memory cache (f: 
 		expect((result.details as { result: DelegationResultEntry }).result).toEqual(seeded);
 		expect(result.content[0]!.text).toContain("d-7");
 		expect(result.content[0]!.text).toContain("answer of d-7");
+	});
+
+	test("a surface registered without the resultCache seam answers loudly and never crashes on the missing reads", async () => {
+		const fx = makeFixture();
+		// The seam is optional by design (staleRuns pattern) — re-register without it; the fake
+		// harness keys tools by name, so this row's surface replaces the fixture's.
+		registerDelegationStatus(fx.harness.pi as never, fx.registry, { now: () => NOW });
+
+		const noId = await delegationsTool(fx).execute({ action: "results" });
+		expect(String(noId.content[0]!.text)).toContain("no cached results");
+
+		const unknown = await delegationsTool(fx).execute({ action: "results", id: "d-9" });
+		expect(String(unknown.content[0]!.text)).toContain("not in the cache (last 8)");
 	});
 
 	test("results with a live-but-uncached id → 'no cached result yet (state: running)'; a queued id states 'queued'", async () => {

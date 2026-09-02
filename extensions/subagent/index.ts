@@ -637,7 +637,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       const note = cards[0]!;
       const entry = resultCache.byId(note.id);
       pi.sendMessage(
-        { customType: RESULT_CUSTOM_TYPE, content: notificationContent(note, undefined, statusApi.contextWindow()), display: true, details: { ...note, ...(entry ? { result: entry } : {}) } },
+        { customType: RESULT_CUSTOM_TYPE, content: notificationContent(note, undefined, statusApi.contextWindow()), display: true, details: { ...note, ...(entry ? { result: { ...entry } } : {}) } },
         { deliverAs: "followUp", triggerTurn: true },
       );
       return;
@@ -649,7 +649,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         display: true,
         details: { batched: true, notes: cards.map((card) => {
           const entry = resultCache.byId(card.id);
-          return { ...card, ...(entry ? { result: entry } : {}) };
+          return { ...card, ...(entry ? { result: { ...entry } } : {}) };
         }) },
       },
       { deliverAs: "followUp", triggerTurn: true },
@@ -848,8 +848,9 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       "In the TUI the tool returns a receipt immediately and the result arrives as a followUp",
       "message on its own — never poll for it (repeated delegations list/log is blocked). EVERY",
       "delegation enters the queue as a one-element serial group: on an idle system it starts",
-      "immediately, otherwise it waits its turn behind queued groups — there is no other",
-      "admission path; to spend idle time until results land, use the monitor extension's wait",
+      "immediately, otherwise it queues behind a blocked queue head (cap full, a mid-flight serial",
+      "group, or a parallel group that cannot use a slot) — there is no other admission path; to",
+      "spend idle time until results land, use the monitor extension's wait",
       "tool (user input interrupts it) or register a monitor; to stop a run, delegations abort.",
       "Headless modes still block: there the result IS the tool result. A run is unbounded unless",
       "you pass timeoutMs, which bounds the run's wall-clock time and aborts it on expiry; use",

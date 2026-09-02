@@ -27,7 +27,8 @@ export interface DelegationResultEntry {
 	/** The delegating session's id — omitted when the note carried none (schema stays honest). */
 	parent_id?: string;
 	delegation_id: string;
-	/** The task's first line, capped at TASK_SUMMARY_MAX_CHARS with `…`. */
+	/** The task's first line, capped at TASK_SUMMARY_MAX_CHARS; a truncated line carries the
+	 *  `…` marker after the cap (so a truncated summary is the cap plus one marker char). */
 	task_summary: string;
 	/** The persona the task ran as (DelegationNote.agent). */
 	persona: string;
@@ -63,7 +64,8 @@ function tailKeep(text: string, limit: number): string {
 }
 
 /** The note→entry builder: caps applied, timestamp from the injected clock, parent_id omitted
- * when the note has no session. Exported so the card wiring and the cache share ONE builder. */
+ * when the note has no session. Exported so tests and diagnostics can build an entry without a
+ * cache instance; the card wiring never builds — it reads entries back through the cache. */
 export function buildResultEntry(note: ResultNoteInput, now: () => number): DelegationResultEntry {
 	const firstLine = note.task.split("\n")[0] ?? "";
 	const entry: DelegationResultEntry = {
@@ -114,9 +116,10 @@ export class DelegationResultCache {
 		return this.idIndex.get(id);
 	}
 
-	/** One parent session's entries, insertion order (oldest first). */
+	/** One parent session's entries, insertion order (oldest first) — a copy: callers embed
+	 *  returned entries into card details and tool results, and must never hold live internals. */
 	byParent(parentId: string): DelegationResultEntry[] {
-		return this.parentIndex.get(parentId) ?? [];
+		return [...(this.parentIndex.get(parentId) ?? [])];
 	}
 
 	/** Every cached entry, ring order (oldest first) — tests and diagnostics. */

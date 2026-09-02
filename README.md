@@ -47,7 +47,7 @@ time (`reason: "blocking-removed"`, no child runs) with guidance pointing at `qu
 (ordering), the monitor extension's `wait` tool (spending idle time; user input interrupts
 it) and `delegations abort` (stopping runs). Every delegation enters the queue as a
 one-element serial group — on an idle system it starts immediately, otherwise it waits its
-turn behind queued groups; the queue is the only admission path. In headless modes (`-p`, json, rpc) delegation stays **blocking** — the result
+turn behind a blocked queue head (cap full, a mid-flight serial group, or a parallel group that cannot use a slot); the queue is the only admission path. In headless modes (`-p`, json, rpc) delegation stays **blocking** — the result
 is the tool result, byte-compatible with the pre-background contract, plus `details.usage`;
 an explicit `background: true` outside the TUI degrades to blocking with a note in the tool
 result and `details.degraded`. There is no automatic wall-clock timeout: runs

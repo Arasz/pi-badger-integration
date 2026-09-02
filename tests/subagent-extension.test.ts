@@ -781,6 +781,55 @@ describe("M5 — the structured result rides the delegation-result cards (f: 202
     const flushed = h.sent[1]!.message.details as Record<string, unknown>;
     expect((flushed.result as { delegation_id: string }).delegation_id).toBe("d-2");
   });
+
+  test("an aborted delegation's card still carries details.result — aborted notes enter the cache through the real wire", async () => {
+    h = makeHarness("tui", { cap: 1 });
+    await callDelegate({ agent: "architect", task: "first" }, makeCtx(), undefined, "call-1");
+    const queued = await callDelegate({ agent: "architect", task: "second" }, makeCtx(), undefined, "call-2");
+    const queuedId = queued.details.id as string;
+
+    h.api!.registry.abort(queuedId);
+
+    expect(h.sent).toHaveLength(1); // T69's aborted card, now pinned with its structured payload
+    const details = h.sent[0]!.message.details as {
+      state: string;
+      result?: { delegation_id: string; output?: unknown };
+    };
+    expect(details.state).toBe("aborted");
+    expect(details.result?.delegation_id).toBe(queuedId);
+    expect(typeof details.result?.output).toBe("string"); // the partial answer rides the card too
+  });
+});
+
+// ------------------------------------------------------------------ M10: rejection guidance redirects to the monitor wait tool
+
+describe("M10 — admission-rejection guidance names the monitor wait tool, never the removed verb (f: 2026-09-02)", () => {
+  test("a delegate rejected with cap and queue full carries the redirect in its reason", async () => {
+    h = makeHarness("tui", { cap: 1, queueCap: 1 });
+    await callDelegate({ agent: "architect", task: "one" }, makeCtx(), undefined, "call-1"); // running
+    await callDelegate({ agent: "architect", task: "two" }, makeCtx(), undefined, "call-2"); // queued
+    const rejected = await callDelegate({ agent: "architect", task: "three" }, makeCtx(), undefined, "call-3");
+
+    const text = String(rejected.content[0]!.text);
+    expect(text).toContain("delegation rejected");
+    expect(text).toContain("the monitor extension's wait tool");
+    expect(text).not.toMatch(/delegations wait/);
+  });
+
+  test("a queue add rejected the same way carries the same redirect", async () => {
+    h = makeHarness("tui", { cap: 1, queueCap: 1 });
+    await callDelegate({ agent: "architect", task: "one" }, makeCtx(), undefined, "call-1"); // fills the cap
+    const queue = h.tools.get("queue") as unknown as {
+      execute(toolCallId: string, params: Record<string, unknown>, signal: unknown, onUpdate: unknown, ctx: unknown): Promise<DelegateResult>;
+    };
+    await queue.execute("tc", { action: "add", agent: "architect", tasks: ["fill the queue"] }, undefined, undefined, makeCtx()); // fills the queue
+    const rejected = await queue.execute("tc", { action: "add", agent: "architect", tasks: ["over the cap"] }, undefined, undefined, makeCtx());
+
+    const text = String(rejected.content[0]!.text);
+    expect(text).toContain("queue rejected");
+    expect(text).toContain("the monitor extension's wait tool");
+    expect(text).not.toMatch(/delegations wait/);
+  });
 });
 
 // ------------------------------------------------------------------ T92–T100: burst batching (deferral pkg P3)

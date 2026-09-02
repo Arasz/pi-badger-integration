@@ -67,6 +67,16 @@ describe("M7 — the result cache ring, dual-index eviction", () => {
     expect(cache.byParent("sess")).toEqual(cache.all()); // one entry per id in the parent group
   });
 
+  test("a re-put of a MIDDLE id splices the parent array at its position — evict-the-head is distinguishable", () => {
+    const cache = new DelegationResultCache();
+    for (let i = 1; i <= 3; i++) cache.put(note({ id: `d-${i}`, sessionId: "sess" }), { now: () => NOW + i });
+    cache.put(note({ id: "d-2", sessionId: "sess", task: "task two, retried" }), { now: () => NOW + 100 });
+
+    expect(cache.all().map((entry) => entry.delegation_id)).toEqual(["d-1", "d-3", "d-2"]); // d-2 left the middle, re-added newest
+    expect(cache.byId("d-2")?.task_summary).toBe("task two, retried");
+    expect(cache.byParent("sess").map((entry) => entry.delegation_id)).toEqual(["d-1", "d-3", "d-2"]);
+  });
+
   test("the ring size constant is 8 (design pin)", () => {
     expect(RESULT_CACHE_LIMIT).toBe(8);
   });
