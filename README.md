@@ -104,6 +104,11 @@ shows them, `cancel <id>` disarms. A monitor with no `timeoutMs` expires after 1
 delivers an `error` card once and is never retried. Outside the TUI every `monitor`
 action rejects loudly — there is no idle session to wake.
 
+For the human side, the **`/monitors` command** lists the armed monitors at a glance (id,
+name, predicate excerpt, age, time left); `cancel <id>` disarms one, and argument
+completion offers `cancel` plus the armed monitor ids. In headless modes it notifies
+nothing.
+
 The `wait` tool spends idle time without polling — and is allowed in every mode. It blocks
 the turn (the pending-tool idiom) until the FIRST of: a watched delegation settles (pass
 `ids` to scope the watch; the default is any live delegation), an armed monitor fires, the
@@ -116,7 +121,7 @@ monitor-event card and is never duplicated. A turn abort or session shutdown res
 wait as `observed: "aborted"`; nothing sends after shutdown.
 
 The monitor extension also enforces the no-polling rule: a `tool_call` observer counts
-`delegations list`/`log` calls (nothing else — `wait`, `abort`, `queue` and `monitor`
+`delegations list`/`log`/`results` calls (nothing else — `wait`, `abort`, `queue` and `monitor`
 calls are exempt) and blocks the 4th call inside a sliding 120 s window with guidance to
 use `wait` or a monitor instead; blocked attempts count too. `PI_BADGER_MONITOR_POLL_MAX`
 is read per call and `0` disables the guard; state resets on session shutdown.
