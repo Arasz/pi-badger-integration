@@ -40,6 +40,7 @@ import {
   widgetLines,
   type PidLiveness,
 } from "../extensions/subagent/delegation-status.ts";
+import { DelegationResultCache, type DelegationResultEntry } from "../extensions/subagent/result-cache.ts";
 import {
   default as sessionSignals,
   parseToolNames,
@@ -113,6 +114,9 @@ function makeCtx(): { ctx: Record<string, unknown>; ui: UiCapture } {
 		hasUI: true,
 		mode: "tui",
 		cwd: "/p",
+		// M7: the no-id `results` action groups by the CURRENT session id — the tool context
+		// carries the session manager the same way the real pi context does.
+		sessionManager: { getSessionId: () => "sess-test" },
 		ui: {
 			notify: (message: string, type = "info") => ui.notifications.push({ message, type }),
 			setStatus: (key: string, text: string | undefined) => ui.statuses.push([key, text]),
@@ -133,6 +137,8 @@ interface Fixture {
 	transitions: () => DelegationTransition[];
 	setClock: (n: number) => void;
 	widgetKey: string;
+	/** The result cache the status surface reads — rows seed it through `put`. */
+	cache: DelegationResultCache;
 }
 
 function makeFixture(
@@ -156,11 +162,15 @@ function makeFixture(
 		emit: (transition) => harness.bus.emit(DELEGATION_EVENTS_CHANNEL, transition),
 		...overrides,
 	});
+	const cache = new DelegationResultCache();
 	registerDelegationStatus(harness.pi, registry, {
 		...(opts.widgetKey ? { widgetKey: opts.widgetKey } : {}),
 		...(opts.probePid ? { probePid: opts.probePid } : {}),
 		// Same injected clock the registry was built with — records carry its startedAt.
 		now: () => clock,
+		// M6: the cache→tool seam rides the established opts pattern (like staleRuns); the
+		// cache is constructed here, beside the surface, and exposed for row seeding.
+		resultCache: cache,
 	});
 	return {
 		registry,
@@ -173,6 +183,7 @@ function makeFixture(
 			clock = n;
 		},
 		widgetKey: opts.widgetKey ?? DEFAULT_WIDGET_KEY,
+		cache,
 	};
 }
 
@@ -454,6 +465,116 @@ describe("T76: delegations tool contract details (review CR10)", () => {
 		const whole = formatLogTail("short", 8192);
 		expect(whole.text).toBe("short");
 		expect(whole.droppedBytes).toBe(0);
+	});
+});
+
+// ------------------------------------------------------------------ M6/M7: the results action over the in-memory cache
+
+/** Seed one cache entry the honest way: through the cache's own put (what production does). */
+function seedResult(fx: Fixture, id: string, sessionId: string | undefined, at: number): DelegationResultEntry {
+	return fx.cache.put(
+		{ id, agent: "architect", task: `task for ${id}`, answer: `answer of ${id}`, ...(sessionId !== undefined ? { sessionId } : {}) },
+		{ now: () => at },
+	);
+}
+
+describe("M6/M7 — the delegations results action over the in-memory cache (f: 2026-09-02, option c)", () => {
+	test("results without an id returns only this session's entries (parent_id grouping, insertion order)", async () => {
+		const fx = makeFixture();
+		seedResult(fx, "d-1", "sess-test", NOW + 1);
+		seedResult(fx, "d-2", "sess-test", NOW + 2);
+		seedResult(fx, "d-3", "sess-other", NOW + 3);
+
+		const result = await delegationsTool(fx).execute({ action: "results" });
+
+		const details = result.details as { parentId: string; results: DelegationResultEntry[] };
+		expect(details.parentId).toBe("sess-test");
+		expect(details.results.map((entry) => entry.delegation_id)).toEqual(["d-1", "d-2"]);
+		expect(result.content[0]!.text).toContain("d-1 (architect)");
+		expect(result.content[0]!.text).toContain("answer of d-2");
+		expect(result.content[0]!.text).not.toContain("d-3");
+	});
+
+	test("results without an id and no sessionManager on the context → an empty group, not a throw", async () => {
+		const fx = makeFixture();
+		seedResult(fx, "d-1", "sess-test", NOW + 1);
+		const { ctx } = makeCtx();
+		delete (ctx as Record<string, unknown>).sessionManager;
+		const tool = fx.harness.tools.get(DELEGATIONS_TOOL_NAME)!;
+
+		const result = await (tool.execute as ToolRecord["execute"])("tc", { action: "results" }, undefined as never, undefined as never, ctx as never);
+
+		const details = result.details as { parentId: string | undefined; results: DelegationResultEntry[] };
+		expect(details.parentId).toBeUndefined();
+		expect(details.results).toEqual([]); // empty group — never a throw
+		expect(String(result.content[0]!.text)).toContain("no cached results");
+	});
+
+	test("results without an id when getSessionId throws is LOUD — 'cannot determine the current session', byte-distinct from the registry's unknown-id error", async () => {
+		const fx = makeFixture();
+		const throwingCtx = {
+			...fx.ctx,
+			sessionManager: {
+				getSessionId: () => {
+					throw new Error("boom");
+				},
+			},
+		};
+		const tool = fx.harness.tools.get(DELEGATIONS_TOOL_NAME)!;
+		const error = await (tool.execute as ToolRecord["execute"])("tc", { action: "results" }, undefined as never, undefined as never, throwingCtx as never).catch(
+			(caught: unknown) => caught,
+		);
+
+		expect(error).toBeInstanceOf(Error);
+		expect((error as Error).message).toContain("cannot determine the current session — pass an id");
+		expect((error as Error).message).not.toContain("unknown delegation id"); // the registry was never consulted
+	});
+
+	test("results with an id returns that delegation's cached entry (details.result, like the cards)", async () => {
+		const fx = makeFixture();
+		const seeded = seedResult(fx, "d-7", "sess-test", NOW + 7);
+
+		const result = await delegationsTool(fx).execute({ action: "results", id: "d-7" });
+
+		expect((result.details as { result: DelegationResultEntry }).result).toEqual(seeded);
+		expect(result.content[0]!.text).toContain("d-7");
+		expect(result.content[0]!.text).toContain("answer of d-7");
+	});
+
+	test("results with a live-but-uncached id → 'no cached result yet (state: running)'; a queued id states 'queued'", async () => {
+		const fx = makeFixture({ cap: 1, queueCap: 16 });
+		await startBackground(fx, "d-1");
+		await startBackground(fx, "d-2");
+
+		const running = await delegationsTool(fx).execute({ action: "results", id: "d-1" });
+		expect(running.content[0]!.text).toBe("delegation d-1: no cached result yet (state: running)");
+		const queued = await delegationsTool(fx).execute({ action: "results", id: "d-2" });
+		expect(queued.content[0]!.text).toBe("delegation d-2: no cached result yet (state: queued)");
+	});
+
+	test("results with an id that settled outside the cache window → 'not in the cache (last 8) — the run may predate the window; use delegations list'", async () => {
+		const fx = makeFixture();
+		await startBackground(fx, "d-1");
+		fx.children[0]!.exit(0);
+
+		const result = await delegationsTool(fx).execute({ action: "results", id: "d-1" });
+		expect(result.content[0]!.text).toBe(
+			"delegation d-1: not in the cache (last 8) — the run may predate the window; use delegations list",
+		);
+	});
+
+	test("an unknown action is a usage error naming the full set: list, log, abort, results", async () => {
+		const fx = makeFixture();
+		await expect(delegationsTool(fx).execute({ action: "wait" } as never)).rejects.toThrow(
+			"delegations action must be one of list, log, abort, results",
+		);
+	});
+
+	test("the delegations description documents the results action and the last-8 window", () => {
+		const fx = makeFixture();
+		const description = String((fx.harness.tools.get(DELEGATIONS_TOOL_NAME) as unknown as { description: string }).description);
+		expect(description).toContain("results");
+		expect(description).toContain("last 8");
 	});
 });
 

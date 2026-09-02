@@ -717,6 +717,72 @@ describe("B-A3 — delegate + delegations descriptions pin the R1 redirect wordi
   });
 });
 
+// ------------------------------------------------------------------ M5: the structured result rides the cards
+
+describe("M5 — the structured result rides the delegation-result cards (f: 2026-09-02, option c)", () => {
+  test("a single completion card carries details.result built from the note; the human-readable content is unchanged", async () => {
+    h = makeHarness();
+    await callDelegate({ agent: "architect", task: "the task text" }, makeCtx());
+    h.children[0]!.write(`${assistantEnd("the final answer")}\n`);
+    h.children[0]!.exit(0);
+
+    expect(h.sent).toHaveLength(1);
+    const message = h.sent[0]!.message;
+    const details = message.details as Record<string, unknown>;
+    const result = details.result as Record<string, unknown>;
+    expect(result).toMatchObject({
+      parent_id: "sess-test",
+      delegation_id: "d-1",
+      task_summary: "the task text",
+      persona: "architect",
+      input: "the task text",
+      output: "the final answer",
+      timestamp: new Date(NOW).toISOString(), // the harness's injected clock — no phantom note finish time
+    });
+    expect(String(message.content)).toContain("completed"); // the card body is unchanged
+    expect(String(message.content)).toContain("the final answer");
+  });
+
+  test("every card of a batched flush carries its own result in details.notes[i].result — batched payloads are never dropped", async () => {
+    h = makeHarness("tui", { batchWindowMs: 100 });
+    for (let i = 1; i <= 3; i++) await callDelegate({ agent: "architect", task: `t${i}` }, makeCtx(), undefined, `call-${i}`);
+    burst(h.children);
+
+    expect(h.sent).toHaveLength(1); // the lead
+    await drainBatchWindow();
+
+    expect(h.sent).toHaveLength(2);
+    const batch = h.sent[1]!.message;
+    const notes = (batch.details as { batched: true; notes: Array<Record<string, unknown>> }).notes;
+    expect((batch.details as Record<string, unknown>).batched).toBe(true);
+    expect(notes).toHaveLength(2);
+    expect(notes.map((note) => (note.result as { delegation_id: string }).delegation_id)).toEqual(["d-2", "d-3"]);
+    expect((notes[0]!.result as { task_summary: string }).task_summary).toBe("t2");
+  });
+
+  test("a note held inside an open batch window is already queryable via delegations results — the cache put happens at delivery entry, before the flush", async () => {
+    h = makeHarness("tui", { batchWindowMs: 100 });
+    await callDelegate({ agent: "architect", task: "lead" }, makeCtx(), undefined, "call-1");
+    await callDelegate({ agent: "architect", task: "held" }, makeCtx(), undefined, "call-2");
+    burst(h.children);
+
+    expect(h.sent).toHaveLength(1); // the lead went out; d-2 is held inside the open window
+
+    const delegations = h.tools.get("delegations") as unknown as {
+      execute(toolCallId: string, params: Record<string, unknown>, signal: unknown, onUpdate: unknown, ctx: unknown): Promise<DelegateResult>;
+    };
+    const result = await delegations.execute("tc", { action: "results", id: "d-2" }, undefined, undefined, makeCtx());
+    const details = result.details as { result: { delegation_id: string; task_summary: string } | null };
+    expect(details.result?.delegation_id).toBe("d-2");
+    expect(details.result?.task_summary).toBe("held");
+
+    await drainBatchWindow(); // the held card still flushes, payload attached
+    expect(h.sent).toHaveLength(2);
+    const flushed = h.sent[1]!.message.details as Record<string, unknown>;
+    expect((flushed.result as { delegation_id: string }).delegation_id).toBe("d-2");
+  });
+});
+
 // ------------------------------------------------------------------ T92–T100: burst batching (deferral pkg P3)
 
 /** Drain past an injected batch window (the fixtures inject small windows; 0 ms is legal too). */

@@ -5,12 +5,13 @@
  * Three surfaces over one injected registry (this module never spawns, kills or reads child
  * streams — the registry and the runner own all of that):
  *
- *   - the LLM tool `delegations` (R6): list / log / abort — NO wait verb (f: 2026-09-02, the
+ *   - the LLM tool `delegations` (R6): list / log / abort / results — NO wait verb (f: 2026-09-02, the
  *     queue-model ruling: the only waiting surface is the monitor extension's `wait` tool,
  *     which user input interrupts; the removed verb blocked the loop and ignored input).
  *     Unknown ids are loud errors; abort without an id is a usage error; `log` answers with
  *     a bounded tail of the run's log file plus the full path pointer, and "log unavailable"
- *     when there is no healthy log (R4 review CR6).
+ *     when there is no healthy log (R4 review CR6); `results` reads the in-memory result
+ *     cache (last 8, option (c) — one id, or the current session's results without one).
  *   - the human twin `/delegations [log <id>] [abort <id|all>]` with argument completions —
  *     every mutation goes through the same registry calls the tool uses (T78), so the tool
  *     and the command can never disagree about a transition.
@@ -36,6 +37,7 @@ import { Type, type Static } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { formatDuration, formatUsage, renderDelegationStatus, type DelegationRecord, type LogRunSummary } from "./delegation-core.ts";
 import type { DelegationRegistry } from "./delegation-registry.ts";
+import type { DelegationResultEntry } from "./result-cache.ts";
 
 // ------------------------------------------------------------------ contract constants
 
@@ -200,6 +202,17 @@ function unknownIdError(id: string): Error {
 	return new Error(`ai-badger: unknown delegation id "${id}" — use delegations list for current ids`);
 }
 
+/** The readable body of one cached result entry; the structured payload rides `details`. */
+function describeResultEntry(entry: DelegationResultEntry): string {
+	const lines = [
+		`${entry.delegation_id} (${entry.persona}) — ${entry.timestamp}`,
+		`task: ${entry.task_summary}`,
+		`output: ${entry.output}`,
+	];
+	if (entry.parent_id !== undefined) lines.push(`parent: ${entry.parent_id}`);
+	return lines.join("\n");
+}
+
 // ------------------------------------------------------------------ the frozen factory
 
 /**
@@ -238,6 +251,14 @@ export function registerDelegationStatus(
 		 * runs are listed with their log paths — the safety net that works even when the runner
 		 * instance is gone. Defaults to none. */
 		staleRuns?: () => LogRunSummary[];
+		/** The in-memory result cache (f: 2026-09-02, option (c)) — the two read surfaces the
+		 * `results` action needs, the established staleRuns opts pattern. Constructed in index.ts
+		 * beside the registry; this module never imports index.ts (no cycle). Defaults to none:
+		 * `results` then answers the cache-miss shapes. */
+		resultCache?: {
+			byId(id: string): DelegationResultEntry | undefined;
+			byParent(parentId: string): DelegationResultEntry[];
+		};
 	},
 ): { contextWindow(): number | undefined } {
 	const widgetKey = opts?.widgetKey ?? DEFAULT_WIDGET_KEY;
@@ -343,10 +364,10 @@ export function registerDelegationStatus(
 
 	const DelegationsParams = Type.Object({
 		action: Type.Union(
-			[Type.Literal("list"), Type.Literal("log"), Type.Literal("abort")],
-			{ description: "list: every delegation with its state; log: tail one run's log; abort: stop one run or all" },
+			[Type.Literal("list"), Type.Literal("log"), Type.Literal("abort"), Type.Literal("results")],
+			{ description: "list: every delegation with its state; log: tail one run's log; abort: stop one run or all; results: one delegation's cached structured result, or (without an id) every cached result this session parented" },
 		),
-		id: Type.Optional(Type.String({ description: 'Run id for log/abort (abort also accepts "all")' })),
+		id: Type.Optional(Type.String({ description: 'Run id for log/abort/results (abort also accepts "all"; results without an id means this session)' })),
 		bytes: Type.Optional(Type.Number({ description: `log: tail size in bytes (${MIN_LOG_TAIL_BYTES}–${MAX_LOG_TAIL_BYTES}, default ${DEFAULT_LOG_TAIL_BYTES})` })),
 	});
 	type DelegationsParams = Static<typeof DelegationsParams>;
@@ -398,8 +419,47 @@ export function registerDelegationStatus(
 				if (target === "all") return textResult(abortEverything(), { all: true });
 				return textResult(abortDelegation(target), { id: target });
 			}
+			case "results": {
+				const cache = opts?.resultCache;
+				const requested = typeof params.id === "string" ? params.id.trim() : "";
+				if (requested) {
+					const entry = cache?.byId(requested);
+					if (entry) return textResult(describeResultEntry(entry), { id: requested, result: entry });
+					// Cache miss with a known surface: disambiguate through the registry (in scope) —
+					// a live run has simply not finished yet; anything else predates the 8-entry window.
+					const record = registry.get(requested);
+					if (record && (record.state === "running" || record.state === "queued")) {
+						return textResult(`delegation ${requested}: no cached result yet (state: ${record.state})`, { id: requested, result: null });
+					}
+					return textResult(
+						`delegation ${requested}: not in the cache (last 8) — the run may predate the window; use delegations list`,
+						{ id: requested, result: null },
+					);
+				}
+				// No id: this session's cached results. The tool context carries the session manager;
+				// a command context may not, so the read is defensive and a broken manager is LOUD —
+				// an absent one degrades to an empty group, never a silent lookup of the wrong session.
+				const manager = (currentCtx as unknown as { sessionManager?: { getSessionId?: () => string } } | undefined)?.sessionManager;
+				let sessionId: string | undefined;
+				if (manager && typeof manager.getSessionId === "function") {
+					try {
+						sessionId = manager.getSessionId();
+					} catch {
+						sessionId = undefined;
+					}
+				}
+				if (manager && !sessionId) {
+					throw new Error("ai-badger: cannot determine the current session — pass an id (e.g. delegations results d-3)");
+				}
+				const entries = sessionId !== undefined && cache ? cache.byParent(sessionId) : [];
+				if (entries.length === 0) {
+					const header = sessionId !== undefined ? `no cached results for session ${sessionId}` : "no cached results";
+					return textResult(`${header} (the cache keeps the last 8)`, { parentId: sessionId, results: entries });
+				}
+				return textResult(entries.map(describeResultEntry).join("\n\n"), { parentId: sessionId, results: entries });
+			}
 			default:
-				throw new Error(`delegations action must be one of list, log, abort`);
+				throw new Error(`delegations action must be one of list, log, abort, results`);
 		}
 	}
 
@@ -410,8 +470,9 @@ export function registerDelegationStatus(
 			"Query and manage background subagent delegations. Actions:",
 			"list (every delegation with its state),",
 			"log id (bounded tail of a run's log file plus the full log path),",
-			'abort id|"all" (stop one delegation or every live one).',
-			"Results arrive as followUp messages on their own — never poll with list/log (repeated polling is blocked). There is NO wait verb (removed f: 2026-09-02 — it blocked the main loop and ignored user input): to spend waiting time use the monitor extension's wait tool (user input interrupts it) or register a monitor, or simply end your turn and let the followUps wake you.",
+			'abort id|"all" (stop one delegation or every live one),',
+			"results [id] (one delegation's cached structured result — without an id, every result this session parented; the cache keeps the last 8 results and dies with the session).",
+			"Completion results arrive as followUp messages on their own — never poll with list/log (repeated polling is blocked). There is NO wait verb (removed f: 2026-09-02 — it blocked the main loop and ignored user input): to spend waiting time use the monitor extension's wait tool (user input interrupts it) or register a monitor, or simply end your turn and let the followUps wake you.",
 			'A run is unbounded unless the delegate call passes timeoutMs: on expiry the run is aborted through the normal kill path and settles aborted (timeout) — use abort to stop one yourself.',
 		].join(" "),
 		parameters: DelegationsParams,
