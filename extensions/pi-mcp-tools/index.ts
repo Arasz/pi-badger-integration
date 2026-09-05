@@ -4,6 +4,7 @@ import { McpToolAdapter } from "./McpToolAdapter.js";
 import { ConfigLoader } from "./ConfigLoader.js";
 import type { McpLedger, McpServerSource } from "./ConfigLoader.js";
 import { countEnabledTools, enabledToolNames } from "./toolFilter.js";
+import { MCP_LIST_SERVERS_TOOL, mcpCardRenderers } from "./McpCardRenderers.js";
 import type { McpConfig, McpServerConfig } from "./types.js";
 import { Type } from "@sinclair/typebox";
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
@@ -265,6 +266,9 @@ function registerExtensionSurface(pi: ExtensionAPI): void {
     label: "List MCP Servers",
     description: "List all configured MCP servers with their config source (merge ledger) and connection status",
     parameters: Type.Object({}),
+    // Human card instead of the raw ledger JSON dump (AC2): keyed on the
+    // bare tool name like every other card; execute is untouched (M3).
+    ...mcpCardRenderers(MCP_LIST_SERVERS_TOOL),
     async execute(_toolCallId, _params, _signal, _onUpdate) {
       return buildLedgerReport();
     },
