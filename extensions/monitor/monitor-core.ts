@@ -423,12 +423,14 @@ export type ManualWaitDecision = { readonly action: "allow" } | { readonly actio
 
 /**
  * A shell wait command, as a command word at a command boundary: start of string, after
- * `;`/`|`/`&`/newline, with optional env-var prefixes. `cat sleep`, `npm run sleep-test` and
- * `sleepwalker` are not waits; `sleep 30`, `VAR=x sleep 5`, `a && sleep 30`, `sleep; echo` and
- * powershell `Start-Sleep -Seconds 30` are (f: 2026-09-02 — any manual wait attempt is a
- * main-loop park and gets redirected at the harness level).
+ * `;`/`|`/`&`/`(`/`)`/`{`/`}`/`!`/backtick/newline, or after a shell keyword that starts a new
+ * command (`do`/`then`/`else`/`elif`/`while`/`until`/`for`/`if`/`in`), with optional env-var
+ * prefixes. `cat sleep`, `npm run sleep-test` and `sleepwalker` are not waits; `sleep 30`,
+ * `VAR=x sleep 5`, `a && sleep 30`, `sleep; echo`, `for …; do sleep 45; …`,
+ * `if true; then sleep 5; fi` and powershell `Start-Sleep -Seconds 30` are (f: 2026-09-02 —
+ * any manual wait attempt is a main-loop park and gets redirected at the harness level).
  */
-const SHELL_WAIT_COMMAND = /(?:^|[;|&]|\n)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:sleep|Start-Sleep)(?:[\s;&|]|$)/i;
+const SHELL_WAIT_COMMAND = /(?:^|[;|&()\n{}`!]|\b(?:elif|else|then|do|while|until|for|if|in)\b)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:sleep|Start-Sleep)(?:[^\w-]|$)/i;
 
 /**
  * The manual-wait guard's pure half (f: 2026-09-02): a shell `sleep`/`Start-Sleep` parks the

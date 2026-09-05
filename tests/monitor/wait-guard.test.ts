@@ -118,4 +118,23 @@ describe("W-G — manual-wait enforcement: shell sleeps are blocked at the harne
     expect(fourth?.block).toBe(true); // blocked by the POLL guard (its reason), not the wait guard
     expect(fourth?.reason).toContain("delegations list/log call #4");
   });
+
+  test("W-G8: shell-keyword boundaries are blocked too — for/do, then, subshell, brace, negation (f: sleep-loop miss)", () => {
+    const { pi } = makeHarness();
+
+    // The exact miss: `do` sits between `;` and `sleep`, so the old `;`/`|`/`&` boundary never fired.
+    expect(
+      fireToolCall(pi, "bash", {
+        command: "for i in $(seq 1 10); do sleep 45; s=$(gh pr checks 619 2>&1); done",
+      })?.block,
+    ).toBe(true);
+    expect(fireToolCall(pi, "bash", { command: "for i in 1 2 3; do sleep 45; done" })?.block).toBe(true);
+    expect(fireToolCall(pi, "bash", { command: "if true; then sleep 5; fi" })?.block).toBe(true);
+    expect(fireToolCall(pi, "bash", { command: "(sleep 5)" })?.block).toBe(true);
+    expect(fireToolCall(pi, "bash", { command: "{ sleep 5; }" })?.block).toBe(true);
+    expect(fireToolCall(pi, "bash", { command: "! sleep 5" })?.block).toBe(true);
+    // Right boundary still holds for closers: `sleep)` is a wait, `sleep-test`/`sleepwalker` are not.
+    expect(fireToolCall(pi, "bash", { command: "echo $(sleep 5)" })?.block).toBe(true);
+    expect(fireToolCall(pi, "bash", { command: "sleepwalker" })).toBeUndefined();
+  });
 });
