@@ -1,10 +1,19 @@
 {
   "lastUpdated": "2026-09-05",
   "next": {
-    "id": "pbi-ai-badger-readme-pi-harness",
-    "note": "Chain task 3: ai-badger README pi harness row + using-pi extension-set pointer (separate PR in ai-badger repo, subagent)"
+    "id": "pbi-homepage-pi-article-integrations",
+    "note": "Chain task 4: arasz-home-page article about pi + usage + integrations, per repo article conventions, plus LinkedIn note"
   },
   "completedTasks": [
+    {
+      "taskId": "pbi-ai-badger-readme-pi-harness",
+      "title": "ai-badger README pi harness entries",
+      "finishedAt": "2026-09-05T19:45:00Z",
+      "summary": "Separate PR Arasz/ai-badger#472 (draft): pi row in Supported agents (Scaffolded), pi added to agent-specific stacks, new Are-you-using-pi pointer to public pi-badger-integration. Done directly in ai-badger checkout (docs-only, in-session review); pre-push gates green. PR left draft for owner review/merge.",
+      "decisions": [
+        "Direct edit over subagent delegation: 6-line docs change, delegation overhead unjustified; noted as reduced rigor"
+      ]
+    },
     {
       "taskId": "pbi-docs-readme-install-visual-refresh",
       "title": "Docs, README, install guide refresh from ai-badger template",
@@ -73,20 +82,6 @@
         "setTimeout clamps delays > 2^31-1 ms to ~1 ms (verified in Bun) \u2014 every runtime cap clamped at BOTH the tool-schema helper and the runner timer site; an uncapped 'no upper bound' ruling was a silent-miskill bug",
         "batching threshold belongs on batch SIZE (6-card cap), not on arming \u2014 the first ~6 completions fire before any threshold could see them; lead-immediate preserves v1 latency and bytes for isolated completions",
         "a delegation lane can die silently (d-28: pid gone, no exit line, no settle, no receipt) \u2014 commit-per-package caps the loss; liveness monitoring spec queued (docs/plans/2026-delegation-liveness-monitoring-spec.md)"
-      ]
-    },
-    {
-      "taskId": "pbi-interactive-background-subagent-delegation",
-      "title": "Interactive background subagent delegation with progress and logs",
-      "finishedAt": "2026-08-30T20:45:00Z",
-      "summary": "The delegate tool is background-by-default in interactive TUI sessions (auto = ctx.mode === 'tui'; headless stays blocking and byte-compatible plus details.usage): receipt returns immediately, exactly one delegation-result followUp (deliverAs followUp, triggerTurn) lands per terminal transition and wakes the idle agent. New delegations tool (list/log/abort/wait), /delegations command, widget for background/queued runs; children switched to --mode json with one line-buffered parser (usage accumulation, activity, silent-JSON fallback); logs teed to ~/.pi/agent/subagent-logs/<runId>.jsonl (run header with sessionId, 14-day prune, dir cap, per-run byte cap, sink-failure isolation); admission 4 running / 16 queued / loud reject; split kill paths (session_shutdown SIGTERM\u21925s\u2192SIGKILL, process-exit sync SIGKILL); log-dir-only restart reconstruction, runIds never reused; session-signals gained a tick-defer (no 0-second footer flash) and watches delegations. 332 unit tests + 2 gated real-child smoke rows green; published to user scope, drift zero, fresh-session load functionally verified. Manual-evidence slots M1-M5 (H1 idle-wake, H5 visual, e2e x3) documented in docs/plans/2026-interactive-subagent-delegation.manual-evidence.md for the owner.",
-      "decisions": [
-        "background auto-default keyed on ctx.mode==='tui', NOT ctx.hasUI (rpc also has UI and must not receive wake turns)",
-        "log dir at user scope (~/.pi/agent/subagent-logs): durable across reboots, git-clean in every project \u2014 and a de-facto cross-repo contract (ai-badger pi_session_source.delegation_usage will parse it; format changes need coordination)",
-        "fake-pi test harnesses must be pub/sub (handler ARRAYS per event): single-slot maps let a second extension's session_shutdown silently overwrite the first \u2014 caught as a W3 join failure, real pi.on fans out",
-        "two review-driven cuts kept the task landable: session-signals pi.events wire \u2192 5-line tick-defer; branch-parsing reconstruction \u2192 log-dir-only (the log dir already holds everything)",
-        "cold-start delegation children from fresh dirs take ~62s (one retry cycle): smoke watchdog 120s; headless MoE-panel consumers should pass background:false or register a monitor / use the monitor wait tool",
-        "plan docs live in docs/plans/ (plan + .tests.md contract + .research.md + manual-evidence); the 78-row test table is committed, never regenerate it from transcripts"
       ]
     }
   ]
