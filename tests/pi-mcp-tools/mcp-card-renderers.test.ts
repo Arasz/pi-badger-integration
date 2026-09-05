@@ -194,6 +194,45 @@ describe("mcp card renderers: prefixed dispatch (M2)", () => {
 		expect(rendered).toContain("1 hits");
 		expectNoJson(rendered);
 	});
+
+	test("QA: custom toolPrefix still dispatches the bare card (M2 claim)", () => {
+		const tool = McpToolAdapter.convertToPiTool(
+			{ name: "memory_get", description: "get", inputSchema: { type: "object" } },
+			"ai-raccoon",
+			() => undefined,
+			"custom_pfx",
+		);
+		expect(tool).not.toBeNull();
+		expect(tool!.name).toBe("custom_pfx_memory_get");
+		const component = tool!.renderResult!(
+			{ content: [{ type: "text", text: envelope({ hash: "abc123", path: "notes.md", value: "hi" }) }], details: {} } as never,
+			{ expanded: false, isPartial: false } as never,
+			{} as never,
+			{ args: {} } as never,
+		);
+		const rendered = component.render(100).join("\n");
+		expect(rendered).toContain("notes.md");
+		expectNoJson(rendered);
+	});
+
+	test("QA: renderResult with expanded:true shows key fields plus trimmed JSON", () => {
+		const tool = McpToolAdapter.convertToPiTool(
+			{ name: "memory_get", description: "get", inputSchema: { type: "object" } },
+			"ai-raccoon",
+			() => undefined,
+			"mcp_ai-raccoon",
+		);
+		const text = envelope({ hash: "abc123", path: "notes.md", value: "hi" });
+		const component = tool!.renderResult!(
+			{ content: [{ type: "text", text }], details: {} } as never,
+			{ expanded: true, isPartial: false } as never,
+			{} as never,
+			{ args: {} } as never,
+		);
+		const rendered = component.render(100).join("\n");
+		expect(rendered).toContain("notes.md");
+		expect(rendered).toContain(text.slice(0, 32));
+	});
 });
 
 describe("mcp card renderers: collapsed cards (AC2)", () => {
@@ -211,6 +250,33 @@ describe("mcp card renderers: collapsed cards (AC2)", () => {
 		expect(collapsed).toContain("✓ hermes");
 		expect(collapsed).toContain("project:.mcp.json");
 		expect(collapsed).toContain("✗ dead");
+		expectNoJson(collapsed);
+	});
+
+	test("QA: memory_sweep deleted-branch pins 'deleted N' (secondary display variant)", () => {
+		const collapsed = collapsedMcpCard("memory_sweep", envelope({ candidates: [{ a: 1 }], deleted: ["h1", "h2"] }));
+		expect(collapsed).toContain("deleted 2");
+		expectNoJson(collapsed);
+	});
+
+	test("QA: memory_watch_add absorbedBy + plain variants pin their lines", () => {
+		const absorbed = collapsedMcpCard("memory_watch_add", envelope({ path: "/docs", absorbedBy: "/docs", pruned: [] }));
+		expect(absorbed).toContain("re-add absorbed");
+		expectNoJson(absorbed);
+		const plain = collapsedMcpCard("memory_watch_add", envelope({ path: "/docs", pruned: [] }));
+		expect(plain).toContain("watching /docs");
+		expectNoJson(plain);
+	});
+
+	test("QA: memory_write refused pins reason line", () => {
+		const collapsed = collapsedMcpCard("memory_write", envelope({ hash: "abc123def456", stored: false, reason: "noise" }));
+		expect(collapsed).toContain("refused — noise");
+		expectNoJson(collapsed);
+	});
+
+	test("QA: ledger with no servers states it plainly", () => {
+		const collapsed = collapsedMcpCard("mcp_list_servers", JSON.stringify({ servers: [] }));
+		expect(collapsed).toContain("no servers armed");
 		expectNoJson(collapsed);
 	});
 });
@@ -277,6 +343,9 @@ describe("mcp card renderers: fail-open (AC3/M4)", () => {
 			}).not.toThrow();
 			expect(collapsed.length).toBeGreaterThan(0);
 			expect(expanded.length).toBeGreaterThan(0);
+			// QA: oracle pins the fallback TEXT, not just crash-freedom — a
+			// wrong-but-plausible summary must go red here.
+			expect(collapsed).toContain("finished — open for details");
 			expectNoJson(collapsed);
 		}
 	});
