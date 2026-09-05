@@ -36,6 +36,7 @@ bun run check
 | subagent | Background delegation to ai-badger personas (`delegate`, `delegations`, `queue`) |
 | monitor | One-shot predicate monitors and the idle `wait` tool (`monitor`, `/monitors`) |
 | router-fallback | Session-only fallback over Groq, Gemini, OpenRouter `:free` on router failure (`/fallback`) |
+| update-check | Background notice when a newer integration release exists (`/update-check`) |
 | pi-cron | Cron scheduling inside pi |
 | pi-mcp-tools | Universal MCP tools |
 | session-signals | Marker importance aborts and delegation footer status |

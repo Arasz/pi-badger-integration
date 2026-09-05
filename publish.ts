@@ -46,7 +46,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,7 +67,7 @@ export const ADAPTER_FILES = [
 
 const ADAPTER_SOURCE_DIR = "features/pi/adjustments/adapter";
 /** Directory names under extensions/, each installed as ~/.pi/agent/extensions/<name>/. */
-const EXTENSION_DIRS = ["pi-cron", "pi-mcp-tools", "session-signals", "shift-enter-newline", "subagent", "monitor", "router-fallback"] as const;
+const EXTENSION_DIRS = ["pi-cron", "pi-mcp-tools", "session-signals", "shift-enter-newline", "subagent", "monitor", "router-fallback", "update-check"] as const;
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const USER_EXTENSIONS_DIR = join(homedir(), ".pi", "agent", "extensions");
@@ -221,6 +221,52 @@ function ensureDependencies(sourceDirs: string[], runInstall: InstallDeps): void
  * destination; a crashed publish leaves only a `.publishing-<pid>` stray that --check
  * names). Note this is per-file atomicity, not per-set: a session starting between two
  * renames of a multi-file target can observe a mixed set — sub-millisecond window. */
+/** Per-install state for the update-check extension: written by publish (install
+ * path only, never --check), read by the extension. Lives OUTSIDE the owned
+ * extension dir so --check's exact file-set equality never sees it. Best-effort
+ * and never fatal: a failed marker write warns, the install still succeeds. */
+export const UPDATE_CHECK_MARKER_DIRNAME = "update-check";
+
+export function installedMarker(
+	root: string = ROOT,
+	agentDir: string = dirname(USER_EXTENSIONS_DIR),
+): { path: string; content: string } {
+	let version: string | null = null;
+	let sha: string | null = null;
+	try {
+		version = execFileSync("git", ["-C", root, "describe", "--tags", "--exact-match"], {
+			encoding: "utf8",
+		stdio: ["ignore", "pipe", "ignore"],
+		}).trim();
+	} catch {
+		version = null;
+	}
+	try {
+		sha = execFileSync("git", ["-C", root, "rev-parse", "--short", "HEAD"], {
+			encoding: "utf8",
+		stdio: ["ignore", "pipe", "ignore"],
+		}).trim();
+	} catch {
+		sha = null;
+	}
+	return {
+		path: join(agentDir, UPDATE_CHECK_MARKER_DIRNAME, "installed.json"),
+		content: JSON.stringify({ version: version === "" ? null : version, sha, publishedAt: new Date().toISOString() }),
+	};
+}
+
+export function writeInstalledMarker(root: string = ROOT, agentDir: string = dirname(USER_EXTENSIONS_DIR)): void {
+	try {
+		const marker = installedMarker(root, agentDir);
+		mkdirSync(dirname(marker.path), { recursive: true });
+		const staged = `${marker.path}.publishing-${process.pid}`;
+		writeFileSync(staged, marker.content);
+		renameSync(staged, marker.path);
+	} catch (error) {
+		console.warn(`WARNING: installed-version marker not written (${error instanceof Error ? error.message : String(error)})`);
+	}
+}
+
 function install(source: string, destination: string): void {
 	mkdirSync(dirname(destination), { recursive: true });
 	const staged = `${destination}.publishing-${process.pid}`;
@@ -340,6 +386,7 @@ export function main(argv: string[], inject?: { targets?: Target[]; runInstall?:
 		runInstall,
 	);
 	for (const target of inject?.targets ?? defaultTargets()) installTarget(target);
+	if (inject?.targets === undefined) writeInstalledMarker();
 	return 0;
 }
 

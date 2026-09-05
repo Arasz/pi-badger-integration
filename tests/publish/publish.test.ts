@@ -450,3 +450,34 @@ describe("adapter capability marker (P2)", () => {
 		expect(onDisk).toEqual([...ADAPTER_FILES].sort());
 	});
 });
+
+describe("installedMarker: per-install version state for update-check", () => {
+	test("tagged checkout records the exact tag plus sha", async () => {
+		const { execFileSync } = await import("node:child_process");
+		const repo = tempDir("publish-marker-repo-");
+		const agentDir = tempDir("publish-marker-agent-");
+		execFileSync("git", ["init", "-q", repo]);
+		execFileSync("git", ["-C", repo, "config", "user.email", "t@t"]);
+		execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
+		writeFileSync(join(repo, "f.txt"), "x");
+		execFileSync("git", ["-C", repo, "add", "."]);
+		execFileSync("git", ["-C", repo, "commit", "-qm", "init"]);
+		execFileSync("git", ["-C", repo, "tag", "v1.2.3"]);
+		const { installedMarker, writeInstalledMarker } = await import("../../publish.ts");
+		const marker = installedMarker(repo, agentDir);
+		expect(marker.path).toBe(join(agentDir, "update-check", "installed.json"));
+		expect(JSON.parse(marker.content).version).toBe("v1.2.3");
+		writeInstalledMarker(repo, agentDir);
+		const written = JSON.parse(readFileSync(marker.path, "utf8"));
+		expect(written.version).toBe("v1.2.3");
+		expect(typeof written.sha).toBe("string");
+	});
+
+	test("untagged checkout records null version (guidance path, never fatal)", async () => {
+		const { installedMarker, writeInstalledMarker } = await import("../../publish.ts");
+		const agentDir = tempDir("publish-marker-agent-");
+		const marker = installedMarker(tempDir("publish-marker-empty-"), agentDir);
+		expect(JSON.parse(marker.content).version).toBeNull();
+		expect(() => writeInstalledMarker(tempDir("publish-marker-empty-"), agentDir)).not.toThrow();
+	});
+});

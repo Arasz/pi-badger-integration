@@ -10,7 +10,7 @@ Include what an attacker can do and what they need in order to do it, the affect
 
 ## Supported versions
 
-Only the latest `main` is supported. There are no releases or tags; pulling and re-publishing is the update path (see [Install extensions](docs/howto/install-extensions.md#update)).
+Only the latest release is supported. Releases are GitHub releases on this repository (`vX.Y.Z` tags); pulling and re-publishing is the update path (see [Install extensions](docs/howto/install-extensions.md#update) and [Update integrations](docs/howto/update-integrations.md)).
 
 ## What this project actually is, security-wise
 
