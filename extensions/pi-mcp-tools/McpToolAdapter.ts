@@ -2,6 +2,7 @@ import type { TSchema } from "@sinclair/typebox";
 import type { McpClient } from "./McpClient.js";
 import type { McpTool } from "./types.js";
 import { SchemaConverter } from "./SchemaConverter.js";
+import { mcpCardRenderers } from "./McpCardRenderers.js";
 import { Type } from "@sinclair/typebox";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
@@ -54,6 +55,9 @@ export class McpToolAdapter {
       label: `${serverName}: ${mcpTool.name}`,
       description: mcpTool.description || `Call ${mcpTool.name} on ${serverName} MCP server`,
       parameters,
+      // Card renderers key on the BARE mcpTool.name (McpCardRenderers): the
+      // prefixed pi name is configurable per server and must never drive dispatch.
+      ...mcpCardRenderers(mcpTool.name),
       async execute(_toolCallId, params, signal, _onUpdate, _ctx: ExtensionContext) {
         try {
           if (signal?.aborted) {
