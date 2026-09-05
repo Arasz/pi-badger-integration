@@ -20,6 +20,20 @@
       "finishedAt": "2026-08-31T13:20:00Z",
       "summary": "timeoutMs + burst batching; 771 tests green.",
       "hasNotes": false
+    },
+    {
+      "taskId": "pbi-monitor-queue-delegation-rework",
+      "title": "Background monitor extension, idle waiting, and queued non-blocking delegation",
+      "finishedAt": "2026-09-02T00:45:00Z",
+      "summary": "Monitor extension + queue groups; 642 tests green.",
+      "hasNotes": false
+    },
+    {
+      "taskId": "pbi-delegation-liveness-watchdog",
+      "title": "Delegation liveness monitoring",
+      "finishedAt": "2026-08-31T14:30:00Z",
+      "summary": "Runner watchdog + operator surfaces; landed via convergent landing.",
+      "hasNotes": false
     }
   ]
 }
