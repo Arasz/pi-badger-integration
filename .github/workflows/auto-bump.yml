@@ -69,7 +69,11 @@ jobs:
         run: bunx tsc --noEmit -p .
 
       - name: Bump patch and push
+        # gh needs an explicit token: the runner exports neither GH_TOKEN nor
+        # GITHUB_TOKEN into step env by default (and set -u turns the missing
+        # name into a hard failure after the tag already pushed).
         env:
+          GH_TOKEN: ${{ github.token }}
           BASE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
@@ -129,5 +133,5 @@ jobs:
           else
             git tag "$TAG"
             git push origin "$TAG"
-            GH_TOKEN="${GH_TOKEN:-$GITHUB_TOKEN}" gh release create "$TAG" --title "$TAG" --generate-notes
+            gh release create "$TAG" --title "$TAG" --generate-notes
           fi
