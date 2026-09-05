@@ -1,6 +1,6 @@
 {
   "$schema": "./schemas/config.schema.json",
-  "frameworkVersion": "0.159.0",
+  "frameworkVersion": "0.162.1",
   "project": {
     "name": "pi-badger-integration",
     "summary": "Canonical source for pi coding-agent extensions that are not part of ai-badger (the ai-badger hooks adapter, shift-enter-newline, session-signals, pi-cron, pi-mcp-tools, subagent), plus the publish flow that installs them to pi's user scope and vendors the adapter back into an ai-badger checkout.",
