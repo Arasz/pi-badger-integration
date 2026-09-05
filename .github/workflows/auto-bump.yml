@@ -1,0 +1,101 @@
+name: auto-bump
+
+# Test-gated patch releases: a push to main that does NOT touch VERSION gets
+# its tests run, and on green a patch-bump commit is pushed — which fires
+# release.yml (VERSION path), tagging and releasing the result. A push that
+# already touched VERSION is left alone: a human-chosen version (minor/major,
+# or a hand-picked patch) always wins over the automation, and the bump's own
+# VERSION-only commit terminates the chain instead of looping it.
+#
+# net effect: merging without thinking about versions still cuts exactly one
+# patch release per change; thinking about versions overrides cleanly.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Serialise with release.yml's group semantics: two pushes racing to bump must
+# not fork VERSION. Never cancel a run that may already have pushed a bump.
+concurrency:
+  group: auto-bump
+  cancel-in-progress: false
+
+jobs:
+  test-and-bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      # Pushing the bump commit needs `contents: write`. Scoped to this job.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the VERSION-touch check diffs against the pre-push
+          # base, and the push retry rebases onto the latest main.
+          fetch-depth: 0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run tests
+        # The gate: a red suite bumps nothing. Failure stops the job here.
+        run: bun test
+
+      - name: Typecheck
+        run: bunx tsc --noEmit -p .
+
+      - name: Bump patch and push
+        env:
+          BASE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BASE="$BASE_SHA"
+          if [[ "$BASE" == "0000000000000000000000000000000000000000" ]]; then
+            BASE="HEAD~1"
+          fi
+          if git diff --name-only "$BASE" HEAD -- | grep -qx "VERSION"; then
+            echo "VERSION was touched by this push (manual version or a prior bump) — standing down."
+            exit 0
+          fi
+
+          CURRENT="$(tr -d '[:space:]' < VERSION)"
+          if ! [[ "$CURRENT" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "::error::VERSION must be a bare semver; found '$CURRENT'." >&2
+            exit 1
+          fi
+          NEXT="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
+          echo "$NEXT" > VERSION
+          git add VERSION
+          git commit -m "chore(release): bump to $NEXT"
+
+          # A concurrent bump may have landed first: rebase, and if that
+          # conflicts the other run won — abort quietly instead of forking it.
+          # (An identical concurrent bump usually rebases to an empty commit,
+          # which the ahead-count below turns into a clean no-op.)
+          for _ in 1 2 3; do
+            if ! git pull --rebase -q; then
+              echo "Rebase conflicted — a concurrent bump won; standing down."
+              git rebase --abort || true
+              exit 0
+            fi
+            if [[ "$(git rev-list --count origin/main..HEAD)" == "0" ]]; then
+              echo "Nothing to push — the bump already landed concurrently."
+              exit 0
+            fi
+            if git push; then
+              echo "Bumped $CURRENT -> $NEXT."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::could not push the bump after 3 attempts." >&2
+          exit 1

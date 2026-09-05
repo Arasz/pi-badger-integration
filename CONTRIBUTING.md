@@ -22,7 +22,7 @@ bunx tsc --noEmit -p .
 bun run check
 ```
 
-`bun test` runs every extension suite. `bun run check` compares canonical source against your installed user scope and fails on drift. There is no CI; these three commands are the whole gate, so do not skip them.
+`bun test` runs every extension suite. `bun run check` compares canonical source against your installed user scope and fails on drift. CI (`.github/workflows/ci.yml`) runs `bun test` plus the typecheck on every push and PR — `bun run check` stays local-only, since a fresh CI machine has no installed user scope by definition.
 
 ## Workflow
 
@@ -32,7 +32,16 @@ Work on `main` directly for small changes, or on a `task/<id>-<slug>` branch for
 2. Keep commits small and scoped. One extension per commit when a change touches several.
 3. If you touched an extension under `extensions/`, run `bun run publish` and confirm `bun run check` exits 0.
 4. If you touched `features/pi/adjustments/adapter/`, the change is not durable until it is vendored into the ai-badger checkout and committed there too. The exact order is in [Publish flow](docs/explanation/publish-flow.md); skipping the vendoring step means the next scaffold silently overwrites your fix.
-5. Push. Docs-only and test-only changes need no release step; there is no version to bump in this repo.
+5. Push. Merging without touching `VERSION` cuts a patch release automatically (see Releasing); bump it by hand in the PR when the change deserves more than a patch.
+
+## Releasing (VERSION → tag → GitHub release)
+
+Releases follow the ai-raccoon mechanism: a `VERSION` file holds the bare semver, and automation derives everything else.
+
+- `auto-bump.yml`: a push to `main` that does not touch `VERSION` runs the tests, and on green pushes a patch-bump commit. A red suite bumps nothing.
+- `release.yml`: any push that changes `VERSION` validates the format, tags `v<VERSION>` (lightweight, never moved — re-runs are no-ops), and cuts a GitHub release with generated notes.
+- A push that already touched `VERSION` stands the automation down: a hand-picked version always wins, and the bump's own VERSION-only commit terminates the chain instead of looping it.
+- Releases are user-visible: the update-check extension reads `releases/latest`, so cutting a release is what makes other checkouts notice.
 
 ## Conventions worth knowing
 
