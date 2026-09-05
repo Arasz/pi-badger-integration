@@ -1,0 +1,11 @@
+{
+  "completedTasks": [
+    {
+      "taskId": "pbi-move-extensions-to-dir-packages",
+      "title": "Extensions as directory packages: publish, tests, minimal ai-badger layer",
+      "finishedAt": "2026-08-30T17:20:26Z",
+      "summary": "All five pi extensions became directory packages; publish.ts generic directory model; test tree mirrors extensions/ (206 green); ai-badger reduced to adapter-only; published to user scope.",
+      "hasNotes": false
+    }
+  ]
+}
