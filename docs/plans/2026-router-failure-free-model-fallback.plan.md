@@ -46,7 +46,8 @@ Spent: research 64452 (cache-excluded) + plan lanes pending record (d-490/491/49
 Remaining estimate: review MoE (3) + implementation (3–4 lanes: A, B, C, E; D cross-cutting) + impl-review MoE (3) + fixes + QA.
 Cost control: hermetic fixtures (no live keys in unit suite), touched-surface runs per change, one full `bun test` before merge.
 
-## For the review MoE
+## Review outcome (folded 2026-09-05 — gates implementation start)
 
-Attack structure, feasibility, budget arithmetic, testability. Rule on J1–J8 (MUST/SHOULD fold list).
-Fold MUST/SHOULD findings back into the three lane docs before any implementation dispatch.
+Panel: code-reviewer (d-493) + qa (d-494) + delegator (d-495). Full reports: `/tmp/d-493-review.md`, `/tmp/d-494-review.md`, `/tmp/d-495-review.md`.
+
+**Normative delta: `2026-router-failure-free-model-fallback.plan-review-folds.md` (F0–F6).** Final J-rulings: J1/J2/J3 ADOPT-B (no registerProvider for defaults; native Gemini; corrected frozen IDs) · J4 THIRD-WAY (recomputed retryability, W9′) · J5 THIRD-WAY (folded-only, C4′/C5′ hold+notice) · J6 ADOPT-A (5 kinds) · J7 `PI_BADGER_` names · J8 distinct `router-failure` event on shared bus (PKG-B owns constant). Structural MUSTs M1–M6 (single selector contract in PKG-C; cooldown in selector only; try/advance executes in PKG-B once; Retry-After→PKG-C; C4/C5 + W9 unbuildable-as-written → reframed). W3/S1 (argv-shape, no options param), W5/S2 (ThinkingLevel-only), S3 (P4 mapping table), S4+S-cut (P3 v1 pinned-first, fetch = follow-up), S5 (single README author in E), S6 (`publish.ts:70`). 18 new rows C12–C15/F7–F10/W10–W17/G4/I4 (PKG-D-owned). Sequence: A → B∥C → E (PKG-E-last; H7/H8 gate E). Budget: spent ~167k, projected run total ~370–390k cache-excluded.

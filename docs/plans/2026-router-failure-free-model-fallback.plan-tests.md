@@ -1,5 +1,7 @@
 # Test plan — `pbi-router-failure-free-model-fallback` (TEST lane only)
 
+> REVIEWED 2026-09-05 — this doc is frozen history. Normative delta: `2026-router-failure-free-model-fallback.plan-review-folds.md` (overrides on conflict; F3–F4 reword/add rows).
+
 Scope: TEST plan. Structure/detection owned by architect lane, provider/config schema owned by api-engineer lane — this plan names only the seams they must expose for testability. Read-only; no code written, no tests run.
 
 Sources (absolute):

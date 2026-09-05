@@ -1,5 +1,7 @@
 # Router-failure free-model fallback — implementation plan (overall + detection/switch)
 
+> REVIEWED 2026-09-05 — this doc is frozen history. Normative delta: `2026-router-failure-free-model-fallback.plan-review-folds.md` (overrides on conflict).
+
 **Scope I own:** overall package split + PKG-A (detection core) + PKG-B (detection/switch wiring). **Seams (not designed here):** PKG-C provider/config → api-engineer lane; PKG-D test matrix ownership → test-engineer lane; both named at each touch-point. Read-only; all paths absolute.
 
 ## 0. Verification verdict on lane d-489's finding (checked against installed pi 0.85.1)
@@ -27,7 +29,7 @@ PKG-D  test-matrix ownership        (sibling test-engineer: cross-cutting suites
 PKG-E  INTEGRATION (last: cross-package tests, publish.ts wiring, docs)  — serial after A+B+C
 ```
 
-- **Top-level AC:** every package AC below is checked and met (`bun test` touched-surface + `bunx tsc --noEmit -p .` green; `bun run check` exit 0 after PKG-E).
+- **Top-level AC:** every package AC below is checked and met (`bun test` touched-surface + `bunx tsc --noEmit -p .` green; `bun run check` exit 0 after PKG-E). Post-review: ACs hold as amended by `2026-router-failure-free-model-fallback.plan-review-folds.md` (F1–F6).
 - **Shared-file serialisation:** only PKG-E touches `publish.ts` (`EXTENSION_DIRS` at `/Users/arasz/RiderProjects/pi-badger-integration/.ai-badger/worktrees/pbi-router-failure-free-model-fallback/publish.ts:29`), `README.md`, repo `package.json`. PKG-A/B/C touch only new files under `extensions/router-fallback/` + `tests/router-fallback/` — no merge conflicts between lanes until PKG-E.
 - **Parallelism:** PKG-A ∥ PKG-C start immediately (PKG-A needs only the pi-SDK vocabulary + d-487/d-488 string lists, both already in hand; PKG-C needs only the schema sketch from d-488 §3). PKG-B starts after PKG-A's exported function signatures freeze (same author — can overlap same-day). PKG-D runs alongside all (test list coordination only, §4). PKG-E serial-last.
 

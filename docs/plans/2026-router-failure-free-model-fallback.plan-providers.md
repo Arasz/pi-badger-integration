@@ -1,5 +1,7 @@
 # Provider/Config Plan — router-failure free-model fallback (`pbi-router-failure-free-model-fallback`)
 
+> REVIEWED 2026-09-05 — this doc is frozen history. Normative delta: `2026-router-failure-free-model-fallback.plan-review-folds.md` (overrides on conflict).
+
 Role: PROVIDER/CONFIG design only. Detection/switch → architect lane; test design → test-engineer lane. Read-only; no writes/branches/installs/tests ran.
 Sources read: research record + `/tmp/d-487-report.md` + `/tmp/d-488-report.md` + `/tmp/d-489-report.md`, verified against pi **0.85.1** SDK at `/Users/arasz/.bun/install/global/node_modules/@earendil-works/pi-coding-agent/` and pi-ai at `/Users/arasz/.bun/install/global/node_modules/@earendil-works/pi-ai/`. (Repo pins 0.84.4 in `/Users/arasz/RiderProjects/pi-badger-integration/.ai-badger/worktrees/pbi-router-failure-free-model-fallback/package.json` — every pi-API claim below is 0.85.1-verified; 0.84.4 re-check is H8.)
 
