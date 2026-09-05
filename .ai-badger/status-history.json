@@ -6,6 +6,13 @@
       "finishedAt": "2026-08-30T17:20:26Z",
       "summary": "All five pi extensions became directory packages; publish.ts generic directory model; test tree mirrors extensions/ (206 green); ai-badger reduced to adapter-only; published to user scope.",
       "hasNotes": false
+    },
+    {
+      "taskId": "pbi-interactive-background-subagent-delegation",
+      "title": "Interactive background subagent delegation with progress and logs",
+      "finishedAt": "2026-08-30T20:45:00Z",
+      "summary": "Background-by-default delegate in TUI, delegations tool, /delegations command, widget, JSONL logs; 332 tests + 2 smoke green.",
+      "hasNotes": false
     }
   ]
 }
