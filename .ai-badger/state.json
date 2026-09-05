@@ -1,10 +1,21 @@
 {
   "lastUpdated": "2026-09-05",
   "next": {
-    "id": "pbi-docs-readme-install-visual-refresh",
-    "note": "Chain task 2: docs/README/CONTRIBUTING/SECURITY from ai-badger template + install instructions, ai-raccoon-style visual-first README (+ LICENSE gap from task 1)"
+    "id": "pbi-ai-badger-readme-pi-harness",
+    "note": "Chain task 3: ai-badger README pi harness row + using-pi extension-set pointer (separate PR in ai-badger repo, subagent)"
   },
   "completedTasks": [
+    {
+      "taskId": "pbi-docs-readme-install-visual-refresh",
+      "title": "Docs, README, install guide refresh from ai-badger template",
+      "finishedAt": "2026-09-05T19:30:00Z",
+      "summary": "Visual-first README (mermaid publish-flow diagram, install block, extension table, docs links; 17KB deep content moved verbatim to docs/reference/extension-catalog.md + docs/explanation/publish-flow.md), new docs/howto/install-extensions.md, docs/howto/configure-provider-keys.md (moved), docs/README.md index, CONTRIBUTING.md, SECURITY.md (pi-extension threat model), MIT LICENSE (closes task-1 gap). Gates: 943 pass/6 skip, tsc clean, publish --check in sync, links resolve, style scan clean.",
+      "decisions": [
+        "No badges: repo has no CI, badges would be decoration",
+        "In-session review, reduced rigor noted: docs-only, content moved verbatim (byte-counts logged), gates green",
+        "Worktree needed pi-mcp-tools bun install for tsc (nested node_modules is gitignored derived state, absent in fresh worktrees)"
+      ]
+    },
     {
       "taskId": "pbi-publish-repo-public-release-flow",
       "title": "Publish pi-badger-integration repo public",
@@ -76,18 +87,6 @@
         "two review-driven cuts kept the task landable: session-signals pi.events wire \u2192 5-line tick-defer; branch-parsing reconstruction \u2192 log-dir-only (the log dir already holds everything)",
         "cold-start delegation children from fresh dirs take ~62s (one retry cycle): smoke watchdog 120s; headless MoE-panel consumers should pass background:false or register a monitor / use the monitor wait tool",
         "plan docs live in docs/plans/ (plan + .tests.md contract + .research.md + manual-evidence); the 78-row test table is committed, never regenerate it from transcripts"
-      ]
-    },
-    {
-      "taskId": "pbi-move-extensions-to-dir-packages",
-      "title": "Extensions as directory packages: publish, tests, minimal ai-badger layer",
-      "finishedAt": "2026-08-30T17:20:26Z",
-      "summary": "All five pi extensions became directory packages (manifests + index.ts entries for session-signals and shift-enter-newline); publish.ts rewritten to a generic directory model (recursive targets, node_modules shipped-and-exempt, {problems,warnings} drift, injectable roots; adapter exact-set semantics preserved); test tree mirrors extensions/ with cron+subagent suites ported from ai-badger and new honest pi-mcp-tools coverage (206 tests green, tsc clean); ai-badger reduced to the minimal pi translation layer (adapter only) on its task/pbi-minimal-pi-layer branch \u2014 cron/subagent canonical here, adjust_agents slimmed to persona delivery, adjust_cron deleted; published to user scope, stale flat files + ai-badger-subagent/ cleaned, den-refresh 0.146.0\u21920.147.0 applied, pi smoke-tested clean with delegate + MCP tools registering.",
-      "decisions": [
-        "directory name = install name (subagent/, not ai-badger-subagent/); one-time user-scope cleanup documented in README, never auto-deleted by publish",
-        "node_modules is derived state: shipped at install, warned (never fatal) in --check, exempt from drift",
-        "ai-badger keeps only the adapter; extension installs moved to this repo's publish flow",
-        "project skills path deliberately NOT merged into pi global settings (collides with the ai-badger checkout's path); re-check after every den-refresh"
       ]
     }
   ]
