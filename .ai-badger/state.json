@@ -3,6 +3,19 @@
   "next": null,
   "completedTasks": [
     {
+      "taskId": "pbi-bus-lock-busy-timeout-fix",
+      "title": "message-bus busy_timeout hardening + CI/release-chain fixes",
+      "finishedAt": "2026-09-05T21:55:00Z",
+      "summary": "Fixed database-is-locked (SQLITE_BUSY_SNAPSHOT on DDL write): openBusDb helper applies PRAGMA busy_timeout=5000 (python parity), pinned by read-back test. Full suite 1029 pass, tsc clean, published. Also stood up CI/release (VERSION 1.0.1, ci/auto-bump/release workflows): fixed fresh-clone ext-deps gap, global-pi gap (reproduced with empty HOME), token-push trigger gap (tag+release in bump job), GH_TOKEN env gap. Chain proven: ci green, auto-bump cut v1.0.4 tag+release. Low-effort, in-session plan/review — reduced rigor noted; read-only opens deferred as follow-up.",
+      "decisions": [
+        "busy_timeout over retry loops: SQLite serialises waiters itself; 5s matches python store",
+        "Deterministic pragma read-back test instead of flaky contention test",
+        "Read-only opens deferred: deliver path stays RW anyway; avoids tableless-DB behavior change",
+        "Tag+release inside auto-bump (not dispatch): GITHUB_TOKEN pushes trigger no workflows",
+        "Manual VERSION pushes always win over automation; bump's own VERSION-only commit terminates the chain"
+      ]
+    },
+    {
       "taskId": "pbi-message-bus-send-check-list",
       "title": "Message-bus pi extension (send/check/list + ack + cards)",
       "finishedAt": "2026-09-05T20:20:10Z",
