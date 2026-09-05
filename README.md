@@ -22,6 +22,7 @@ subtree (pi discovers `~/.pi/agent/extensions/<name>/index.ts` only).
 | shift-enter-newline (Shift+Enter newline for terminals that cannot report it, e.g. JetBrains IDE terminal) | `extensions/shift-enter-newline/` | `~/.pi/agent/extensions/shift-enter-newline/` |
 | subagent (delegation to ai-badger personas scaffolded into `<project>/.pi/agents/`; background runs, progress and logs — see below) | `extensions/subagent/` | `~/.pi/agent/extensions/subagent/` |
 | monitor (one-shot predicate monitors over delegation transitions, the idle `wait` tool, and manual-polling enforcement — see below) | `extensions/monitor/` | `~/.pi/agent/extensions/monitor/` |
+| router-fallback (router-failure free-model fallback: one session-only model switch per episode over the Groq → Gemini → OpenRouter `:free` chain — see below) | `extensions/router-fallback/` | `~/.pi/agent/extensions/router-fallback/` |
 
 Still ai-badger-owned: the adapter is vendored + tested in ai-badger's
 `features/pi/` (see the three-copy model below).
@@ -129,6 +130,53 @@ observer enforces the no-manual-wait rule (f: 2026-09-02): a shell `sleep`/`Star
 bash/powershell tool call parks the main loop and is blocked before it runs, redirected to
 `wait` or a monitor registration; the env kill switch `PI_BADGER_WAIT_GUARD=0` disables it,
 and blocked sleeps never count into the polling window.
+
+## The router-fallback extension: free-model fallback on router failure
+
+When the session's primary provider fails with billing-exhaustion (402 / out-of-credits
+wording), an auth failure with somewhere else to go (401), or a dead model route (503 /
+no-provider), the extension advances the session model ONCE per episode over the pinned
+fallback chain below and posts a `router-fallback-event` notice naming the provider that
+now serves. Throttle (429 / rate-limit without billing text) never switches models — it
+parks the serving entry on cooldown and waits. Request-side failures (400/403/404) and
+context overflow never trigger anything. Detection reads the folded
+`AssistantMessage.errorMessage` plus the last `after_provider_response` status (substring +
+status-prefix matching only — bodies truncate, so exact shapes are never matched); the
+switch itself happens at `agent_end`/`agent_settled`, never mid-turn.
+
+Fallback chain (array order = priority; all three are pi built-ins, never re-registered):
+
+| # | Provider (pi id) | Model(s) | Key (name only, never a value) | Role |
+|---|---|---|---|---|
+| 1 | Groq (`groq`) | `llama-3.3-70b-versatile` | `GROQ_API_KEY` | workhorse — absorbs sustained load first |
+| 2 | Gemini (`google`, native built-in) | `gemini-3.1-flash-lite` → escalation `gemini-3.1-pro-preview` | `GEMINI_API_KEY` | second |
+| 3 | OpenRouter (`openrouter`) | `z-ai/glm-5.2:free` → `poolside/laguna-s-2.1:free` → `minimax/minimax-m3:free` → `thinkingmachines/inkling-small:free` | `OPENROUTER_API_KEY` | burst-only last (≈50 req/day without credits) |
+
+An entry serves only when its key is set AND pi reports its provider auth configured;
+a `--models` session scope restricts every entry to its in-scope candidates (an entry with
+none is skipped). Stale ids resolve-or-skip — the chain degrades, never throws. Numbers:
+cooldown default 60 s (capped at 1 h), per-entry retry budget 1 rotation, per-attempt
+timeout 30 s carried for the follow-up (v1 never times — the live `/models` re-fetch is
+likewise a specified follow-up; v1 ships pinned-chain + `modelRegistry.find` filter),
+1 switch per episode, notices capped at 8 KB, `Retry-After` waits
+`max(retryAfter, cooldownMs)`.
+
+The **`/fallback` command**: `status` (episode, serving provider, last failure, cooldowns),
+`reset` (open a fresh episode), `off`/`on` (session override of the kill-switch below).
+Kill-switches (read per call, never cached): `PI_BADGER_ROUTER_FALLBACK=0` disables
+entirely; `PI_BADGER_ROUTER_FALLBACK_MAX_SWITCHES` sets the per-episode budget (`0` = off).
+The fallback is **session-only and never persisted**: the extension-level `setModel(model)`
+takes no options, so the session-level `{persist:true}` path is structurally unreachable
+— the persisted default is never touched (pinned by test).
+
+Verification notes: pi 0.84.4 (repo pin) vs 0.85.1 (installed) shapes re-verified
+identical (`setModel` false-on-missing-auth, `{messages}`-only `agent_end`,
+`model_select{source:"set"}`); the keyless custom-overlay path passes pi's own
+`validateExtensionProvider` offline; the pinned `:free` chain was confirmed present on
+the live OpenRouter roster 2026-09-05. No valid provider key exists in this environment
+(the checked-in-shape env placeholders are rejected by all three providers), so live
+generation on a free entitlement stays an explicitly BLOCKED follow-up — the defaults
+above stand flagged, never fabricated.
 
 ## One-time cleanup after the switch to directory installs (do once, by hand)
 
