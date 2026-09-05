@@ -1,10 +1,19 @@
 {
   "lastUpdated": "2026-09-05",
   "next": {
-    "id": "pbi-homepage-pi-article-integrations",
-    "note": "Chain task 4: arasz-home-page article about pi + usage + integrations, per repo article conventions, plus LinkedIn note"
+    "id": "pbi-pi-update-integration-checker",
+    "note": "Chain task 5 (last): update-check extension hooking pi update to integration repo releases + combo matrix"
   },
   "completedTasks": [
+    {
+      "taskId": "pbi-homepage-pi-article-integrations",
+      "title": "Home-page article about pi usage and integrations",
+      "finishedAt": "2026-09-05T20:00:00Z",
+      "summary": "Separate PR Arasz/arasz-home-page#261 (draft): article pi-agent-and-integrations (id 17, published) + LinkedIn note + regenerated data. Verified: converter clean, ng build green, 563 tests pass, lint clean, sitemap+RSS carry slug. Workspace care: home-page checkout sat on another task's branch with dirty .ai-badger files; work isolated via rebase --onto origin/main, their files left uncommitted, checkout restored.",
+      "decisions": [
+        "Direct implementation over subagent: article prose + pipeline verification is single-threaded work; humanizer + ARTICLE-PIPELINE applied in-session"
+      ]
+    },
     {
       "taskId": "pbi-ai-badger-readme-pi-harness",
       "title": "ai-badger README pi harness entries",
@@ -70,18 +79,6 @@
         "mtime is NOT activity evidence at HEAD \u2014 the tee writes header+tail only, so stale classification must never outrank a live pid (M2); stale is registry-empty-only in v1",
         "report-shaped queries must not retire evidence: reconstructFromLogDir gained {prune:false}; pruning stays session_start's policy (d-52 SHOULD-1, fixed not documented)",
         "R0 outcome B: the delegations visibility mismatch was the stale in-session extension copy \u2014 the code wiring was sound (repro passed); the fix is self-identification (empty-registry wording with record count + startup version log) so a stale instance is identifiable from its own output"
-      ]
-    },
-    {
-      "taskId": "pbi-delegation-timeout-and-burst-batching",
-      "title": "Deferred ledger: per-run timeoutMs (A12) + followUp burst batching (CR11)",
-      "finishedAt": "2026-08-31T13:20:00Z",
-      "summary": "Both \u00a710 deferred items landed (plan by architect d-21, reviewed execute-with-folds by code-reviewer d-26, implemented by api-engineer d-33 after one silent lane death, reviewed merge-ready by d-38 with folds applied). delegate gains timeoutMs (clamped 1s..24h at BOTH schema and runner timer sites \u2014 setTimeout overflows >2^31ms to 1ms); expiry rides the R8 abortRun path, settles aborted + abortReason:'timeout', verdict names the limit not elapsed (queue wait pollutes durationMs). deliverNote gained the RR3 batching machine: lead-immediate, 2000ms coalesce window, 6-card cap, per-card budgets floor((8192-(n-1)*sep)/n) \u2014 an n-burst costs 1+ceil((n-1)/6) turns; renderer shares the single-path cardTone. Drove out a real pre-existing bug: queued runs re-allocated the same id (T97 pin). R4 log contract untouched: timed-out runs settle abort-like (no exit line) and are unrecorded spend by ai-badger 0.149.0's M1 ruling (RR5, T105). M6 manual-evidence slot open (needs a live TUI).",
-      "decisions": [
-        "timeout = abort semantics, not a new state \u2014 the frozen R4 log format could never reconstruct a new state from a log; additive fields (abortReason/timeoutMs) carry the distinction",
-        "setTimeout clamps delays > 2^31-1 ms to ~1 ms (verified in Bun) \u2014 every runtime cap clamped at BOTH the tool-schema helper and the runner timer site; an uncapped 'no upper bound' ruling was a silent-miskill bug",
-        "batching threshold belongs on batch SIZE (6-card cap), not on arming \u2014 the first ~6 completions fire before any threshold could see them; lead-immediate preserves v1 latency and bytes for isolated completions",
-        "a delegation lane can die silently (d-28: pid gone, no exit line, no settle, no receipt) \u2014 commit-per-package caps the loss; liveness monitoring spec queued (docs/plans/2026-delegation-liveness-monitoring-spec.md)"
       ]
     }
   ]
