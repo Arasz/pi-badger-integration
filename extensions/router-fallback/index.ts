@@ -16,9 +16,10 @@
  *
  * The entire provider seam (Lane C) arrives as injected factory deps typed per F2
  * (`decideNextTarget → {entry,model} | {none,reason}`, `getServingProvider`,
- * `requiredThinking`, `resolveTargets`, `isEligible`). Defaults are safe stubs
- * (empty-eligible, `{none}`); Lane E wires the real selector. PKG-B maps
- * env/config into the seam calls; tests inject seam behavior directly.
+ * `requiredThinking`, `resolveTargets`, `isEligible`). Omitted, the factory builds
+ * the real Lane C selector (`createDefaultSelector` below: episode-state map over
+ * `fallback-providers.ts`, env/registry/headers read per call); tests inject seam
+ * behavior directly.
  *
  * Session-only: the extension-level `setModel(model)` takes no options, so the
  * session-level `{persist:true}` path is structurally unreachable from here.
@@ -41,8 +42,21 @@ import {
   recomputeRetryability,
   shouldSwitch,
   type FailureClassification,
+  type FailureKind,
   type RouterFallbackEnv,
 } from "./router-fallback-core.ts";
+import {
+  DEFAULT_PROVIDERS,
+  decideNextTarget as decideSelectorTarget,
+  filterEligible,
+  getServingProvider as getSelectorServing,
+  initialSelectorState,
+  isEligible as isSelectorEligible,
+  requiredThinking as requiredSelectorThinking,
+  resolveTargets as resolveSelectorTargets,
+  type FallbackProviderEntry,
+  type SelectorState,
+} from "./fallback-providers.ts";
 
 /** Shared `pi.events` channel carrying the N1 transition payload (F1-J8). */
 export const ROUTER_FALLBACK_CHANNEL = "router-fallback";
@@ -173,6 +187,139 @@ function lastAssistantOf(messages: unknown): Record<string, unknown> | undefined
   return undefined;
 }
 
+/** Failure kinds the selector understands — anything else holds as not-fallback. */
+const SELECTOR_KINDS: ReadonlySet<string> = new Set([
+  "billing-exhaustion",
+  "throttle",
+  "auth",
+  "model-unavailable",
+  "not-fallback",
+]);
+
+/** Sources the default selector reads per call (F2/N2: wiring maps env/config → state). */
+export interface FallbackSelectorSources {
+  readonly env: RouterFallbackEnv;
+  readonly now: () => number;
+  readonly episodeId: () => string;
+  readonly headers: () => Record<string, string> | undefined;
+}
+
+/** Minimal structural view of the registry the wiring reads off `ctx.modelRegistry`. */
+interface RegistrySource {
+  find?: (provider: string, modelId: string) => { reasoning?: unknown } | undefined;
+  getProviderAuthStatus?: (provider: string) => { configured?: unknown } | undefined;
+}
+
+function registrySourceOf(ctx: unknown): RegistrySource {
+  const registry = (ctx as { modelRegistry?: RegistrySource }).modelRegistry;
+  return registry ?? {};
+}
+
+/**
+ * The default Lane C selector (PKG-E E1): real `fallback-providers.ts` functions
+ * behind the wiring seam. Holds one `SelectorState` per episode in a closure map
+ * (initialized on the per-switch `resolveTargets` pass, updated on every
+ * `decideNextTarget` answer); env/registry/headers are read per call, never cached.
+ * Never throws on any input — an unreadable registry degrades to no eligible targets.
+ */
+export function createDefaultSelector(sources: FallbackSelectorSources): RouterFallbackSelector {
+  const states = new Map<string, SelectorState>();
+  const reasoningByTarget = new Map<string, boolean>();
+
+  const stateFor = (episode: string, init: () => SelectorState): SelectorState => {
+    const existing = states.get(episode);
+    if (existing !== undefined) return existing;
+    for (const key of [...states.keys()]) if (key !== episode) states.delete(key);
+    const fresh = init();
+    states.set(episode, fresh);
+    return fresh;
+  };
+
+  const findIn = (registry: RegistrySource) => (provider: string, modelId: string) => {
+    try {
+      const found = registry.find?.(provider, modelId);
+      return found === undefined || found === null ? undefined : { reasoning: found.reasoning === true };
+    } catch {
+      return undefined;
+    }
+  };
+
+  const authViewsOf = (registry: RegistrySource): Record<string, { configured: boolean }> => {
+    const views: Record<string, { configured: boolean }> = {};
+    for (const entry of DEFAULT_PROVIDERS) {
+      try {
+        const status = registry.getProviderAuthStatus?.(entry.piProvider);
+        if (status !== undefined && status !== null && typeof status.configured === "boolean") {
+          views[entry.piProvider] = { configured: status.configured };
+        }
+      } catch {
+        // An unreadable auth view drops out — env presence alone then decides.
+      }
+    }
+    return views;
+  };
+
+  const scopedRefsOf = (ctx: unknown): Array<{ provider: string; modelId: string }> => {
+    const scoped = (ctx as { scopedModels?: Array<{ model?: { provider?: unknown; id?: unknown } }> }).scopedModels;
+    if (!Array.isArray(scoped)) return [];
+    const refs: Array<{ provider: string; modelId: string }> = [];
+    for (const item of scoped) {
+      const model = item?.model;
+      if (typeof model?.provider === "string" && typeof model?.id === "string") {
+        refs.push({ provider: model.provider, modelId: model.id });
+      }
+    }
+    return refs;
+  };
+
+  return {
+    isEligible: (entry) => {
+      const known = DEFAULT_PROVIDERS.find((candidate) => candidate.id === entry.id);
+      if (known === undefined) return false;
+      return isSelectorEligible(known, sources.env);
+    },
+    resolveTargets: (ctx) => {
+      const registry = registrySourceOf(ctx);
+      const eligible = filterEligible(DEFAULT_PROVIDERS, sources.env, authViewsOf(registry));
+      const targets = resolveSelectorTargets(eligible, { find: findIn(registry) }, scopedRefsOf(ctx));
+      for (const target of targets) {
+        reasoningByTarget.set(`${target.entry.piProvider}/${target.model}`, target.reasoning);
+      }
+      // Init-once per episode: a second decide in one switch (advance-on-false)
+      // must see the SAME state, so an existing entry is never rebuilt here.
+      stateFor(sources.episodeId(), () => initialSelectorState(targets));
+      return targets.map((target) => ({ id: target.entry.id, label: target.entry.label, model: target.model }));
+    },
+    decideNextTarget: (event) => {
+      const kind: FailureKind = SELECTOR_KINDS.has(event.kind) ? (event.kind as FailureKind) : "not-fallback";
+      const state = states.get(event.episodeId) ?? initialSelectorState([]);
+      const result = decideSelectorTarget(state, {
+        kind,
+        now: sources.now(),
+        responseHeaders: sources.headers(),
+      });
+      states.set(event.episodeId, result.state);
+      if ("none" in result && result.none) {
+        return { none: true as const, reason: result.reason, retryAfterMs: result.retryAfterMs };
+      }
+      const served = result as { entry: FallbackProviderEntry; model: string };
+      return {
+        entry: { id: served.entry.id, label: served.entry.label, model: served.model },
+        model: { provider: served.entry.piProvider, id: served.model },
+      };
+    },
+    getServingProvider: () => {
+      const state = states.get(sources.episodeId());
+      const serving = state === undefined ? undefined : getSelectorServing(state);
+      return serving === undefined
+        ? undefined
+        : { id: serving.id, label: serving.label, model: serving.model };
+    },
+    requiredThinking: (target) =>
+      requiredSelectorThinking(reasoningByTarget.get(`${target.provider}/${target.id}`) ?? false),
+  };
+}
+
 export default function (pi: ExtensionAPI, deps: RouterFallbackDeps = {}) {
   if (typeof pi?.registerCommand !== "function") {
     console.error(
@@ -187,7 +334,9 @@ export default function (pi: ExtensionAPI, deps: RouterFallbackDeps = {}) {
     clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   };
   const env: RouterFallbackEnv = deps.env ?? process.env;
-  const selector: RouterFallbackSelector = deps.selector ?? {};
+  const selector: RouterFallbackSelector =
+    deps.selector ??
+    createDefaultSelector({ env, now, episodeId: () => episodeId, headers: () => lastHeaders });
   const setModel: SetModelFn =
     (deps.setModelFn as SetModelFn | undefined) ??
     (typeof (pi as { setModel?: unknown }).setModel === "function"
@@ -381,7 +530,6 @@ export default function (pi: ExtensionAPI, deps: RouterFallbackDeps = {}) {
     if (response.headers !== undefined && typeof response.headers === "object" && response.headers !== null) {
       lastHeaders = response.headers as Record<string, string>;
     }
-    void lastHeaders;
     return undefined;
   });
 
