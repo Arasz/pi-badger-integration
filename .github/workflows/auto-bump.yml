@@ -51,6 +51,13 @@ jobs:
             (cd "$dir" && bun install --frozen-lockfile)
           done
 
+      - name: Install pi globally (test harness mirrors the global tree)
+        # Same as ci.yml: tests/setup.ts + lifecycle fake-$HOME need the
+        # bun-global pi install at the pinned devDep version.
+        run: |
+          PI_VERSION=$(python3 -c "import json; print(json.load(open('package.json'))['devDependencies']['@earendil-works/pi-coding-agent'])")
+          bun install -g "@earendil-works/pi-coding-agent@$PI_VERSION"
+
       - name: Run tests
         # The gate: a red suite bumps nothing. Failure stops the job here.
         run: bun test
