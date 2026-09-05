@@ -3,8 +3,9 @@
  *
  * The harness is the shared fake-pi (tests/helpers/fake-pi.ts): handler ARRAYS per event,
  * the EventEmitter-backed routing bus for `pi.events`, and a mutable injected clock.
- * The manual scheduler and the extension-event `fire` helper are test-local (the monitor
- * precedent) — fake-pi needed no changes for this lane (F0-H3 verdict in the report).
+ * The manual scheduler is test-local (the monitor precedent); the extension-event
+ * `fire` helper is shared with the integration suite via `./helpers.ts` — fake-pi
+ * needed no changes for this lane (F0-H3 verdict in the report).
  *
  * The entire provider seam (Lane C) arrives as injected factory deps typed per F2
  * (`decideNextTarget → {entry,model} | {none,reason}`, `getServingProvider`,
@@ -32,7 +33,12 @@ import routerFallback, {
   type RouterFallbackModelRef,
 } from "../../extensions/router-fallback/index.ts";
 import { TRANSITION_CHANNEL } from "../../extensions/subagent/index.ts";
+import {
+  ROUTER_FALLBACK_ENV,
+  ROUTER_FALLBACK_MAX_SWITCHES_ENV,
+} from "../../extensions/router-fallback/router-fallback-core.ts";
 import { createFakePi, type FakePi } from "../helpers/fake-pi.ts";
+import { fire } from "./helpers.ts";
 
 // ------------------------------------------------------------------ fixtures
 
@@ -95,15 +101,8 @@ async function flush(times = 5): Promise<void> {
   for (let i = 0; i < times; i++) await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
-/** Invoke every handler registered for one extension event, in order; returns results. */
-async function fire(pi: FakePi, name: string, event: unknown, ctx: unknown): Promise<unknown[]> {
-  const handlers = pi.handlers.get(name) ?? [];
-  const results: unknown[] = [];
-  for (const handler of handlers) results.push(await handler(event, ctx));
-  return results;
-}
-
-/** Invoke without awaiting — the caller flushes explicitly (W2/W3′ flush discipline). */
+/** Invoke without awaiting — the caller flushes explicitly (W2/W3′ flush discipline).
+ *  Stays local (not shared): unlike `fire` it returns the un-awaited promise by design. */
 function fireNoWait(pi: FakePi, name: string, event: unknown, ctx: unknown): Promise<unknown[]> {
   const handlers = pi.handlers.get(name) ?? [];
   return (async () => {
@@ -421,6 +420,54 @@ describe("W7: at most one switch per episode, re-armed by settle", () => {
   });
 });
 
+describe("attemptEpisode capture: a mid-flight mint never re-attributes the switch (d-506e)", () => {
+  test("switch landing after agent_settled carries the attempt episode; next-episode budget stays fresh", async () => {
+    const pi = createFakePi();
+    const scheduler = manualScheduler();
+    const calls: unknown[] = [];
+    let release!: (ok: boolean) => void;
+    const gate = new Promise<boolean>((resolve) => {
+      release = resolve;
+    });
+    let gated = true;
+    const seam = makeSeam({ decide: [tryTarget(GEMINI), tryTarget(GEMINI)] });
+    routerFallback(pi as never, {
+      now: () => pi.clock.now,
+      scheduler,
+      env: {},
+      setModelFn: async (...args: unknown[]) => {
+        calls.push(args[0]);
+        if (gated) return gate;
+        return true;
+      },
+      setThinkingLevelFn: () => {},
+      selector: seam.seam as never,
+    });
+    const ctx = { ui: { notify: () => {} }, mode: "tui", hasUI: true, cwd: "/p", model: undefined, scopedModels: [] };
+    // First billing failure starts a switch but setModel stays gated mid-flight.
+    const first = fireNoWait(pi, "agent_end", agentEndEvent({ stopReason: "error", errorMessage: BILLING_402 }), ctx);
+    await flush();
+    expect(calls).toHaveLength(1);
+    // agent_settled mints a fresh episode while the first switch is still in flight.
+    await fire(pi, "agent_settled", agentSettledEvent(), ctx);
+    release(true);
+    await first;
+    const emissions = pi.transitions.filter((entry) => entry.channel === ROUTER_FALLBACK_CHANNEL);
+    expect(emissions).toHaveLength(1);
+    const firstEpisode = (emissions[0]!.data as { episodeId: string }).episodeId;
+    // The landed switch belongs to the ATTEMPT episode, so the new episode's
+    // budget is untouched: the next billing failure switches again. Without the
+    // capture the landing would be attributed to the minted episode and this
+    // second failure would hold (1 call, not 2).
+    gated = false;
+    await fire(pi, "agent_end", agentEndEvent({ stopReason: "error", errorMessage: BILLING_402 }), ctx);
+    expect(calls).toHaveLength(2);
+    const episodes = pi.transitions.filter((entry) => entry.channel === ROUTER_FALLBACK_CHANNEL);
+    expect(episodes).toHaveLength(2);
+    expect((episodes[1]!.data as { episodeId: string }).episodeId).not.toBe(firstEpisode);
+  });
+});
+
 // ------------------------------------------------------------------ W8′
 
 describe("W8′: switch emits on router-fallback; delegation-transition untouched", () => {
@@ -480,6 +527,7 @@ describe("W8′: switch emits on router-fallback; delegation-transition untouche
 // ------------------------------------------------------------------ W9′
 
 describe("W9′: recomputed-hold until settled; billing switches at agent_end", () => {
+  // F3-W9′ names 500 here; 503 is used because only a retryable-yet-switchable kind (model-unavailable) can show hold-then-switch — the literal-500 twin below pins throttle-holds-both.
   test("retryable 503 holds at agent_end (0 calls), then switches at agent_settled", async () => {
     const h = makeHarness({ seam: { decide: [tryTarget(GEMINI)] } });
     const ctx = h.ctx();
@@ -508,6 +556,23 @@ describe("W9′: recomputed-hold until settled; billing switches at agent_end", 
     expect(h.setModel.calls).toHaveLength(0);
     await fire(h.pi, "agent_settled", agentSettledEvent(), ctx);
     expect(h.setModel.calls).toHaveLength(0);
+  });
+
+  test("throttle holds SILENTLY at both points: 0 setModel, 0 notices, 0 timers, seam never asked (F2/M2)", async () => {
+    // HONESTY pin (M1/d-504): the shipped wiring never routes throttle to the
+    // selector — `shouldSwitch` holds before `decideNextTarget` is reached — so a
+    // throttle latches at agent_end, holds again at settled, and stays silent:
+    // pi's native retry owns the wait. If the wiring ever parks a cooldown, arms
+    // a timer, or posts a notice here, this row reddens.
+    const h = makeHarness({ seam: { decide: [tryTarget(GEMINI)] } });
+    const ctx = h.ctx();
+    await fire(h.pi, "agent_end", agentEndEvent({ stopReason: "error", errorMessage: THROTTLE_500 }), ctx);
+    expect(h.setModel.calls).toHaveLength(0);
+    await fire(h.pi, "agent_settled", agentSettledEvent(), ctx);
+    expect(h.setModel.calls).toHaveLength(0);
+    expect(sentNotices(h.pi)).toHaveLength(0);
+    expect(h.scheduler.timers.size).toBe(0);
+    expect(h.seam.calls.decide).toHaveLength(0);
   });
 
   test("MUTATION PIN: without the recomputed-retryability guard the 503 agent_end switches", async () => {
@@ -764,18 +829,18 @@ describe("G1′: master kill-switch PI_BADGER_ROUTER_FALLBACK=0, read per call",
     await billing();
     expect(h.setModel.calls).toHaveLength(1);
     await settled();
-    h.env.PI_BADGER_ROUTER_FALLBACK = "0";
+    h.env[ROUTER_FALLBACK_ENV] = "0";
     await billing();
     expect(h.setModel.calls).toHaveLength(1);
     await settled();
-    delete h.env.PI_BADGER_ROUTER_FALLBACK;
+    delete h.env[ROUTER_FALLBACK_ENV];
     await billing();
     expect(h.setModel.calls).toHaveLength(2);
   });
 
   test("set AFTER init still disables (per-call read, never cached at load)", async () => {
     const h = makeHarness({ seam: { decide: [tryTarget(GEMINI)] } });
-    h.env.PI_BADGER_ROUTER_FALLBACK = "0";
+    h.env[ROUTER_FALLBACK_ENV] = "0";
     await fire(h.pi, "agent_end", agentEndEvent({ stopReason: "error", errorMessage: BILLING_402 }), h.ctx());
     expect(h.setModel.calls).toHaveLength(0);
   });
@@ -783,9 +848,9 @@ describe("G1′: master kill-switch PI_BADGER_ROUTER_FALLBACK=0, read per call",
   test("disabled episodes leave no latch: re-enable then settle cleanly with no phantom switch", async () => {
     const h = makeHarness({ seam: { decide: [tryTarget(GEMINI)] } });
     const ctx = h.ctx();
-    h.env.PI_BADGER_ROUTER_FALLBACK = "0";
+    h.env[ROUTER_FALLBACK_ENV] = "0";
     await fire(h.pi, "agent_end", agentEndEvent({ stopReason: "error", errorMessage: BILLING_402 }), ctx);
-    delete h.env.PI_BADGER_ROUTER_FALLBACK;
+    delete h.env[ROUTER_FALLBACK_ENV];
     await fire(h.pi, "agent_settled", agentSettledEvent(), ctx);
     expect(h.setModel.calls).toHaveLength(0);
   });
@@ -796,12 +861,12 @@ describe("G1′: master kill-switch PI_BADGER_ROUTER_FALLBACK=0, read per call",
 describe("G2′: PI_BADGER_ROUTER_FALLBACK_MAX_SWITCHES budget, read per call", () => {
   test("=0 disables every switch; =1 holds the second attempt in the same episode", async () => {
     const zero = makeHarness({ seam: { decide: [tryTarget(GEMINI)] } });
-    zero.env.PI_BADGER_ROUTER_FALLBACK_MAX_SWITCHES = "0";
+    zero.env[ROUTER_FALLBACK_MAX_SWITCHES_ENV] = "0";
     await fire(zero.pi, "agent_end", agentEndEvent({ stopReason: "error", errorMessage: BILLING_402 }), zero.ctx());
     expect(zero.setModel.calls).toHaveLength(0);
 
     const one = makeHarness({ seam: { decide: [tryTarget(GEMINI), tryTarget(GEMINI)] } });
-    one.env.PI_BADGER_ROUTER_FALLBACK_MAX_SWITCHES = "1";
+    one.env[ROUTER_FALLBACK_MAX_SWITCHES_ENV] = "1";
     const ctx = one.ctx();
     await fire(one.pi, "agent_end", agentEndEvent({ stopReason: "error", errorMessage: BILLING_402 }), ctx);
     await fire(one.pi, "agent_end", agentEndEvent({ stopReason: "error", errorMessage: BILLING_402 }), ctx);
@@ -814,7 +879,7 @@ describe("G2′: PI_BADGER_ROUTER_FALLBACK_MAX_SWITCHES budget, read per call", 
     await fire(h.pi, "agent_end", agentEndEvent({ stopReason: "error", errorMessage: BILLING_402 }), ctx);
     expect(h.setModel.calls).toHaveLength(1);
     await fire(h.pi, "agent_settled", agentSettledEvent(), ctx);
-    h.env.PI_BADGER_ROUTER_FALLBACK_MAX_SWITCHES = "0";
+    h.env[ROUTER_FALLBACK_MAX_SWITCHES_ENV] = "0";
     await fire(h.pi, "agent_end", agentEndEvent({ stopReason: "error", errorMessage: BILLING_402 }), ctx);
     expect(h.setModel.calls).toHaveLength(1);
   });

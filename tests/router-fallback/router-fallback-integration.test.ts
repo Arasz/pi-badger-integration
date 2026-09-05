@@ -24,9 +24,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import routerFallback from "../../extensions/router-fallback/index.ts";
+import { ROUTER_FALLBACK_MAX_SWITCHES_ENV } from "../../extensions/router-fallback/router-fallback-core.ts";
 import { ROUTER_FALLBACK_CHANNEL, ROUTER_FALLBACK_COMMAND } from "../../extensions/router-fallback/index.ts";
 import { ROUTER_FALLBACK_CUSTOM_TYPE } from "../../extensions/router-fallback/index.ts";
 import { createFakePi, type FakePi } from "../helpers/fake-pi.ts";
+import { fire } from "./helpers.ts";
 import { directoryTarget, drifts, main } from "../../publish.ts";
 
 // ------------------------------------------------------------------ harness
@@ -42,12 +44,6 @@ function agentEndEvent(last: Record<string, unknown>) {
     type: "agent_end",
     messages: [{ role: "user", content: "go", timestamp: 1_700_000_000_000 }, assistant(last)],
   };
-}
-
-async function fire(pi: FakePi, name: string, event: unknown, ctx: unknown): Promise<unknown[]> {
-  const results: unknown[] = [];
-  for (const handler of pi.handlers.get(name) ?? []) results.push(await handler(event, ctx));
-  return results;
 }
 
 /** Pinned-chain catalog: pro-preview deliberately ABSENT (stale-id resolve-or-skip). */
@@ -145,7 +141,7 @@ describe("I2′ story (real wiring): billing-on-primary → fallback serves → 
   });
 
   test("second failure advances past the cooling head; expiry re-admits it (cooldown recovery)", async () => {
-    const h = makeWired({ env: { PI_BADGER_ROUTER_FALLBACK_MAX_SWITCHES: "3" } });
+    const h = makeWired({ env: { [ROUTER_FALLBACK_MAX_SWITCHES_ENV]: "3" } });
     await fire(h.pi, "agent_end", billingEnd(), h.ctx);
     expect(h.setModelCalls).toEqual([{ provider: "groq", id: "llama-3.3-70b-versatile" }]);
     // Same episode: Groq is parked (60 s cooldown) → Gemini serves.
@@ -167,7 +163,7 @@ describe("I2′ story (real wiring): billing-on-primary → fallback serves → 
   });
 
   test("/fallback status post-switch names the serving provider and the failure kind", async () => {
-    const h = makeWired({ env: { PI_BADGER_ROUTER_FALLBACK_MAX_SWITCHES: "3" } });
+    const h = makeWired({ env: { [ROUTER_FALLBACK_MAX_SWITCHES_ENV]: "3" } });
     const seen: string[] = [];
     h.ctx.ui = { notify: (message: string) => seen.push(message) };
     await fire(h.pi, "agent_end", billingEnd(), h.ctx);
@@ -195,7 +191,7 @@ describe("I2′ story (real wiring): billing-on-primary → fallback serves → 
       "google/gemini-3.1-flash-lite": { reasoning: true },
     };
     const h = makeWired({
-      env: { PI_BADGER_ROUTER_FALLBACK_MAX_SWITCHES: "2" },
+      env: { [ROUTER_FALLBACK_MAX_SWITCHES_ENV]: "2" },
       catalog: reasoningCatalog,
     });
     await fire(h.pi, "agent_end", billingEnd(), h.ctx);

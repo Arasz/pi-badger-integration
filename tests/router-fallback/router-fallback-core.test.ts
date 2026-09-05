@@ -24,6 +24,8 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+	ROUTER_FALLBACK_ENV,
+	ROUTER_FALLBACK_MAX_SWITCHES_ENV,
 	ROUTER_FALLBACK_NOTICE_CAP_CHARS,
 	capNoticeText,
 	classifyFailure,
@@ -186,7 +188,7 @@ describe("C8′: prefix twin, substring twin, body-arg forbid", () => {
 	});
 
 	test("substring twin: billing keyword deep in a 4000-char body with a 429 prefix → billing-exhaustion", () => {
-		const body = (`429: ${"y".repeat(100)}insufficient_quota`).slice(0, 4000);
+		const body = (`429: ${"y".repeat(3975)}insufficient_quota`).slice(0, 4000);
 		expect(match(body, 429).kind).toBe("billing-exhaustion");
 	});
 
@@ -334,22 +336,22 @@ describe("shouldSwitch: one switch per episode + kill-switch", () => {
 
 	test("master kill-switch =0 → hold naming PI_BADGER_ROUTER_FALLBACK", () => {
 		const decision = shouldSwitch(
-			freshEpisode("ep-1", { PI_BADGER_ROUTER_FALLBACK: "0" }),
+			freshEpisode("ep-1", { [ROUTER_FALLBACK_ENV]: "0" }),
 			match(SSE_402_FOLD, 200),
 			NOW,
 		);
 		expect(decision.action).toBe("hold");
-		expect(decision.reason).toContain("PI_BADGER_ROUTER_FALLBACK");
+		expect(decision.reason).toContain(ROUTER_FALLBACK_ENV);
 	});
 
 	test("max-switches =0 → hold naming PI_BADGER_ROUTER_FALLBACK_MAX_SWITCHES", () => {
 		const decision = shouldSwitch(
-			freshEpisode("ep-1", { PI_BADGER_ROUTER_FALLBACK_MAX_SWITCHES: "0" }),
+			freshEpisode("ep-1", { [ROUTER_FALLBACK_MAX_SWITCHES_ENV]: "0" }),
 			match(SSE_402_FOLD, 200),
 			NOW,
 		);
 		expect(decision.action).toBe("hold");
-		expect(decision.reason).toContain("PI_BADGER_ROUTER_FALLBACK_MAX_SWITCHES");
+		expect(decision.reason).toContain(ROUTER_FALLBACK_MAX_SWITCHES_ENV);
 	});
 
 	test("auth switches on a fresh episode", () => {
@@ -404,17 +406,17 @@ describe("recomputeRetryability mirrors _isRetryableError (overflow first, retry
 
 describe("kill-switch, clamp and cap helpers", () => {
 	test("isDisabled is a literal \"0\" check, unset/empty means on", () => {
-		expect(isDisabled({ PI_BADGER_ROUTER_FALLBACK: "0" })).toBe(true);
+		expect(isDisabled({ [ROUTER_FALLBACK_ENV]: "0" })).toBe(true);
 		expect(isDisabled({})).toBe(false);
-		expect(isDisabled({ PI_BADGER_ROUTER_FALLBACK: "" })).toBe(false);
-		expect(isDisabled({ PI_BADGER_ROUTER_FALLBACK: "1" })).toBe(false);
+		expect(isDisabled({ [ROUTER_FALLBACK_ENV]: "" })).toBe(false);
+		expect(isDisabled({ [ROUTER_FALLBACK_ENV]: "1" })).toBe(false);
 	});
 
 	test("maxSwitchesPerEpisode defaults to 1 and tolerates garbage", () => {
 		expect(maxSwitchesPerEpisode({})).toBe(1);
-		expect(maxSwitchesPerEpisode({ PI_BADGER_ROUTER_FALLBACK_MAX_SWITCHES: "3" })).toBe(3);
-		expect(maxSwitchesPerEpisode({ PI_BADGER_ROUTER_FALLBACK_MAX_SWITCHES: "lots" })).toBe(1);
-		expect(maxSwitchesPerEpisode({ PI_BADGER_ROUTER_FALLBACK_MAX_SWITCHES: "0" })).toBe(0);
+		expect(maxSwitchesPerEpisode({ [ROUTER_FALLBACK_MAX_SWITCHES_ENV]: "3" })).toBe(3);
+		expect(maxSwitchesPerEpisode({ [ROUTER_FALLBACK_MAX_SWITCHES_ENV]: "lots" })).toBe(1);
+		expect(maxSwitchesPerEpisode({ [ROUTER_FALLBACK_MAX_SWITCHES_ENV]: "0" })).toBe(0);
 	});
 
 	test("clampCooldownMs defaults, floors and caps", () => {
