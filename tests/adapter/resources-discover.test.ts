@@ -150,6 +150,26 @@ describe("adapter resources_discover (ungated skills contribution, M4/D2)", () =
 			expect(result).toEqual({ skillPaths: [join(project, ".ai-badger", "skills")] });
 		}
 	});
+
+	test("learned/ subtree is never contributed (mirror of ai-badger 0.163.1)", async () => {
+		const project = mkdtempSync(join(tmpdir(), "adapter-learned-"));
+		cleanup.push(project);
+		const skills = join(project, ".ai-badger", "skills");
+		mkdirSync(join(skills, "code-review"), { recursive: true });
+		mkdirSync(join(skills, "learned", "uncategorized", "code-review"), { recursive: true });
+		const h = harness();
+		await adapterFactory(h.pi as never);
+		const { ctx } = observingCtx(project);
+
+		const result = (await h.handlers.get("resources_discover")!(
+			{ type: "resources_discover", cwd: project, reason: "startup" },
+			ctx,
+		)) as { skillPaths?: string[] };
+		const paths = result.skillPaths ?? [];
+		expect(paths).toContain(join(skills, "code-review"));
+		expect(paths).not.toContain(skills);
+		expect(paths.filter((p) => p.split("/").includes("learned"))).toEqual([]);
+	});
 });
 
 // rmSync the temp projects; bun runs describes eagerly so cleanup is registered per-file.

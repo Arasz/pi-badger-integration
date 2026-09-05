@@ -13,9 +13,10 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Box, Text } from "@earendil-works/pi-tui";
 import {
   AI_BADGER_CUSTOM_TYPE,
   commandsForTool,
@@ -37,6 +38,7 @@ import {
   type GateOutcome,
   type HookCommand,
   type PostOutcome,
+  splitMailCard,
 } from "./hook-bridge.ts";
 import {
   advanceAllowed,
@@ -357,6 +359,28 @@ export default async function (pi: ExtensionAPI, busDeps: BusDeps = realBusDeps(
     return;
   }
 
+  // Mail card: the python delivery prints each mail as a JSON envelope string
+  // and the wake path forwards it verbatim as message content. Without a
+  // renderer pi shows `[ai-badger]` + the raw JSON in every session; with one
+  // the envelope becomes head (sender short id + timestamp) + body, and plain
+  // strings pass through like the message-bus-event card.
+  if (typeof pi.registerMessageRenderer === "function") {
+    pi.registerMessageRenderer(AI_BADGER_CUSTOM_TYPE, (message, options, theme) => {
+      const content = (message as { content?: unknown } | null | undefined)?.content;
+      const split = splitMailCard(content);
+      if (!split) return undefined;
+      const box = new Box(options.outputPad, 1, (line: string) => theme.bg("customMessageBg", line));
+      const first = split.head ?? split.body.split("\n")[0] ?? "";
+      const rest = split.head !== null ? split.body : split.body.split("\n").slice(1).join("\n");
+      box.addChild(new Text([theme.fg("success", first), ...(rest !== "" ? [rest] : [])].join("\n"), 0, 0));
+      return box;
+    });
+  } else {
+    console.error(
+      "ai-badger: pi.registerMessageRenderer is not a function — mail renders without its card.",
+    );
+  }
+
   const apiComplete = typeof pi.registerCommand === "function";
   let apiWarned = false;
 
@@ -567,7 +591,22 @@ export default async function (pi: ExtensionAPI, busDeps: BusDeps = realBusDeps(
   pi.on("resources_discover", (event) => {
     const skillsDir = join(event.cwd, ".ai-badger", "skills");
     if (!existsSync(skillsDir)) return { skillPaths: [] };
-    return { skillPaths: [skillsDir] };
+    // Contribute canonical skill entries, never the tree root: pi scans contributed
+    // paths recursively, and the learned/ subtree is ai-badger's separate per-session
+    // namespace reusing canonical skill names — contributing the root flattens both
+    // into pi's flat name pool and warns one collision per duplicated name. Gateway
+    // containers (e.g. dotnet-workload/) stay contributed so pi still discovers their
+    // references/ members; only learned/ is excluded.
+    let entries;
+    try {
+      entries = readdirSync(skillsDir, { withFileTypes: true });
+    } catch {
+      return { skillPaths: [skillsDir] }; // fail-open: today's behavior beats no skills
+    }
+    const paths = entries
+      .filter((entry) => entry.isDirectory() && entry.name !== "learned")
+      .map((entry) => join(skillsDir, entry.name));
+    return { skillPaths: paths.length > 0 ? paths : [skillsDir] };
   });
 
   pi.on("tool_call", async (event, ctx) => {
