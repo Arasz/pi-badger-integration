@@ -138,7 +138,8 @@ wording), an auth failure with somewhere else to go (401), or a dead model route
 no-provider), the extension advances the session model ONCE per episode over the pinned
 fallback chain below and posts a `router-fallback-event` notice naming the provider that
 now serves. Throttle (429 / rate-limit without billing text) never switches models — it
-parks the serving entry on cooldown and waits. Request-side failures (400/403/404) and
+holds silently and pi's native retry owns the wait (the selector's `wait` branch stays
+unit-tested policy, never a live path). Request-side failures (400/403/404) and
 context overflow never trigger anything. Detection reads the folded
 `AssistantMessage.errorMessage` plus the last `after_provider_response` status (substring +
 status-prefix matching only — bodies truncate, so exact shapes are never matched); the
@@ -159,9 +160,11 @@ cooldown default 60 s (capped at 1 h), per-entry retry budget 1 rotation, per-at
 timeout 30 s carried for the follow-up (v1 never times — the live `/models` re-fetch is
 likewise a specified follow-up; v1 ships pinned-chain + `modelRegistry.find` filter),
 1 switch per episode, notices capped at 8 KB, `Retry-After` waits
-`max(retryAfter, cooldownMs)`.
+`max(retryAfter, cooldownMs)`. Limitation: deployments that emit a single `agent_end`
+per run always resolve head-or-hold — deeper chain positions engage only when pi emits
+more than one `agent_end` per episode (chain depth latent, H1).
 
-The **`/fallback` command**: `status` (episode, serving provider, last failure, cooldowns),
+The **`/fallback` command**: `status` (episode, serving provider, last failure),
 `reset` (open a fresh episode), `off`/`on` (session override of the kill-switch below).
 Kill-switches (read per call, never cached): `PI_BADGER_ROUTER_FALLBACK=0` disables
 entirely; `PI_BADGER_ROUTER_FALLBACK_MAX_SWITCHES` sets the per-episode budget (`0` = off).

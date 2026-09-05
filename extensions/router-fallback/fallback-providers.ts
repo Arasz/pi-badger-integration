@@ -64,6 +64,9 @@
  * extension for a check that is ~40 lines hand-rolled. Static shape is covered by
  * `tsc` (`FallbackProviderEntry`); runtime ingestion of custom entries is covered by
  * `validateProviderEntry` + the C15 tests. Revisit only if a second schema appears.
+ * The manifest's `"typebox": "*"` entry is RETAINED per the repo E2 convention (a
+ * mirror of the monitor manifest, host-provided) and is unused at runtime — no
+ * file imports it.
  */
 
 import type { FailureKind, RouterFallbackEnv } from "./router-fallback-core.ts";

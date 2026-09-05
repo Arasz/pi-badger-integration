@@ -39,6 +39,7 @@ import {
   classifyFailure,
   isDisabled,
   maxSwitchesPerEpisode,
+  ROUTER_FALLBACK_ENV,
   recomputeRetryability,
   shouldSwitch,
   type FailureClassification,
@@ -412,10 +413,13 @@ export default function (pi: ExtensionAPI, deps: RouterFallbackDeps = {}) {
     classification: FailureClassification,
     ctx: ExtensionContext,
   ): Promise<void> => {
+    // Frozen at entry: a mid-flight episode mint (settled/reset/shutdown) must not
+    // re-attribute this attempt's decide, notices or one-shot bookkeeping (d-506e).
+    const attemptEpisode = episodeId;
     const decide = (reason: string): DecideNextTargetResult => {
       try {
         return (
-          selector.decideNextTarget?.({ episodeId, kind: classification.kind, reason }) ?? {
+          selector.decideNextTarget?.({ episodeId: attemptEpisode, kind: classification.kind, reason }) ?? {
             none: true as const,
             reason: "router-fallback: no fallback providers configured (Lane C selector pending)",
           }
@@ -442,11 +446,11 @@ export default function (pi: ExtensionAPI, deps: RouterFallbackDeps = {}) {
           }, clampCooldownMs(decision.retryAfterMs));
         }
         if (attempt === 0) {
-          const content = `router-fallback: hold — ${decision.reason} (episode ${episodeId})`;
-          sendNotice(content, { kind: "hold", episodeId, reason: decision.reason });
+          const content = `router-fallback: hold — ${decision.reason} (episode ${attemptEpisode})`;
+          sendNotice(content, { kind: "hold", episodeId: attemptEpisode, reason: decision.reason });
         } else {
-          const content = `router-fallback: no more targets this episode — ${decision.reason} (episode ${episodeId})`;
-          sendNotice(content, { kind: "exhausted", episodeId, reason: decision.reason });
+          const content = `router-fallback: no more targets this episode — ${decision.reason} (episode ${attemptEpisode})`;
+          sendNotice(content, { kind: "exhausted", episodeId: attemptEpisode, reason: decision.reason });
         }
         if (attempt > 0) exhausted = true;
         return;
@@ -460,25 +464,25 @@ export default function (pi: ExtensionAPI, deps: RouterFallbackDeps = {}) {
       }
       if (ok) {
         switchCount += 1;
-        switchEpisodeId = episodeId;
+        switchEpisodeId = attemptEpisode;
         inFlight = target;
         const to = { provider: target.provider, model: target.id };
         const servedBy = servedByFor(target, (ctx as { model?: unknown }).model);
         const decisionReason =
           attempt === 0
-            ? `switch: ${classification.kind} in episode ${episodeId} (${classification.reason})`
-            : `switch: ${classification.kind} in episode ${episodeId} after advancing (${classification.reason})`;
-        const notice: RouterFallbackNotice = { episodeId, kind: classification.kind, reason: decisionReason, from, to, servedBy };
+            ? `switch: ${classification.kind} in episode ${attemptEpisode} (${classification.reason})`
+            : `switch: ${classification.kind} in episode ${attemptEpisode} after advancing (${classification.reason})`;
+        const notice: RouterFallbackNotice = { episodeId: attemptEpisode, kind: classification.kind, reason: decisionReason, from, to, servedBy };
         lastSwitch = { notice };
         pi.events.emit(ROUTER_FALLBACK_CHANNEL, notice);
         const thinking = selector.requiredThinking?.(target);
         if (thinking !== undefined) setThinkingLevel(thinking);
         const content =
           `router-fallback: switched ${from.provider}/${from.model} → ${to.provider}/${to.model} ` +
-          `(${classification.kind}) in episode ${episodeId}; served by ${servedBy.join(" → ")}; ${classification.reason}`;
+          `(${classification.kind}) in episode ${attemptEpisode}; served by ${servedBy.join(" → ")}; ${classification.reason}`;
         sendNotice(content, {
           kind: "switched",
-          episodeId,
+          episodeId: attemptEpisode,
           failureKind: classification.kind,
           from,
           to,
@@ -490,8 +494,8 @@ export default function (pi: ExtensionAPI, deps: RouterFallbackDeps = {}) {
       // false/reject: loop once for the single advance, then fall to notice-only.
     }
     exhausted = true;
-    const content = `router-fallback: no more targets this episode — setModel declined every target (episode ${episodeId})`;
-    sendNotice(content, { kind: "exhausted", episodeId });
+    const content = `router-fallback: no more targets this episode — setModel declined every target (episode ${attemptEpisode})`;
+    sendNotice(content, { kind: "exhausted", episodeId: attemptEpisode });
   };
 
   /** Shared agent_end/settled switch gate: retryable holds (pi retries), else one-shot. */
@@ -517,6 +521,7 @@ export default function (pi: ExtensionAPI, deps: RouterFallbackDeps = {}) {
       return;
     }
     pending = undefined;
+    // Throttle/not-fallback hold HERE by design (F2/M2) — the selector's wait branch is unit-tested policy (F7), not a live path; do not delete either half.
     const verdict = shouldSwitch(switchState(), classification, now());
     if (verdict.action !== "switch") return;
     await attemptSwitch(classification, ctx);
@@ -612,7 +617,7 @@ export default function (pi: ExtensionAPI, deps: RouterFallbackDeps = {}) {
       `last switch: ${lastSwitch ? `${lastSwitch.notice.from.provider}/${lastSwitch.notice.from.model} → ${lastSwitch.notice.to.provider}/${lastSwitch.notice.to.model} (${lastSwitch.notice.kind})` : "none"}`,
       `landed: ${landed ? `${landed.provider}/${landed.id}` : "none"}`,
       `session override: ${sessionOverride === undefined ? "none" : sessionOverride ? "off" : "on"}`,
-      `kill-switch: ${isDisabled(env) ? "disabled via PI_BADGER_ROUTER_FALLBACK=0" : "enabled"}`,
+      `kill-switch: ${isDisabled(env) ? `disabled via ${ROUTER_FALLBACK_ENV}=0` : "enabled"}`,
     ];
     return capNoticeText(lines.join("\n"));
   };
