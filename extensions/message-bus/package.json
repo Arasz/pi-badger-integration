@@ -1,0 +1,12 @@
+{
+  "name": "ai-badger-message-bus",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Native pi message-bus on the ai-badger user-DB backend: LLM tool + /messages command (send/list/check/ack), turn-boundary delivery hooks, and card rendering grouped by scope. pi discovers the entry as ~/.pi/agent/extensions/<name>/index.ts; this manifest records metadata only and does not register the entry.",
+  "main": "index.ts",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}

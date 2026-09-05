@@ -37,6 +37,7 @@ bun run check
 | monitor | One-shot predicate monitors and the idle `wait` tool (`monitor`, `/monitors`) |
 | router-fallback | Session-only fallback over Groq, Gemini, OpenRouter `:free` on router failure (`/fallback`) |
 | update-check | Background notice when a newer integration release exists (`/update-check`) |
+| message-bus | Native pi message-bus on the ai-badger backend (`message-bus` tool, `/messages`) |
 | pi-cron | Cron scheduling inside pi |
 | pi-mcp-tools | Universal MCP tools |
 | session-signals | Marker importance aborts and delegation footer status |

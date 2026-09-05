@@ -1,0 +1,556 @@
+/**
+ * Native pi message-bus on the ai-badger user-DB backend.
+ *
+ * What this is: an LLM tool (`message-bus` send/list/check/ack), a human
+ * command (`/messages ...`), turn-boundary delivery hooks (session_start +
+ * turn_start) and a card renderer — all against the SAME SQLite bus tables the
+ * `send-message` skill writes (`messages` + `cursors` in the user DB).
+ *
+ * What this is NOT:
+ *   - not a new transport: the backend is ai-badger's bus (badger_store.py's
+ *     `messages` DDL); the protocol is multi-agent-communication (ack once,
+ *     never reply to an ack);
+ *   - not a push waker: idle-session wake stays with the adapter's poll timer
+ *     (bus-store.ts/bus-prefilter.ts). These hooks are the turn-boundary seam:
+ *     mail is injected as context for a turn that is starting anyway;
+ *   - not exact python parity: first-read has the 30-minute gate + 16-cap and
+ *     lands the cursor past MAX(id) like deliver_for_session, but the
+ *     leg-scoped landing for project-less sessions (L1/R1a) is simplified to
+ *     the same global landing — documented divergence, sessions without a
+ *     resolvable project are rare in pi (cwd-based resolve almost always
+ *     answers) and the cost is only a skipped re-read of project mail that a
+ *     later project-ful check would otherwise surface.
+ *
+ * Fail-open (D31): every backend failure is a value — an error tool result, a
+ * command notify, a silent hook skip with one console.error line. A broken bus
+ * never breaks a session. A missing DB file is data (bus unavailable), never
+ * created as a side effect (the bus-store.ts ENOENT rule).
+ */
+
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { Box, Text } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import {
+	ACK_PREFIX,
+	buildAckContent,
+	composeDeliveryNotice,
+	DEFAULT_LIST_DEPTH,
+	formatList,
+	isAck,
+	normalizeSendTargets,
+	type BusMessage,
+} from "./message-bus-core.ts";
+
+/** The message-bus card's custom message type. */
+export const MESSAGE_BUS_CUSTOM_TYPE = "message-bus-event";
+
+/** The LLM-facing tool name. */
+export const MESSAGE_BUS_TOOL_NAME = "message-bus";
+
+/** The human command. */
+export const MESSAGE_BUS_COMMAND_NAME = "messages";
+
+/** Kill-switch: the literal string "0" disables the delivery hooks (tools stay). */
+export const MESSAGE_BUS_ENV = "PI_BADGER_MESSAGE_BUS";
+
+/** First-read history gate (mirrors deliver_for_session's 30-minute window). */
+export const FIRST_READ_WINDOW_MS = 30 * 60_000;
+
+/** First-read delivery cap (mirrors deliver_for_session's 16). */
+export const FIRST_READ_CAP = 16;
+
+/** Injectable seams for tests (store, clock, identity, db path, env). */
+export interface MessageBusDeps {
+	store?: BusStore;
+	now?: () => number;
+	env?: Record<string, string | undefined>;
+	dbPath?: string;
+	sessionId?: (ctx: ExtensionContext) => string;
+	projectId?: (ctx: ExtensionContext) => string | null;
+}
+
+/** The backend surface the wiring needs (default: node:sqlite over the user DB). */
+export interface BusStore {
+	send(args: {
+		senderSession: string;
+		senderProject: string;
+		content: string;
+		targetSession: string | null;
+		targetProject: string | null;
+	}): number;
+	getMessage(id: number): BusMessage | null;
+	listForSession(sessionId: string, projectId: string | null): BusMessage[];
+	deliverForSession(sessionId: string, projectId: string | null): { messages: BusMessage[]; cursor: number };
+	getCursor(sessionId: string): number;
+}
+
+// ---------------------------------------------------------------------------
+// identity + paths (mirrors of badger_store.py semantics, pi-side)
+// ---------------------------------------------------------------------------
+
+/** The user DB path, resolved as the Python store resolves it (bus-store.ts mirror). */
+export function userDbPath(env: Record<string, string | undefined>, cwd: string): string {
+	const root = env.AI_BADGER_USER_ROOT;
+	if (root) return resolve(cwd, root, "ai-badger.db");
+	return join(homedir(), ".ai-badger", "ai-badger.db");
+}
+
+/** Sender session: the session manager's id only (bus-prefilter.ts C6 — no env fallback). */
+export function resolveSessionId(ctx: ExtensionContext): string {
+	try {
+		const id = ctx.sessionManager?.getSessionId?.();
+		if (typeof id === "string" && id) return id;
+	} catch {
+		// an older build's session manager shape must not take down the call
+	}
+	return "";
+}
+
+/** Sender project: AI_BADGER_PROJECT_ID wins, else nearest .ai-badger/project-id above cwd. */
+export function resolveProjectId(cwd: string, env: Record<string, string | undefined>): string | null {
+	const override = env.AI_BADGER_PROJECT_ID;
+	if (typeof override === "string" && override.trim()) return override.trim();
+	let dir = resolve(cwd);
+	for (;;) {
+		const aib = join(dir, ".ai-badger");
+		if (existsSync(join(aib, "project-id"))) {
+			try {
+				const value = readFileSync(join(aib, "project-id"), "utf8").trim();
+				if (value) return value;
+			} catch {
+				return null;
+			}
+			return null;
+		}
+		if (existsSync(aib)) return null; // nearest .ai-badger wins and stops the walk
+		const parent = dirname(dir);
+		if (parent === dir) return null;
+		dir = parent;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// default sqlite store (node:sqlite, read-write for send/deliver)
+// ---------------------------------------------------------------------------
+
+const BUS_DDL = [
+	`CREATE TABLE IF NOT EXISTS messages (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		ts TEXT NOT NULL,
+		sender_session TEXT NOT NULL,
+		sender_project TEXT NOT NULL,
+		target_session TEXT,
+		target_project TEXT,
+		content TEXT NOT NULL
+	)`,
+	`CREATE TABLE IF NOT EXISTS cursors (
+		session_id TEXT PRIMARY KEY,
+		cursor_id INTEGER NOT NULL,
+		ts TEXT NOT NULL
+	)`,
+];
+
+interface SqliteDb {
+	prepare(sql: string): { get(...p: unknown[]): unknown; all(...p: unknown[]): unknown[]; run(...p: unknown[]): { lastInsertRowid?: unknown } };
+	exec(sql: string): void;
+	close(): void;
+}
+
+function rowToMessage(row: Record<string, unknown>): BusMessage {
+	return {
+		id: Number(row.id),
+		senderSession: String(row.sender_session),
+		senderProject: String(row.sender_project),
+		targetSession: (row.target_session as string | null) ?? null,
+		targetProject: (row.target_project as string | null) ?? null,
+		content: String(row.content),
+		timestamp: String(row.ts),
+	};
+}
+
+/** Default store over the user DB. Throws on backend failure — the wiring converts. */
+export function createSqliteStore(dbPath: string, now: () => number = Date.now): BusStore {
+	if (!existsSync(dbPath)) throw new Error(`bus unavailable — no user DB at ${dbPath}`);
+	let DatabaseSync: new (path: string) => SqliteDb;
+	try {
+		// eslint-disable-next-line @typescript-eslint/no-require-imports
+		DatabaseSync = (require("node:sqlite") as { DatabaseSync: new (path: string) => SqliteDb }).DatabaseSync;
+	} catch {
+		throw new Error("bus unavailable — node:sqlite is not available in this runtime");
+	}
+	const withDb = <T>(fn: (db: SqliteDb) => T): T => {
+		const db = new DatabaseSync(dbPath);
+		try {
+			for (const ddl of BUS_DDL) db.exec(ddl);
+			return fn(db);
+		} finally {
+			try {
+				db.close();
+			} catch {
+				// a failed close must not mask the result
+			}
+		}
+	};
+	const readAddressed = (
+		db: SqliteDb,
+		sessionId: string,
+		projectId: string | null,
+		afterId: number,
+		sinceTs: string | null,
+	): Record<string, unknown>[] => {
+		const shapes = ["target_session = ?"];
+		const params: unknown[] = [sessionId];
+		if (projectId) {
+			shapes.push("(target_session IS NULL AND target_project = ?)");
+			shapes.push("(target_session IS NULL AND target_project IS NULL)");
+			params.push(projectId);
+		}
+		const clauses = [`(${shapes.join(" OR ")})`, "id > ?", "sender_session <> ?"];
+		params.push(afterId, sessionId);
+		if (sinceTs !== null) {
+			clauses.push("ts >= ?");
+			params.push(sinceTs);
+		}
+		return db
+			.prepare(
+				`SELECT id, ts, sender_session, sender_project, content, target_session, target_project FROM messages WHERE ${clauses.join(" AND ")} ORDER BY id ASC`,
+			)
+			.all(...params) as Record<string, unknown>[];
+	};
+	return {
+		send(args) {
+			if (!args.senderSession) throw new Error("send refused: missing sender identity (sessionId)");
+			if (!args.senderProject) throw new Error("send refused: missing sender identity (projectId)");
+			if (!args.content) throw new Error("send refused: content is empty");
+			return withDb((db) => {
+				const result = db
+					.prepare(
+						"INSERT INTO messages(ts, sender_session, sender_project, target_session, target_project, content) VALUES (?, ?, ?, ?, ?, ?)",
+					)
+					.run(new Date(now()).toISOString(), args.senderSession, args.senderProject, args.targetSession, args.targetProject, args.content);
+				return Number(result.lastInsertRowid ?? 0);
+			});
+		},
+		getMessage(id) {
+			return withDb((db) => {
+				const row = db.prepare("SELECT id, ts, sender_session, sender_project, content, target_session, target_project FROM messages WHERE id = ?").get(id) as Record<
+					string,
+					unknown
+				> | null;
+				return row ? rowToMessage(row) : null;
+			});
+		},
+		listForSession(sessionId, projectId) {
+			return withDb((db) => readAddressed(db, sessionId, projectId, 0, null).map(rowToMessage));
+		},
+		getCursor(sessionId) {
+			return withDb((db) => {
+				const row = db.prepare("SELECT cursor_id FROM cursors WHERE session_id = ?").get(sessionId) as { cursor_id?: unknown } | null;
+				return Number(row?.cursor_id ?? 0);
+			});
+		},
+		deliverForSession(sessionId, projectId) {
+			return withDb((db) => {
+				const cursorRow = db.prepare("SELECT cursor_id FROM cursors WHERE session_id = ?").get(sessionId) as { cursor_id?: unknown } | null | undefined;
+				let messages: BusMessage[];
+				let nextCursor: number;
+				if (cursorRow === null || cursorRow === undefined) {
+					const cutoff = new Date(now() - FIRST_READ_WINDOW_MS).toISOString();
+					const rows = readAddressed(db, sessionId, projectId, 0, cutoff);
+					messages = rows.slice(0, FIRST_READ_CAP).map(rowToMessage);
+					const maxRow = db.prepare("SELECT COALESCE(MAX(id), 0) AS max_id FROM messages").get() as { max_id?: unknown };
+					nextCursor = Number(maxRow?.max_id ?? 0);
+				} else {
+					const rows = readAddressed(db, sessionId, projectId, Number(cursorRow.cursor_id ?? 0), null);
+					messages = rows.map(rowToMessage);
+					nextCursor = messages.length > 0 ? messages[messages.length - 1]!.id : Number(cursorRow.cursor_id ?? 0);
+				}
+				db.prepare("INSERT INTO cursors(session_id, cursor_id, ts) VALUES (?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET cursor_id = excluded.cursor_id, ts = excluded.ts").run(
+					sessionId,
+					nextCursor,
+					new Date(now()).toISOString(),
+				);
+				return { messages, cursor: nextCursor };
+			});
+		},
+	};
+}
+
+// ---------------------------------------------------------------------------
+// factory
+// ---------------------------------------------------------------------------
+
+interface ToolResult {
+	content: Array<{ type: "text"; text: string }>;
+	details: Record<string, unknown>;
+}
+
+function textResult(text: string, details: Record<string, unknown>): ToolResult {
+	return { content: [{ type: "text", text }], details };
+}
+
+export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
+	if (typeof pi?.registerTool !== "function") {
+		console.error(
+			"ai-badger: pi.registerTool is not a function — this pi build's extension API has moved; the message-bus tool is not installed.",
+		);
+		return;
+	}
+
+	const env = deps.env ?? process.env;
+	const now = deps.now ?? Date.now;
+	const resolveSid = deps.sessionId ?? resolveSessionId;
+	const resolvePid = deps.projectId ?? ((ctx) => resolveProjectId(ctx.cwd, env));
+	const storeFor = (defaultCwd: string): BusStore => {
+		if (deps.store) return deps.store;
+		return createSqliteStore(deps.dbPath ?? userDbPath(env, defaultCwd), now);
+	};
+
+	const hooksDisabled = (): boolean => env[MESSAGE_BUS_ENV] === "0";
+
+	const sendCard = (content: string, details: Record<string, unknown>, triggerTurn: boolean): void => {
+		pi.sendMessage({ customType: MESSAGE_BUS_CUSTOM_TYPE, content, display: true, details }, { deliverAs: "followUp", triggerTurn });
+	};
+
+	/** Inbox membership: only messages addressed to this session can be acked (protocol: ack what you received). */
+	const findInInbox = (store: BusStore, sessionId: string, projectId: string | null, id: number): BusMessage | null => {
+		const found = store.listForSession(sessionId, projectId).find((m) => m.id === id);
+		return found ?? null;
+	};
+
+	/** Shared check: deliver + card when there is new mail. Returns human text. */
+	const runCheck = (ctx: ExtensionContext, triggerTurn: boolean): string => {
+		const sessionId = resolveSid(ctx);
+		if (!sessionId) return "message-bus unavailable: no session id (sessionManager.getSessionId() answered empty)";
+		let store: BusStore;
+		try {
+			store = storeFor(ctx.cwd);
+		} catch (error) {
+			return `message-bus unavailable: ${error instanceof Error ? error.message : String(error)}`;
+		}
+		let delivered: BusMessage[];
+		try {
+			delivered = store.deliverForSession(sessionId, resolvePid(ctx)).messages;
+		} catch (error) {
+			console.error("ai-badger message-bus: delivery failed — fail-open, mail stays queued", error);
+			return `message-bus check failed (mail stays queued): ${error instanceof Error ? error.message : String(error)}`;
+		}
+		if (delivered.length === 0) return "no new messages.";
+		const notice = composeDeliveryNotice(delivered);
+		sendCard(notice, { kind: "delivery", count: delivered.length, ids: delivered.map((m) => m.id) }, triggerTurn);
+		return notice;
+	};
+
+	// ---- hooks (turn-boundary seam; the adapter's timer owns the idle wake)
+
+	pi.on("session_start", (_event, ctx) => {
+		if (hooksDisabled()) return undefined;
+		try {
+			runCheck(ctx, true);
+		} catch (error) {
+			console.error("ai-badger message-bus: session_start delivery failed — fail-open", error);
+		}
+		return undefined;
+	});
+
+	pi.on("turn_start", (_event, ctx) => {
+		if (hooksDisabled()) return undefined;
+		try {
+			runCheck(ctx, false);
+		} catch (error) {
+			console.error("ai-badger message-bus: turn_start delivery failed — fail-open", error);
+		}
+		return undefined;
+	});
+
+	// ---- tool
+
+	const ToolParams = Type.Object({
+		action: Type.Union([Type.Literal("send"), Type.Literal("list"), Type.Literal("check"), Type.Literal("ack")], {
+			description: "send: store one message; list: grouped inbox (no cursor advance); check: deliver new mail now; ack: ack one received message by id",
+		}),
+		content: Type.Optional(Type.String({ description: "send: message body (required for send)" })),
+		sessionId: Type.Optional(Type.String({ description: "send: target session id for a 1:1 send (wins over projectId)" })),
+		projectId: Type.Optional(Type.String({ description: "send: target project id for a project broadcast (omit both for machine broadcast)" })),
+		id: Type.Optional(Type.Number({ description: "ack: the received message id to ack" })),
+		depth: Type.Optional(Type.Number({ description: `list: per-scope depth (default ${DEFAULT_LIST_DEPTH})` })),
+	});
+	type ToolParams = { action: "send" | "list" | "check" | "ack"; content?: string; sessionId?: string; projectId?: string; id?: number; depth?: number };
+
+	const execute = async (_toolCallId: string, params: ToolParams, _signal: unknown, _onUpdate: unknown, ctx: unknown): Promise<ToolResult> => {
+		const context = ctx as ExtensionContext;
+		switch (params.action) {
+			case "send": {
+				const content = params.content?.trim();
+				if (!content) throw new Error('message-bus send needs "content"');
+				const senderSession = resolveSid(context);
+				if (!senderSession) throw new Error("send refused: missing sender identity (sessionId)");
+				const senderProject = resolvePid(context);
+				if (!senderProject) throw new Error("send refused: missing sender identity (projectId) — run inside a project carrying .ai-badger/project-id");
+				const targets = normalizeSendTargets(params.sessionId, params.projectId);
+				const rowId = storeFor(context.cwd).send({ senderSession, senderProject, content, ...targets });
+				const scope = targets.targetSession ? "direct" : targets.targetProject ? "project broadcast" : "machine broadcast";
+				return textResult(`sent ${rowId} (${scope})`, { rowId, ...targets });
+			}
+			case "list": {
+				const sessionId = resolveSid(context);
+				if (!sessionId) throw new Error("message-bus unavailable: no session id");
+				const depth = Number.isFinite(params.depth) && (params.depth as number) > 0 ? Math.min(10, Math.floor(params.depth as number)) : DEFAULT_LIST_DEPTH;
+				const store = storeFor(context.cwd);
+				const messages = store.listForSession(sessionId, resolvePid(context));
+				const cursor = store.getCursor(sessionId);
+				return textResult(formatList(messages, cursor, depth), { count: messages.length, cursor });
+			}
+			case "check": {
+				const text = runCheck(context, false);
+				return textResult(text, { action: "check" });
+			}
+			case "ack": {
+				if (!Number.isFinite(params.id)) throw new Error('message-bus ack needs "id" — the received message id (see list)');
+				const sessionId = resolveSid(context);
+				if (!sessionId) throw new Error("send refused: missing sender identity (sessionId)");
+				const senderProject = resolvePid(context);
+				if (!senderProject) throw new Error("send refused: missing sender identity (projectId)");
+				const store = storeFor(context.cwd);
+				const senderProjectForAck = resolvePid(context);
+				const original = findInInbox(store, sessionId, senderProjectForAck, Math.floor(params.id as number));
+				if (!original) throw new Error(`no message #${params.id} in your inbox — see list`);
+				if (isAck(original.content)) throw new Error(`message #${params.id} is already an ack — acks are terminal, never reply to one`);
+				const ackBody = buildAckContent(original);
+				if (!ackBody) throw new Error(`message #${params.id} is already an ack — acks are terminal, never reply to one`);
+				const rowId = store.send({ senderSession: sessionId, senderProject, content: ackBody, targetSession: null, targetProject: senderProject });
+				return textResult(`ack sent ${rowId} (${ACK_PREFIX} #${original.id})`, { rowId, ackedId: original.id });
+			}
+			default:
+				throw new Error('message-bus action must be one of send, list, check, ack');
+		}
+	};
+
+	pi.registerTool({
+		name: MESSAGE_BUS_TOOL_NAME,
+		label: "Message Bus",
+		description: [
+			"Native pi message-bus on the ai-badger backend. Actions:",
+			'send content (+sessionId for 1:1, +projectId for project broadcast, neither for machine broadcast);',
+			"list (grouped inbox for this session: direct / project / broadcast, last N each, no cursor advance);",
+			"check (deliver new mail now, posts a card when there is any);",
+			"ack id (ack one received message once as a project broadcast — acks are terminal, never ack an ack).",
+			"Fail-open: a broken bus returns an error result, never breaks the session.",
+		].join(" "),
+		parameters: ToolParams,
+		execute,
+	});
+
+	// ---- command
+
+	const MESSAGES_USAGE = "usage: /messages [list|check|ack <id>|send <text>|send-to <session-id> <text>]";
+
+	pi.registerCommand(MESSAGE_BUS_COMMAND_NAME, {
+		description: "Message-bus inbox: list (default) shows last 3 per scope, check delivers now, ack <id> acks once, send/send-to posts.",
+		getArgumentCompletions(argumentPrefix) {
+			const first = argumentPrefix.trim().split(/\s+/)[0] ?? "";
+			const verbs = ["list", "check", "ack", "send", "send-to"].filter((v) => v.startsWith(first));
+			const items = verbs.map((verb) => ({ value: verb, label: verb, description: `messages ${verb}` }));
+			return items.length > 0 ? items : null;
+		},
+		async handler(args: string, ctx: ExtensionCommandContext) {
+			const notify = (message: string, type: "info" | "warning" | "error"): void => {
+				ctx.ui.notify(message, type);
+			};
+			const trimmed = args.trim();
+			if (trimmed === "" || trimmed === "list") {
+				try {
+					const sessionId = resolveSid(ctx);
+					if (!sessionId) {
+						notify("message-bus unavailable: no session id", "error");
+						return;
+					}
+					const store = storeFor(ctx.cwd);
+					notify(formatList(store.listForSession(sessionId, resolvePid(ctx)), store.getCursor(sessionId), DEFAULT_LIST_DEPTH), "info");
+				} catch (error) {
+					notify(`message-bus list failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+				}
+				return;
+			}
+			if (trimmed === "check") {
+				notify(runCheck(ctx, false), "info");
+				return;
+			}
+			const ackMatch = /^ack\s+(\d+)\s*$/.exec(trimmed);
+			if (ackMatch) {
+				try {
+					const sessionId = resolveSid(ctx);
+					const senderProject = resolvePid(ctx);
+					if (!sessionId || !senderProject) {
+						notify("send refused: missing sender identity", "error");
+						return;
+					}
+					const store = storeFor(ctx.cwd);
+					const original = findInInbox(store, sessionId, senderProject, Number(ackMatch[1]));
+					if (!original) {
+						notify(`no message #${ackMatch[1]} in your inbox`, "error");
+						return;
+					}
+					const ackBody = buildAckContent(original);
+					if (!ackBody) {
+						notify(`message #${ackMatch[1]} is already an ack — never reply to one`, "warning");
+						return;
+					}
+					const rowId = store.send({ senderSession: sessionId, senderProject, content: ackBody, targetSession: null, targetProject: senderProject });
+					notify(`ack sent ${rowId} (${ACK_PREFIX} #${original.id})`, "info");
+				} catch (error) {
+					notify(`ack failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+				}
+				return;
+			}
+			const sendToMatch = /^send-to\s+(\S+)\s+([\s\S]+)$/.exec(trimmed);
+			if (sendToMatch) {
+				try {
+					const sessionId = resolveSid(ctx);
+					const senderProject = resolvePid(ctx);
+					if (!sessionId || !senderProject) {
+						notify("send refused: missing sender identity", "error");
+						return;
+					}
+					const targets = normalizeSendTargets(sendToMatch[1], undefined);
+					const rowId = storeFor(ctx.cwd).send({ senderSession: sessionId, senderProject, content: sendToMatch[2]!.trim(), ...targets });
+					notify(`sent ${rowId} (direct to ${sendToMatch[1]})`, "info");
+				} catch (error) {
+					notify(`send failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+				}
+				return;
+			}
+			const sendMatch = /^send\s+([\s\S]+)$/.exec(trimmed);
+			if (sendMatch) {
+				try {
+					const sessionId = resolveSid(ctx);
+					const senderProject = resolvePid(ctx);
+					if (!sessionId || !senderProject) {
+						notify("send refused: missing sender identity", "error");
+						return;
+					}
+					const rowId = storeFor(ctx.cwd).send({ senderSession: sessionId, senderProject, content: sendMatch[1]!.trim(), targetSession: null, targetProject: senderProject });
+					notify(`sent ${rowId} (project broadcast)`, "info");
+				} catch (error) {
+					notify(`send failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+				}
+				return;
+			}
+			notify(MESSAGES_USAGE, "info");
+		},
+	});
+
+	// ---- renderer (grouped card, never raw JSON)
+
+	pi.registerMessageRenderer(MESSAGE_BUS_CUSTOM_TYPE, (message, options, theme) => {
+		const body = typeof message.content === "string" ? message.content : "";
+		if (!body) return undefined;
+		const box = new Box(options.outputPad, 1, (line: string) => theme.bg("customMessageBg", line));
+		const lines = body.split("\n");
+		box.addChild(new Text([theme.fg("success", lines[0] ?? ""), ...lines.slice(1)].join("\n"), 0, 0));
+		return box;
+	});
+}

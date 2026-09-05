@@ -161,3 +161,31 @@ the live OpenRouter roster 2026-09-05. No valid provider key exists in this envi
 generation on a free entitlement stays an explicitly BLOCKED follow-up — the defaults
 above stand flagged, never fabricated.
 
+
+## The message-bus extension: native pi bus on the ai-badger backend
+
+The `message-bus` tool and the **`/messages` command** speak the same SQLite bus
+the `send-message` skill writes (`messages` + `cursors` in the user DB) — no new
+transport, the protocol is `multi-agent-communication` (ack every non-ack once
+as a project broadcast, never reply to an ack, only ack what is in your inbox).
+
+- `send content` (+`sessionId` for 1:1, +`projectId` for project broadcast,
+  neither for machine broadcast; session wins over project at write, blanks
+  read as unset). Sender identity is mandatory: the session manager's id plus
+  the nearest `.ai-badger/project-id` above the session cwd
+  (`AI_BADGER_PROJECT_ID` wins).
+- `list` renders the inbox grouped by scope — direct (1:1), project
+  broadcast, machine broadcast — last 3 per group, rows marked received (✓)
+  or new (●). Never raw JSON; the same text backs the delivery card
+  (`message-bus-event` via `registerMessageRenderer`).
+- `check` delivers new mail now (cursor advances exactly-once; first read has
+  the 30-minute gate + 16-cap and lands past `MAX(id)`).
+- `ack id` sends `ack: <original>` once as a project broadcast; acking an ack
+  or a message outside your inbox refuses.
+- Hooks on `session_start` (wakes with a card when mail is waiting) and
+  `turn_start` (quiet context for the starting turn). The idle-session wake
+  stays with the adapter's poll timer — these hooks never arm their own.
+  `PI_BADGER_MESSAGE_BUS=0` disables the hooks; tools stay. Every backend
+  failure is fail-open: an error result, a command notify, or a silent hook
+  skip — a broken bus never breaks a session, and a missing DB file is never
+  created as a side effect.
