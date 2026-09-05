@@ -179,3 +179,15 @@ I3 greps; E: I1–I4 + full `bun test` once + `bun run check` exit 0.
 - **F0-H3:** bus channel string + `fire("agent_end")`/`fire("agent_settled")` support in
   `tests/helpers/fake-pi.ts` (qa assumes `handlers` arrays + manual-scheduler map) — Lane B verifies
   on first touch; if absent, extend fake-pi (not the plan).
+
+## F7 post-implementation ruling (orchestrator, 2026-09-05 — throttle-path dissent resolved)
+
+Delegator (d) + code-reviewer M1 demanded routing throttle-hold exits through the selector
+(record cooldown, arm timer, send wait notice); architect MINOR-2 holds the shipped hold-silently
+behavior is plan-specified (F2/M2: `shouldSwitch` holds throttle by construction) and forwarding
+would alter specified behavior. RULING: honesty fix (b) — README downgraded to hold-silently +
+pi-retry-owns-wait, silence pinned by test, "cooldowns" dropped from `status` (m3), H1 limitation
+noted. The selector `wait` branch stays unit-tested policy (F7), not a live path, per the MINOR-2
+comment now in `considerSwitch`. Revisit only as a plan-level change with its own review (it would
+need edge semantics for timer-vs-native-retry interplay). Fix lane applied (b) + m1/m2-clarified +
+MINOR-1/MINOR-2 comments + attemptEpisode capture + knob constants + shared `fire` helper.
