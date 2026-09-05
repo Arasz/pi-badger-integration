@@ -38,8 +38,8 @@ Work on `main` directly for small changes, or on a `task/<id>-<slug>` branch for
 
 Releases follow the ai-raccoon mechanism: a `VERSION` file holds the bare semver, and automation derives everything else.
 
-- `auto-bump.yml`: a push to `main` that does not touch `VERSION` runs the tests, and on green pushes a patch-bump commit. A red suite bumps nothing.
-- `release.yml`: any push that changes `VERSION` validates the format, tags `v<VERSION>` (lightweight, never moved — re-runs are no-ops), and cuts a GitHub release with generated notes.
+- `auto-bump.yml`: a push to `main` that does not touch `VERSION` runs the tests, and on green pushes a patch-bump commit, tags it and cuts the release in the same job (a token push cannot trigger other workflows, so it never delegates to `release.yml`). A red suite bumps nothing.
+- `release.yml`: any *human* push that changes `VERSION` validates the format, tags `v<VERSION>` (lightweight, never moved — re-runs are no-ops), and cuts a GitHub release with generated notes.
 - A push that already touched `VERSION` stands the automation down: a hand-picked version always wins, and the bump's own VERSION-only commit terminates the chain instead of looping it.
 - Releases are user-visible: the update-check extension reads `releases/latest`, so cutting a release is what makes other checkouts notice.
 

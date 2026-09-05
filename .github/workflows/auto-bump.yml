@@ -1,11 +1,14 @@
 name: auto-bump
 
 # Test-gated patch releases: a push to main that does NOT touch VERSION gets
-# its tests run, and on green a patch-bump commit is pushed — which fires
-# release.yml (VERSION path), tagging and releasing the result. A push that
-# already touched VERSION is left alone: a human-chosen version (minor/major,
-# or a hand-picked patch) always wins over the automation, and the bump's own
-# VERSION-only commit terminates the chain instead of looping it.
+# its tests run, and on green a patch-bump commit is pushed, tagged and
+# released right here. A push that already touched VERSION is left alone: a
+# human-chosen version (minor/major, or a hand-picked patch) always wins over
+# the automation, and the bump's own VERSION-only commit terminates the chain
+# instead of looping it. Tag + release live in this job (not via release.yml)
+# because a GITHUB_TOKEN push never triggers new workflow runs — delegating
+# would silently release nothing. release.yml stays as the twin for manual
+# VERSION pushes, which do trigger it.
 #
 # net effect: merging without thinking about versions still cuts exactly one
 # patch release per change; thinking about versions overrides cleanly.
@@ -108,9 +111,23 @@ jobs:
             fi
             if git push; then
               echo "Bumped $CURRENT -> $NEXT."
-              exit 0
+              break
             fi
             sleep 5
           done
-          echo "::error::could not push the bump after 3 attempts." >&2
-          exit 1
+          if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
+            echo "::error::bump committed but not pushed after 3 attempts." >&2
+            exit 1
+          fi
+
+          # Tag + release the bump commit directly (see header: delegating to
+          # release.yml would silently do nothing on a token push). Same
+          # never-move semantics: an existing tag is a no-op, never `-f`.
+          TAG="v$NEXT"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists; skipping (idempotent no-op)."
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+            GH_TOKEN="${GH_TOKEN:-$GITHUB_TOKEN}" gh release create "$TAG" --title "$TAG" --generate-notes
+          fi
