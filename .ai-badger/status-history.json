@@ -1,6 +1,12 @@
 {
   "completedTasks": [
     {
+      "taskId": "pbi-monitor-queue-delegation-rework",
+      "title": "Background monitor extension, idle waiting, and queued non-blocking delegation",
+      "finishedAt": "2026-09-02T00:45:00Z",
+      "summary": "New monitor extension (predicate watchers firing monitor-event followUps — one-shot, cap 8, bounded 10m/60m lifetime, vm-evaluated expressions; wait idle tool resolving on delegation settle / monitor fire / user input / timeout, 120s/600s; anti-polling enforcement blocking the 4th delegations list/log within 120s, env kill-switch PI_BADGER_MONITOR_POLL_MAX). Delegation rework: tui blocking removed (background:false rejected with queue/wait guidance; headless byte-identical); the admission FIFO generalized into a queue of groups — serial groups run one-by-one, parallel groups admit atomically, next group dequeues on whole-group settle; queue add/add-parallel/clear/list; clear flushes queued only. 642 tests green, typecheck clean; published to pi user scope (bun run check in sync)."
+    },
+    {
       "taskId": "pbi-move-extensions-to-dir-packages",
       "title": "Extensions as directory packages: publish, tests, minimal ai-badger layer",
       "finishedAt": "2026-08-30T17:20:26Z",

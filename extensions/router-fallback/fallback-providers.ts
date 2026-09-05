@@ -137,11 +137,31 @@ function frozenEntry(entry: FallbackProviderEntry): FallbackProviderEntry {
 }
 
 /**
- * Frozen default chain (folds F1-J3 corrected IDs — C1/C2 stale IDs appear ONLY as
- * C15 regression fixtures): Groq workhorse → Gemini native (+pro escalation as chain
- * position 2) → OpenRouter `:free` breadth last (50 RPD burst-only).
+ * Frozen default chain (owner order 2026-09-06: OpenRouter `:free` breadth FIRST,
+ * then Groq workhorse, then Gemini native with pro escalation as chain position 3):
+ * the owner prefers OpenRouter's one-key model breadth ahead of Groq's sustained
+ * quota. Trade-off, kept visible: `:free` models are burst-only (~50 req/day
+ * without credits), so heavy fallback days still burn the OR budget first and fall
+ * through to Groq/Gemini. Model IDs are folds F1-J3 corrected (C1/C2 stale IDs
+ * appear ONLY as C15 regression fixtures).
  */
 export const DEFAULT_PROVIDERS: readonly FallbackProviderEntry[] = Object.freeze([
+	frozenEntry({
+		id: "openrouter",
+		piProvider: "openrouter",
+		label: "OpenRouter",
+		apiKeyEnv: "OPENROUTER_API_KEY",
+		model: "z-ai/glm-5.2:free",
+		models: [
+			"z-ai/glm-5.2:free",
+			"poolside/laguna-s-2.1:free",
+			"minimax/minimax-m3:free",
+			"thinkingmachines/inkling-small:free",
+		],
+		enabled: true,
+		timeoutMs: FALLBACK_TIMEOUT_MS_DEFAULT,
+		rateLimit: { cooldownMs: FALLBACK_COOLDOWN_MS_DEFAULT, maxRetries: 1 },
+	}),
 	frozenEntry({
 		id: "groq",
 		piProvider: "groq",
@@ -159,22 +179,6 @@ export const DEFAULT_PROVIDERS: readonly FallbackProviderEntry[] = Object.freeze
 		apiKeyEnv: "GEMINI_API_KEY",
 		model: "gemini-3.1-flash-lite",
 		models: ["gemini-3.1-flash-lite", "gemini-3.1-pro-preview"],
-		enabled: true,
-		timeoutMs: FALLBACK_TIMEOUT_MS_DEFAULT,
-		rateLimit: { cooldownMs: FALLBACK_COOLDOWN_MS_DEFAULT, maxRetries: 1 },
-	}),
-	frozenEntry({
-		id: "openrouter",
-		piProvider: "openrouter",
-		label: "OpenRouter",
-		apiKeyEnv: "OPENROUTER_API_KEY",
-		model: "z-ai/glm-5.2:free",
-		models: [
-			"z-ai/glm-5.2:free",
-			"poolside/laguna-s-2.1:free",
-			"minimax/minimax-m3:free",
-			"thinkingmachines/inkling-small:free",
-		],
 		enabled: true,
 		timeoutMs: FALLBACK_TIMEOUT_MS_DEFAULT,
 		rateLimit: { cooldownMs: FALLBACK_COOLDOWN_MS_DEFAULT, maxRetries: 1 },

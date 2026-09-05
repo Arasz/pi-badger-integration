@@ -129,9 +129,9 @@ Fallback chain (array order = priority; all three are pi built-ins, never re-reg
 
 | # | Provider (pi id) | Model(s) | Key (name only, never a value) | Role |
 |---|---|---|---|---|
-| 1 | Groq (`groq`) | `llama-3.3-70b-versatile` | `GROQ_API_KEY` | workhorse — absorbs sustained load first |
-| 2 | Gemini (`google`, native built-in) | `gemini-3.1-flash-lite` → escalation `gemini-3.1-pro-preview` | `GEMINI_API_KEY` | second |
-| 3 | OpenRouter (`openrouter`) | `z-ai/glm-5.2:free` → `poolside/laguna-s-2.1:free` → `minimax/minimax-m3:free` → `thinkingmachines/inkling-small:free` | `OPENROUTER_API_KEY` | burst-only last (≈50 req/day without credits) |
+| 1 | OpenRouter (`openrouter`) | `z-ai/glm-5.2:free` → `poolside/laguna-s-2.1:free` → `minimax/minimax-m3:free` → `thinkingmachines/inkling-small:free` | `OPENROUTER_API_KEY` | first — one-key breadth (owner order 2026-09-06; `:free` is burst-only ≈50 req/day without credits, so heavy fallback days burn this budget first and fall through below) |
+| 2 | Groq (`groq`) | `llama-3.3-70b-versatile` | `GROQ_API_KEY` | workhorse — absorbs sustained load |
+| 3 | Gemini (`google`, native built-in) | `gemini-3.1-flash-lite` → escalation `gemini-3.1-pro-preview` | `GEMINI_API_KEY` | last |
 
 An entry serves only when its key is set AND pi reports its provider auth configured;
 a `--models` session scope restricts every entry to its in-scope candidates (an entry with

@@ -85,21 +85,21 @@ function stateWithServing(targets: ReturnType<typeof resolveTargets>, index: num
 
 describe("defaults: frozen pinned chain (J3 IDs, H10 tuning)", () => {
 	test("shipped defaults equal the normative provider table", () => {
-		expect(DEFAULT_PROVIDERS.map((entry) => entry.id)).toEqual(["groq", "gemini", "openrouter"]);
+		expect(DEFAULT_PROVIDERS.map((entry) => entry.id)).toEqual(["openrouter", "groq", "gemini"]);
 		expect(DEFAULT_PROVIDERS.map((entry) => entry.piProvider)).toEqual([
+			"openrouter",
 			"groq",
 			"google",
-			"openrouter",
 		]);
 		expect(DEFAULT_PROVIDERS.map((entry) => entry.model)).toEqual([
+			"z-ai/glm-5.2:free",
 			"llama-3.3-70b-versatile",
 			"gemini-3.1-flash-lite",
-			"z-ai/glm-5.2:free",
 		]);
 		expect(DEFAULT_PROVIDERS.map((entry) => entry.apiKeyEnv)).toEqual([
+			"OPENROUTER_API_KEY",
 			"GROQ_API_KEY",
 			"GEMINI_API_KEY",
-			"OPENROUTER_API_KEY",
 		]);
 		expect(DEFAULT_PROVIDERS.find((entry) => entry.id === "gemini")?.models).toEqual([
 			"gemini-3.1-flash-lite",
@@ -128,28 +128,28 @@ describe("defaults: frozen pinned chain (J3 IDs, H10 tuning)", () => {
 // ------------------------------------------------------------------ F1 cooldown, not disable
 
 describe("F1: cooldown, not disable — expiry re-admits the head", () => {
-	test("billing on groq advances to gemini; after cooldownMs the head serves again", () => {
+	test("billing on openrouter advances to groq; after cooldownMs the head serves again", () => {
 		const targets = resolvedTargets();
 		expect(targets.length).toBe(7);
 		let state = initialSelectorState(targets);
 
 		const first = decideNextTarget(state, { kind: "billing-exhaustion", now: NOW });
 		if (!("entry" in first)) throw new Error(`expected first serve, got ${first.reason}`);
-		expect(first.entry.id).toBe("groq");
-		expect(first.model).toBe("llama-3.3-70b-versatile");
+		expect(first.entry.id).toBe("openrouter");
+		expect(first.model).toBe("z-ai/glm-5.2:free");
 
 		const second = decideNextTarget(first.state, { kind: "billing-exhaustion", now: NOW + 1 });
 		if (!("entry" in second)) throw new Error(`expected advance, got ${second.reason}`);
-		expect(second.entry.id).toBe("gemini");
-		expect(second.model).toBe("gemini-3.1-flash-lite");
+		expect(second.entry.id).toBe("groq");
+		expect(second.model).toBe("llama-3.3-70b-versatile");
 
 		const recovered = decideNextTarget(second.state, {
 			kind: "billing-exhaustion",
 			now: NOW + 1 + FALLBACK_COOLDOWN_MS_DEFAULT,
 		});
 		if (!("entry" in recovered)) throw new Error(`expected re-admit, got ${recovered.reason}`);
-		expect(recovered.entry.id).toBe("groq");
-		expect(recovered.model).toBe("llama-3.3-70b-versatile");
+		expect(recovered.entry.id).toBe("openrouter");
+		expect(recovered.model).toBe("z-ai/glm-5.2:free");
 	});
 });
 
@@ -169,8 +169,8 @@ describe("F2: unset-key providers are skipped; keyless custom stays eligible", (
 	test("missing GROQ_API_KEY removes groq from the eligible set", () => {
 		const env = { GEMINI_API_KEY: "test-gemini-key", OPENROUTER_API_KEY: "test-or-key" };
 		const eligible = filterEligible(DEFAULT_PROVIDERS, env);
-		expect(eligible.map((entry) => entry.id)).toEqual(["gemini", "openrouter"]);
-		expect(resolvedTargets(env)[0]?.entry.id).toBe("gemini");
+		expect(eligible.map((entry) => entry.id)).toEqual(["openrouter", "gemini"]);
+		expect(resolvedTargets(env)[0]?.entry.id).toBe("openrouter");
 	});
 
 	test("keyless custom (absent or empty apiKeyEnv) is eligible only when enabled", () => {
@@ -180,12 +180,12 @@ describe("F2: unset-key providers are skipped; keyless custom stays eligible", (
 	});
 
 	test("a built-in without apiKeyEnv is never eligible (schema violation, not keyless)", () => {
-		const groq = DEFAULT_PROVIDERS[0];
+		const groq = DEFAULT_PROVIDERS.find((entry) => entry.id === "groq")!;
 		expect(isEligible({ ...groq, apiKeyEnv: undefined }, FULL_ENV)).toBe(false);
 	});
 
 	test("auth-status view refines env presence (configured:false skips, absent map is env-only)", () => {
-		const groq = DEFAULT_PROVIDERS[0];
+		const groq = DEFAULT_PROVIDERS.find((entry) => entry.id === "groq")!;
 		expect(isEligible(groq, FULL_ENV, { configured: false })).toBe(false);
 		expect(isEligible(groq, FULL_ENV, { configured: true })).toBe(true);
 		expect(isEligible(groq, FULL_ENV)).toBe(true);
@@ -199,7 +199,7 @@ describe("F3: maxRetries attempts per entry, then advance", () => {
 	test("503 on openrouter head rotates once (default maxRetries 1), next 503 advances", () => {
 		const targets = resolvedTargets();
 		const glmIndex = targets.findIndex((t) => t.model === "z-ai/glm-5.2:free");
-		expect(glmIndex).toBeGreaterThan(0);
+		expect(glmIndex).toBe(0); // openrouter-first: the :free head is targets[0]
 		const state = stateWithServing(targets, glmIndex);
 
 		const rotated = decideNextTarget(state, { kind: "model-unavailable", now: NOW });
@@ -269,15 +269,15 @@ describe("F4: wait = max(retryAfter, cooldownMs), exact ms", () => {
 // ------------------------------------------------------------------ F5 enabled:false skipped without reorder
 
 describe("F5: enabled:false skipped, order preserved", () => {
-	test("disabled head is skipped and the input order is untouched", () => {
+		test("disabled head is skipped and the input order is untouched", () => {
 		const entries = [DEFAULT_PROVIDERS[0], DEFAULT_PROVIDERS[1], DEFAULT_PROVIDERS[2]].map(
 			(entry) => ({ ...entry }),
 		);
 		entries[0] = { ...entries[0], enabled: false };
 		const before = entries.map((entry) => entry.id);
 		const targets = resolveTargets(filterEligible(entries, FULL_ENV), makeRegistry(ALL_PRESENT));
-		expect(targets[0]?.entry.id).toBe("gemini");
-		expect(targets.some((target) => target.entry.id === "groq")).toBe(false);
+		expect(targets[0]?.entry.id).toBe("groq");
+		expect(targets.some((target) => target.entry.id === "openrouter")).toBe(false);
 		expect(entries.map((entry) => entry.id)).toEqual(before);
 	});
 });
@@ -295,9 +295,9 @@ describe("F6: all cooling → exhausted (terminal) with a servedBy record", () =
 			state = result.state;
 		}
 		expect(seen).toEqual([
+			"openrouter/z-ai/glm-5.2:free",
 			"groq/llama-3.3-70b-versatile",
 			"gemini/gemini-3.1-flash-lite",
-			"openrouter/z-ai/glm-5.2:free",
 		]);
 		const exhausted = decideNextTarget(state, { kind: "billing-exhaustion", now: NOW + 3 });
 		if (!("none" in exhausted)) throw new Error("expected terminal exhausted");
@@ -312,13 +312,13 @@ describe("F6: all cooling → exhausted (terminal) with a servedBy record", () =
 		const first = decideNextTarget(state, { kind: "billing-exhaustion", now: NOW });
 		if (!("entry" in first)) throw new Error("expected serve");
 		expect(getServingProvider(first.state)).toEqual({
-			id: "groq",
-			label: "Groq",
-			model: "llama-3.3-70b-versatile",
+			id: "openrouter",
+			label: "OpenRouter",
+			model: "z-ai/glm-5.2:free",
 		});
 		const second = decideNextTarget(first.state, { kind: "billing-exhaustion", now: NOW + 1 });
 		if (!("entry" in second)) throw new Error("expected advance");
-		expect(getServingProvider(second.state)?.id).toBe("gemini");
+		expect(getServingProvider(second.state)?.id).toBe("groq");
 		expect(second.state.servedBy.length).toBe(2);
 	});
 });
@@ -338,7 +338,7 @@ describe("F7: throttle is cooldown-only — decide returns wait, never a target"
 		expect(result.reason).toMatch(/throttle|wait|cooldown/i);
 		expect(result.retryAfterMs).toBe(60_000);
 		// The serving provider is unchanged: the head stays on cooldown, nothing advances.
-		expect(getServingProvider(result.state)?.id).toBe("groq");
+		expect(getServingProvider(result.state)?.id).toBe("openrouter");
 	});
 });
 
@@ -387,13 +387,13 @@ describe("F9: all keys unset → no eligible providers, no fallback auth", () =>
 // ------------------------------------------------------------------ F10 rotated head degrades
 
 describe("F10: stale head model degrades to the next entry (resolve-or-skip, never throw)", () => {
-	test("groq head rotated out of the catalog → gemini serves (second entry)", () => {
+	test("groq rotated out of the catalog → openrouter head serves (entry order, not id)", () => {
 		const withoutGroq = new Set([...ALL_PRESENT]);
 		withoutGroq.delete("groq/llama-3.3-70b-versatile");
 		const targets = resolvedTargets(FULL_ENV, makeRegistry(withoutGroq));
 		expect(targets.length).toBeGreaterThan(0);
-		expect(targets[0]?.entry.id).toBe("gemini");
-		expect(targets[0]?.model).toBe("gemini-3.1-flash-lite");
+		expect(targets[0]?.entry.id).toBe("openrouter");
+		expect(targets[0]?.model).toBe("z-ai/glm-5.2:free");
 	});
 
 	test("stale openrouter head degrades within the chain (laguna-s-2.1 next)", () => {
@@ -429,13 +429,13 @@ describe("resolveTargets: scoped sessions prefer in-scope models, never persist"
 	test("empty scope resolves the full catalog-verified chain (flat, priority order)", () => {
 		const targets = resolvedTargets();
 		expect(targets.map((target) => target.model)).toEqual([
-			"llama-3.3-70b-versatile",
-			"gemini-3.1-flash-lite",
-			"gemini-3.1-pro-preview",
 			"z-ai/glm-5.2:free",
 			"poolside/laguna-s-2.1:free",
 			"minimax/minimax-m3:free",
 			"thinkingmachines/inkling-small:free",
+			"llama-3.3-70b-versatile",
+			"gemini-3.1-flash-lite",
+			"gemini-3.1-pro-preview",
 		]);
 	});
 });
@@ -453,8 +453,11 @@ describe("requiredThinking: ThinkingLevel-only for reasoning targets, undefined 
 
 	test("resolved targets carry the catalog reasoning flag through", () => {
 		const targets = resolvedTargets();
-		expect(requiredThinking(targets[0]?.reasoning ?? true)).toBeUndefined();
-		expect(requiredThinking(targets[1]?.reasoning ?? false)).toBe("low");
+		// OpenRouter-first: targets[0] is the reasoning glm head → explicit level …
+		expect(requiredThinking(targets[0]?.reasoning ?? false)).toBe("low");
+		// … while the non-reasoning groq target still skips the call.
+		const groq = targets.find((target) => target.entry.id === "groq")!;
+		expect(requiredThinking(groq.reasoning)).toBeUndefined();
 	});
 });
 

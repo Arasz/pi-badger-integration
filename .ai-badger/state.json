@@ -3,6 +3,18 @@
   "next": null,
   "completedTasks": [
     {
+      "taskId": "pbi-message-bus-send-check-list",
+      "title": "Message-bus pi extension (send/check/list + ack + cards)",
+      "finishedAt": "2026-09-05T20:20:10Z",
+      "summary": "New message-bus pi extension (extensions/message-bus/: pure core + sqlite wiring + manifest; publish.ts one-liner; README + catalog): message-bus tool (send/list/check/ack), /messages command (list|check|ack/send/send-to), session_start+turn_start delivery hooks, message-bus-event card renderer, all on ai-badger user-DB backend (D3/C2/R2 parity, 30min/16-cap first read). 36 extension tests (RED-first incl. node:sqlite null-vs-undefined fix + ack-inbox-membership), full suite 1004 pass/6 skip, tsc clean, published to user scope, check in sync. Low-effort: 3 delegations went off-track (ran publish, no plan/review) — in-session plan+review, reduced rigor noted.",
+      "decisions": [
+        "node:sqlite direct over pi.exec python: self-contained, no python dep; missing DB never created (ENOENT rule)",
+        "No new push timer: idle wake stays with adapter poll; hooks are turn-boundary seam only",
+        "Ack restricted to inbox membership + never-ack-an-ack, project-broadcast shape",
+        "L1/R1a leg-scoped landing simplified to global landing, declared in header"
+      ]
+    },
+    {
       "taskId": "pbi-pi-update-integration-checker",
       "title": "Update-check extension hooking pi update to integration releases",
       "finishedAt": "2026-09-05T20:10:00Z",
@@ -60,23 +72,17 @@
       "summary": "New router-fallback pi extension (extensions/router-fallback/: core matcher + provider registry + wiring + manifest; publish.ts one-liner; README; /fallback command): detects billing/auth/model-unavailable failures via folded errorMessage (substring+status-prefix, never exact JSON) and session-only switches Groq llama-3.3-70b-versatile -> Gemini gemini-3.1-flash-lite -> OpenRouter :free chain (glm-5.2/laguna-s-2.1/m3/inkling-small), once per episode + cooldowns, configurable ordered providers, S-cut (no live /models fetch, pinned+find-filter). 138 extension tests (RED-first incl. J5 stub-fetch probe fixtures), full suite 949 green, tsc clean, published to user scope, check exit 0. High-effort: 3-lane research, MoE plan, MoE plan-review (J1-J8 + M1-M12 folds), 4 implementation lanes (A,B,C,E), MoE impl-review + QA GATE, 1 fix lane. H8 closed (0.84.4 shapes identical); H7/H9 live-generation BLOCKED (no valid key), flagged.",
       "decisions": [
         "Throttle holds SILENTLY (F7): plan F2/M2 specifies hold, so reviewer-demanded live selector routing was declined in favor of docs honesty + pinning test; wait branch stays unit-tested policy, not a live path",
-        "No registerProvider for built-in defaults (groq/google/openrouter all KnownProvider) \u2014 registration reserved for custom/keyless overlays; Gemini via native built-in, zero knobs",
+        "No registerProvider for built-in defaults (groq/google/openrouter all KnownProvider) — registration reserved for custom/keyless overlays; Gemini via native built-in, zero knobs",
         "W9 503-substitution: literal-500 classifies throttle (never switches), so the hold-then-switch twin uses 503 (model-unavailable) + literal-500-holds-both twin; spec text amended, not the code",
-        "Token ledger convention: run-cumulative agent_end usage, cache-excluded; subagent-log tee-elision can orphan usage (d-488/d-489 listed lost) \u2014 reports survive via results cache; delegation token lookup refuses honestly, manual log-backed recording it is",
-        "Full-suite count reconciled by scratch-worktree rerun at base (947, not E-reported 941) +2 fix-lane tests = 949 \u2014 E number was stale, not a ghost"
+        "Token ledger convention: run-cumulative agent_end usage, cache-excluded; subagent-log tee-elision can orphan usage (d-488/d-489 listed lost) — reports survive via results cache; delegation token lookup refuses honestly, manual log-backed recording it is",
+        "Full-suite count reconciled by scratch-worktree rerun at base (947, not E-reported 941) +2 fix-lane tests = 949 — E number was stale, not a ghost"
       ]
     },
     {
       "taskId": "pbi-queue-admission-monitors-results-cache",
       "title": "Queue-only admission, /monitors command, structured delegation results + result cache",
       "finishedAt": "2026-09-02T11:06:46Z",
-      "summary": "Delegate admission repaired to the ruled run-now rule (registry.start -> admitRequest: one-element serial group in the ONE queue; admits iff a slot is free and the queue head is not slot-blocked \u2014 cap full, mid-flight serial heads, unfittable parallel heads queue; delegations wait tool action REMOVED, the monitor wait tool is the only waiting surface; stale wait-verb text driven to zero incl. grep-invisible docstring). Monitor: /monitors command (armed panel id/name/excerpt/age/time-left, cancel <id> via gate-skipping internals, headless silent no-op, completions) and the poll guard now counts the delegations results action (list|log|results). Subagent: in-memory result cache (ring of last 8, dual-indexed by delegation_id and parent_id, eviction/duplicate/parent-omission hygiene, injected-clock timestamps, char caps 120/2000/6000 with head/tail markers) wired at the deliverNote entry before the 2s batch window; structured results ride every card (details.result single, details.notes[i].result batched); delegations results [id] action with registry-disambiguated misses. Versions subagent 1.2.0, monitor 1.1.0. High-effort: plan-review MoE (2 experts, READY-WITH-FOLDS, 9 musts folded), two disjoint lanes (A subagent / B monitor) merged clean, implementation MoE (3 experts, triple SHIP, zero musts), QA review-tests GATE: BLOCKED cleared (mutation-proven aborted-note wiring row + rejection-redirect pins). 771 tests green (765 pass, 6 gated skips), typecheck clean."
-    },
-    {
-      "taskId": "pbi-monitor-queue-delegation-rework",
-      "title": "Background monitor extension, idle waiting, and queued non-blocking delegation",
-      "finishedAt": "2026-09-02T00:45:00Z",
-      "summary": "New monitor extension (predicate watchers firing monitor-event followUps \u2014 one-shot, cap 8, bounded 10m/60m lifetime, vm-evaluated expressions; wait idle tool resolving on delegation settle / monitor fire / user input / timeout, 120s/600s; anti-polling enforcement blocking the 4th delegations list/log within 120s, env kill-switch PI_BADGER_MONITOR_POLL_MAX). Delegation rework: tui blocking removed (background:false rejected with queue/wait guidance; headless byte-identical); the admission FIFO generalized into a queue of groups \u2014 serial groups run one-by-one, parallel groups admit atomically, next group dequeues on whole-group settle; queue add/add-parallel/clear/list; clear flushes queued only. 642 tests green, typecheck clean; published to pi user scope (bun run check in sync)."
+      "summary": "Delegate admission repaired to the ruled run-now rule (registry.start -> admitRequest: one-element serial group in the ONE queue; admits iff a slot is free and the queue head is not slot-blocked — cap full, mid-flight serial heads, unfittable parallel heads queue; delegations wait tool action REMOVED, the monitor wait tool is the only waiting surface; stale wait-verb text driven to zero incl. grep-invisible docstring). Monitor: /monitors command (armed panel id/name/excerpt/age/time-left, cancel <id> via gate-skipping internals, headless silent no-op, completions) and the poll guard now counts the delegations results action (list|log|results). Subagent: in-memory result cache (ring of last 8, dual-indexed by delegation_id and parent_id, eviction/duplicate/parent-omission hygiene, injected-clock timestamps, char caps 120/2000/6000 with head/tail markers) wired at the deliverNote entry before the 2s batch window; structured results ride every card (details.result single, details.notes[i].result batched); delegations results [id] action with registry-disambiguated misses. Versions subagent 1.2.0, monitor 1.1.0. High-effort: plan-review MoE (2 experts, READY-WITH-FOLDS, 9 musts folded), two disjoint lanes (A subagent / B monitor) merged clean, implementation MoE (3 experts, triple SHIP, zero musts), QA review-tests GATE: BLOCKED cleared (mutation-proven aborted-note wiring row + rejection-redirect pins). 771 tests green (765 pass, 6 gated skips), typecheck clean."
     }
   ]
 }

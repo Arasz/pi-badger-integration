@@ -35,11 +35,11 @@ bun run check
 |---|---|
 | subagent | Background delegation to ai-badger personas (`delegate`, `delegations`, `queue`) |
 | monitor | One-shot predicate monitors and the idle `wait` tool (`monitor`, `/monitors`) |
-| router-fallback | Session-only fallback over Groq, Gemini, OpenRouter `:free` on router failure (`/fallback`) |
+| router-fallback | Session-only fallback over OpenRouter `:free`, Groq, Gemini on router failure (`/fallback`) |
 | update-check | Background notice when a newer integration release exists (`/update-check`) |
 | message-bus | Native pi message-bus on the ai-badger backend (`message-bus` tool, `/messages`) |
 | pi-cron | Cron scheduling inside pi |
-| pi-mcp-tools | Universal MCP tools |
+| pi-mcp-tools | Universal MCP tools (fork of [tickernelz/pi-mcp-tools](https://github.com/tickernelz/pi-mcp-tools), flattened for directory installs) |
 | session-signals | Marker importance aborts and delegation footer status |
 | shift-enter-newline | Shift+Enter newline for terminals that cannot report it |
 | ai-badger hooks adapter | PreToolUse gates and PostToolUse arms (vendored into ai-badger) |

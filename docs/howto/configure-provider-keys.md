@@ -2,7 +2,7 @@
 
 You have OpenRouter already. This note walks through adding the other two keys the fallback chain needs, so a billing or routing failure can move the session to the next provider instead of stopping.
 
-The chain this repo ships is fixed. Groq absorbs load first, Gemini comes second, OpenRouter `:free` models sit last for short bursts. An entry only serves when its key is present, so a missing Groq or Gemini key just means a shorter chain. Everything still runs.
+The chain this repo ships is fixed. OpenRouter `:free` models serve first for breadth, Groq comes second as the sustained-load workhorse, Gemini sits last. An entry only serves when its key is present, so a missing key just means a shorter chain. Everything still runs.
 
 ## What pi and the extension actually check
 
@@ -14,9 +14,9 @@ The three names, and nothing but the names, appear in logs and notices. Values n
 
 | Order | Provider in pi | Variable | Serves |
 | --- | --- | --- | --- |
-| 1 | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
-| 2 | `google` | `GEMINI_API_KEY` | `gemini-3.1-flash-lite`, then `gemini-3.1-pro-preview` |
-| 3 | `openrouter` | `OPENROUTER_API_KEY` | four `:free` models in rotation |
+| 1 | `openrouter` | `OPENROUTER_API_KEY` | four `:free` models in rotation |
+| 2 | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
+| 3 | `google` | `GEMINI_API_KEY` | `gemini-3.1-flash-lite`, then `gemini-3.1-pro-preview` |
 
 Pi reads `process.env` live. Export first, then start pi from the same shell. A pi session that is already running will not see a key you export afterwards. Restart it.
 
