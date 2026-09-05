@@ -171,9 +171,17 @@ function rowToMessage(row: Record<string, unknown>): BusMessage {
 	};
 }
 
-/** Default store over the user DB. Throws on backend failure — the wiring converts. */
-export function createSqliteStore(dbPath: string, now: () => number = Date.now): BusStore {
-	if (!existsSync(dbPath)) throw new Error(`bus unavailable — no user DB at ${dbPath}`);
+/** node:sqlite busy-wait (ms) applied to every opened handle — python parity
+ * (badger_store.py: connect timeout 5s + `PRAGMA busy_timeout = 5000`).
+ * node:sqlite defaults to 0 (fail instantly), which turned ordinary
+ * multi-session contention into `database is locked` on the DDL write every
+ * open starts with. A waiter serialises behind the holder instead. */
+export const BUS_BUSY_TIMEOUT_MS = 5000;
+
+/** Open one handle with the contention pragma applied. Throws on backend
+ * failure — the wiring converts (same contract as createSqliteStore).
+ * Exported as the test seam: the suite pins the pragma value through it. */
+export function openBusDb(dbPath: string): SqliteDb {
 	let DatabaseSync: new (path: string) => SqliteDb;
 	try {
 		// eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -181,8 +189,16 @@ export function createSqliteStore(dbPath: string, now: () => number = Date.now):
 	} catch {
 		throw new Error("bus unavailable — node:sqlite is not available in this runtime");
 	}
+	const db = new DatabaseSync(dbPath);
+	db.exec(`PRAGMA busy_timeout = ${BUS_BUSY_TIMEOUT_MS}`);
+	return db;
+}
+
+/** Default store over the user DB. Throws on backend failure — the wiring converts. */
+export function createSqliteStore(dbPath: string, now: () => number = Date.now): BusStore {
+	if (!existsSync(dbPath)) throw new Error(`bus unavailable — no user DB at ${dbPath}`);
 	const withDb = <T>(fn: (db: SqliteDb) => T): T => {
-		const db = new DatabaseSync(dbPath);
+		const db = openBusDb(dbPath);
 		try {
 			for (const ddl of BUS_DDL) db.exec(ddl);
 			return fn(db);

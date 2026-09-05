@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSqliteStore } from "../../extensions/message-bus/index.ts";
+import { createSqliteStore, openBusDb } from "../../extensions/message-bus/index.ts";
 
 function tempDb(): string {
 	const dir = mkdtempSync(join(tmpdir(), "mbus-"));
@@ -44,5 +44,17 @@ describe("sqlite store round-trip", () => {
 		expect(error).toMatch(/no user DB/);
 		const { existsSync } = require("node:fs") as typeof import("node:fs");
 		expect(existsSync(missing)).toBe(false);
+	});
+});
+
+describe("contention hardening (database-is-locked)", () => {
+	test("every opened handle carries busy_timeout 5000 (python parity — wait, never fail instantly)", () => {
+		const db = openBusDb(tempDb());
+		try {
+			const row = db.prepare("PRAGMA busy_timeout").get() as { timeout?: unknown };
+			expect(Number(row?.timeout)).toBe(5000);
+		} finally {
+			db.close();
+		}
 	});
 });
