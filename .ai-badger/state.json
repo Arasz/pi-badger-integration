@@ -3,6 +3,19 @@
   "next": null,
   "completedTasks": [
     {
+      "taskId": "pbi-ai-raccoon-tool-cards-ui",
+      "title": "UI cards for ai-raccoon tool results",
+      "finishedAt": "2026-09-05T23:30:49Z",
+      "summary": "Human cards for all 29 ai-raccoon MCP tool results + mcp_list_servers ledger card (no more raw JSON dumps): new extensions/pi-mcp-tools/McpCardRenderers.ts (bare-name descriptor table + shared shape helpers, collapsed never-JSON, expanded trimmed ~4KB, fail-open incl. adapter non-envelope strings), attach-only wiring in McpToolAdapter.ts + index.ts, TDD 59 tests (RED-first, indexed->indexedd mutation, F1/H1/H5 + QA folds), docs section + VERSION 1.0.7. PR #2 squash-merged, CI green, published to user scope (--check in sync). Low-effort: architect plan + plan-review (READY-WITH-FOLDS) + api-engineer impl + impl review (SHIP-WITH-FIXES) + qa review-tests (GATE).",
+      "decisions": [
+        "Descriptor table + shared helpers over 29 bespoke renderers: per-tool path entries keep mutation sensitivity, one harness enforces collapsed/expanded/fail-open once",
+        "Bare-name keying (never prefixed pi name): toolPrefix is configurable per server; adapter closes over bare name at registration",
+        "F1: memory_search data:null envelope falls back (unknown) instead of claiming no hits; only present-but-empty arrays report no hits",
+        "Card text stays in renderCall/renderResult (UI-only); execute/content/details byte-identical so the LLM payload never changes",
+        "QA SHOULD folds applied pre-PR (sweep-deleted/absorbed/refused pins, fallback-text oracle, custom-prefix + expanded:true); expectNoJson [ ] hardening deferred as narrow-hole follow-up"
+      ]
+    },
+    {
       "taskId": "pbi-bus-lock-busy-timeout-fix",
       "title": "message-bus busy_timeout hardening + CI/release-chain fixes",
       "finishedAt": "2026-09-05T21:55:00Z",
