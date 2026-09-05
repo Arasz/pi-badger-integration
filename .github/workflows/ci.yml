@@ -26,6 +26,16 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Install extension dependencies
+        # Each extension is a directory-package with its own manifest + lockfile;
+        # nested node_modules is gitignored derived state, absent in fresh clones
+        # (and fresh worktrees). Suites import extension sources directly, so
+        # without this pi-mcp-tools et al. fail resolving their own deps.
+        run: |
+          for dir in extensions/*/; do
+            (cd "$dir" && bun install --frozen-lockfile)
+          done
+
       - name: Run tests
         run: bun test
 
