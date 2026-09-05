@@ -14,6 +14,7 @@ import {
 	capCheckText,
 	compareVersions,
 	decideCheck,
+	parseDescribe,
 	parseVersion,
 } from "../../extensions/update-check/update-check-core.ts";
 
@@ -98,6 +99,68 @@ describe("decideCheck matrix", () => {
 	});
 	test("installed newer than remote (dev checkout ahead) is silent", () => {
 		expect(decideCheck({ networkUp: true, installed: "v2.0.0", remoteTag: "v1.9.9" }).action).toBe("silent");
+	});
+});
+
+describe("parseDescribe", () => {
+	test("accepts git describe --long output with v-prefixed and bare base tags", () => {
+		expect(parseDescribe("v1.2.3-5-gabc1234")).toEqual({ base: [1, 2, 3], baseTag: "v1.2.3", ahead: 5 });
+		expect(parseDescribe("1.2.3-0-gABCDEF0")).toEqual({ base: [1, 2, 3], baseTag: "1.2.3", ahead: 0 });
+	});
+	test("trims surrounding whitespace", () => {
+		expect(parseDescribe("  v1.2.3-1-gabc1234\n")?.ahead).toBe(1);
+	});
+	test("rejects non-describe strings", () => {
+		for (const bad of ["", "v1.2.3", "v1.2.3-5", "v1.2-gabc1234", "v1.2.3-x-gabc1234", "v01.2.3-1-gabc1234", "latest-1-gabc1234", "v1.2.3-1-abc1234"]) {
+			expect(parseDescribe(bad), bad).toBeUndefined();
+		}
+	});
+});
+
+describe("decideCheck describe rows (untagged dev checkouts)", () => {
+	test("describe at the latest tag line stays silent (the reported issue: publish-then-nag loop)", () => {
+		const r = decideCheck({ networkUp: true, installed: null, installedDescribe: "v1.2.0-3-gdeadbee", markerPresent: true, remoteTag: "v1.2.0" });
+		expect(r.action).toBe("silent");
+		expect(r.reason).toMatch(/ahead|dev checkout/i);
+	});
+	test("describe base newer than remote stays silent", () => {
+		const r = decideCheck({ networkUp: true, installed: null, installedDescribe: "v2.0.0-1-gdeadbee", markerPresent: true, remoteTag: "v1.9.9" });
+		expect(r.action).toBe("silent");
+	});
+	test("describe base older than remote notices an update naming base+commits and remote", () => {
+		const r = decideCheck({ networkUp: true, installed: null, installedDescribe: "v1.0.0-5-gdeadbee", markerPresent: true, remoteTag: "v1.1.0" });
+		expect(r.action).toBe("notice");
+		if (r.action !== "notice") throw new Error("unreachable");
+		expect(r.kind).toBe("update");
+		expect(r.text).toContain("v1.0.0");
+		expect(r.text).toContain("5");
+		expect(r.text).toContain("v1.1.0");
+		expect(r.text).toMatch(/git pull/);
+	});
+	test("exact installed version wins over describe (precedence)", () => {
+		const r = decideCheck({ networkUp: true, installed: "v1.0.0", installedDescribe: "v9.9.9-9-gdeadbee", markerPresent: true, remoteTag: "v1.2.0" });
+		expect(r.action).toBe("notice");
+		if (r.action !== "notice") throw new Error("unreachable");
+		expect(r.kind).toBe("update");
+		expect(r.text).toContain("v1.0.0");
+	});
+	test("tagless marker (present, no usable version info) guides to fetch --tags, not publish-once", () => {
+		const r = decideCheck({ networkUp: true, installed: null, installedDescribe: null, markerPresent: true, remoteTag: "v1.2.0" });
+		expect(r.action).toBe("notice");
+		if (r.action !== "notice") throw new Error("unreachable");
+		expect(r.kind).toBe("guidance");
+		expect(r.text).toMatch(/fetch --tags/);
+	});
+	test("malformed describe degrades to the tagless guidance, never an exception", () => {
+		const r = decideCheck({ networkUp: true, installed: null, installedDescribe: "not-a-describe", markerPresent: true, remoteTag: "v1.2.0" });
+		expect(r.action).toBe("notice");
+		if (r.action !== "notice") throw new Error("unreachable");
+		expect(r.kind).toBe("guidance");
+		expect(r.text).toMatch(/fetch --tags/);
+	});
+	test("describe with no releases yet stays silent (nothing to compare against)", () => {
+		const r = decideCheck({ networkUp: true, installed: null, installedDescribe: "v1.2.0-3-gdeadbee", markerPresent: true, remoteTag: null });
+		expect(r.action).toBe("silent");
 	});
 });
 

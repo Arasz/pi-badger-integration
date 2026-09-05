@@ -131,6 +131,64 @@ describe("session_start background check", () => {
 		await flush(scheduled);
 		expect(pi.sent.length).toBe(1);
 	});
+
+	test("dev checkout at the latest tag line (describe, null version) posts nothing", async () => {
+		const pi = createFakePi();
+		const { scheduler, scheduled } = immediateScheduler();
+		makeExtension(pi as never, {
+			fetchFn: stubFetch(() => okRelease("v1.0.0")),
+			scheduler,
+			markerPath: markerInTmp(JSON.stringify({ version: null, sha: "abc1234", describe: "v1.0.0-2-gabc1234" })),
+		});
+		await fire(pi, "session_start", {}, undefined);
+		await flush(scheduled);
+		expect(pi.sent.length).toBe(0);
+	});
+
+	test("dev checkout behind the latest release (describe base older) posts one update notice", async () => {
+		const pi = createFakePi();
+		const { scheduler, scheduled } = immediateScheduler();
+		makeExtension(pi as never, {
+			fetchFn: stubFetch(() => okRelease("v1.1.0")),
+			scheduler,
+			markerPath: markerInTmp(JSON.stringify({ version: null, sha: "abc1234", describe: "v1.0.0-2-gabc1234" })),
+		});
+		await fire(pi, "session_start", {}, undefined);
+		await flush(scheduled);
+		const notices = pi.sent.filter((s) => s.message.customType === "update-check-event");
+		expect(notices.length).toBe(1);
+		expect(notices[0].message.content as string).toContain("v1.1.0");
+	});
+
+	test("tagless marker (present, no version info) guides to fetch --tags", async () => {
+		const pi = createFakePi();
+		const { scheduler, scheduled } = immediateScheduler();
+		makeExtension(pi as never, {
+			fetchFn: stubFetch(() => okRelease("v1.1.0")),
+			scheduler,
+			markerPath: markerInTmp(JSON.stringify({ version: null, sha: "abc1234", describe: null })),
+		});
+		await fire(pi, "session_start", {}, undefined);
+		await flush(scheduled);
+		const notices = pi.sent.filter((s) => s.message.customType === "update-check-event");
+		expect(notices.length).toBe(1);
+		expect(notices[0].message.content as string).toMatch(/fetch --tags/);
+	});
+
+	test("missing marker file guides to publish once", async () => {
+		const pi = createFakePi();
+		const { scheduler, scheduled } = immediateScheduler();
+		makeExtension(pi as never, {
+			fetchFn: stubFetch(() => okRelease("v1.1.0")),
+			scheduler,
+			markerPath: markerInTmp(null),
+		});
+		await fire(pi, "session_start", {}, undefined);
+		await flush(scheduled);
+		const notices = pi.sent.filter((s) => s.message.customType === "update-check-event");
+		expect(notices.length).toBe(1);
+		expect(notices[0].message.content as string).toMatch(/bun run publish/);
+	});
 });
 
 describe("/update-check command", () => {
@@ -178,5 +236,22 @@ describe("/update-check command", () => {
 		let notified = "";
 		await cmd.handler("frobnicate", { ui: { notify: (m) => (notified = m) } });
 		expect(notified).toMatch(/usage/);
+	});
+
+	test("status names the describe base and ahead count when no exact version is recorded", async () => {
+		const pi = createFakePi();
+		const { scheduler } = immediateScheduler();
+		makeExtension(pi as never, {
+			fetchFn: stubFetch(() => okRelease("v1.0.0")),
+			scheduler,
+			markerPath: markerInTmp(JSON.stringify({ version: null, sha: "abc1234", describe: "v1.0.0-2-gabc1234" })),
+		});
+		const cmd = pi.commands.get("update-check") as {
+			handler: (args: string, ctx: { ui: { notify: (m: string, t: string) => void } }) => Promise<void>;
+		};
+		let notified = "";
+		await cmd.handler("status", { ui: { notify: (m) => (notified = m) } });
+		expect(notified).toMatch(/v1\.0\.0/);
+		expect(notified).toMatch(/\+ ?2/);
 	});
 });

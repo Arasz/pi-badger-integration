@@ -28,7 +28,9 @@ import {
 	UPDATE_CHECK_ENV,
 	UPDATE_CHECK_RELEASES_URL,
 	decideCheck,
+	formatDescribed,
 	isDisabled,
+	parseDescribe,
 } from "./update-check-core.ts";
 
 /** The human command: `/update-check [status|check]`. */
@@ -81,8 +83,17 @@ function defaultMarkerPath(): string {
 
 interface CheckReport {
 	installed: string | null;
+	describe: string | null;
 	remoteTag: string | null;
 	conclusion: string;
+}
+
+/** What the marker file told us: `found` is file-read + JSON-parsed (even with
+ * no usable version inside — that is the tagless state, not the missing state). */
+interface MarkerState {
+	found: boolean;
+	version: string | null;
+	describe: string | null;
 }
 
 export default function (pi: ExtensionAPI, deps: UpdateCheckDeps = {}) {
@@ -108,15 +119,34 @@ export default function (pi: ExtensionAPI, deps: UpdateCheckDeps = {}) {
 	let noticedThisSession = false;
 	let lastReport: CheckReport | undefined;
 
-	const readInstalled = (): string | null => {
+	const readMarker = (): MarkerState => {
 		try {
 			const raw = readFileSync(markerPath, "utf8");
-			const parsed = JSON.parse(raw) as { version?: unknown };
-			return typeof parsed.version === "string" ? parsed.version : null;
+			const parsed = JSON.parse(raw) as { version?: unknown; describe?: unknown };
+			if (parsed === null || typeof parsed !== "object") return { found: false, version: null, describe: null };
+			return {
+				found: true,
+				version: typeof parsed.version === "string" ? parsed.version : null,
+				describe: typeof parsed.describe === "string" ? parsed.describe : null,
+			};
 		} catch {
-			return null;
+			return { found: false, version: null, describe: null };
 		}
 	};
+
+	/** "v1.0.0 (+2 commits)" for status lines; null when there is nothing to show. */
+	const describeDisplay = (describe: string | null): string | null => {
+		if (describe === null) return null;
+		const parsed = parseDescribe(describe);
+		return parsed ? formatDescribed(parsed) : null;
+	};
+
+	const installedDisplay = (marker: MarkerState): string =>
+		marker.version ??
+		describeDisplay(marker.describe) ??
+		(marker.found
+			? "unknown (no git tags recorded — run `git fetch --tags && bun run publish`)"
+			: "unknown (publish this checkout to record it)");
 
 	const fetchRemoteTag = async (): Promise<{ tag: string | null; error?: string }> => {
 		const controller = new AbortController();
@@ -150,16 +180,19 @@ export default function (pi: ExtensionAPI, deps: UpdateCheckDeps = {}) {
 
 	/** Run one check; notices at most once per session. Returns the report either way. */
 	const runCheck = async (): Promise<CheckReport> => {
-		const installed = readInstalled();
+		const marker = readMarker();
 		const remote = await fetchRemoteTag();
 		const decision = decideCheck({
 			networkUp: true,
-			installed,
+			installed: marker.version,
+			installedDescribe: marker.describe,
+			markerPresent: marker.found,
 			remoteTag: remote.tag,
 			remoteError: remote.error,
 		});
 		const report: CheckReport = {
-			installed,
+			installed: marker.version,
+			describe: marker.describe,
 			remoteTag: remote.tag,
 			conclusion:
 				decision.action === "notice"
@@ -171,24 +204,24 @@ export default function (pi: ExtensionAPI, deps: UpdateCheckDeps = {}) {
 		lastReport = report;
 		if (decision.action === "notice" && !noticedThisSession) {
 			noticedThisSession = true;
-			sendNotice(decision.text, { kind: decision.kind, installed, remoteTag: remote.tag });
+			sendNotice(decision.text, { kind: decision.kind, installed: marker.version, describe: marker.describe, remoteTag: remote.tag });
 		}
 		return report;
 	};
 
 	const statusText = (): string => {
 		if (lastReport === undefined) {
-			const installed = readInstalled();
+			const marker = readMarker();
 			return [
 				"update-check status",
-				`installed: ${installed ?? "unknown (publish this checkout to record it)"}`,
+				`installed: ${installedDisplay(marker)}`,
 				"remote: unchecked this session",
 				`kill-switch: ${isDisabled(env) ? `disabled via ${UPDATE_CHECK_ENV}=0` : "enabled"}`,
 			].join("\n");
 		}
 		return [
 			"update-check status",
-			`installed: ${lastReport.installed ?? "unknown"}`,
+			`installed: ${lastReport.installed ?? describeDisplay(lastReport.describe) ?? "unknown"}`,
 			`remote: ${lastReport.remoteTag ?? "none"}`,
 			`last check: ${lastReport.conclusion}`,
 			`kill-switch: ${isDisabled(env) ? `disabled via ${UPDATE_CHECK_ENV}=0` : "enabled"}`,
@@ -242,7 +275,7 @@ export default function (pi: ExtensionAPI, deps: UpdateCheckDeps = {}) {
 				const report = await runCheck();
 				notify(
 					[
-						`installed: ${report.installed ?? "unknown"}`,
+						`installed: ${report.installed ?? describeDisplay(report.describe) ?? "unknown"}`,
 						`remote: ${report.remoteTag ?? "none"}`,
 						report.conclusion,
 					].join("\n"),

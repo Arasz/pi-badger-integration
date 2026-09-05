@@ -233,6 +233,7 @@ export function installedMarker(
 ): { path: string; content: string } {
 	let version: string | null = null;
 	let sha: string | null = null;
+	let describe: string | null = null;
 	try {
 		version = execFileSync("git", ["-C", root, "describe", "--tags", "--exact-match"], {
 			encoding: "utf8",
@@ -244,14 +245,29 @@ export function installedMarker(
 	try {
 		sha = execFileSync("git", ["-C", root, "rev-parse", "--short", "HEAD"], {
 			encoding: "utf8",
-		stdio: ["ignore", "pipe", "ignore"],
+			stdio: ["ignore", "pipe", "ignore"],
 		}).trim();
 	} catch {
 		sha = null;
 	}
+	// Untagged dev checkouts (the common case past a release) still record their
+	// position: `git describe --tags --long` names the nearest reachable tag plus
+	// the ahead count (`v1.0.0-5-geafb1e5`), which the update-check compares via
+	// its base tag. Without this the marker holds no comparable version and every
+	// session nags with an un-actionable publish prompt. Null only when no tag is
+	// reachable at all (tagless/shallow clone) — the tagless guidance then names
+	// `git fetch --tags`, which actually fixes it.
+	try {
+		describe = execFileSync("git", ["-C", root, "describe", "--tags", "--long"], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim();
+	} catch {
+		describe = null;
+	}
 	return {
 		path: join(agentDir, UPDATE_CHECK_MARKER_DIRNAME, "installed.json"),
-		content: JSON.stringify({ version: version === "" ? null : version, sha, publishedAt: new Date().toISOString() }),
+		content: JSON.stringify({ version: version === "" ? null : version, sha, describe: describe === "" ? null : describe, publishedAt: new Date().toISOString() }),
 	};
 }
 

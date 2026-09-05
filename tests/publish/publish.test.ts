@@ -480,4 +480,58 @@ describe("installedMarker: per-install version state for update-check", () => {
 		expect(JSON.parse(marker.content).version).toBeNull();
 		expect(() => writeInstalledMarker(tempDir("publish-marker-empty-"), agentDir)).not.toThrow();
 	});
+
+	test("tagged checkout records describe --long alongside the exact tag", async () => {
+		const { execFileSync } = await import("node:child_process");
+		const repo = tempDir("publish-marker-describe-tagged-");
+		const agentDir = tempDir("publish-marker-agent-");
+		execFileSync("git", ["init", "-q", repo]);
+		execFileSync("git", ["-C", repo, "config", "user.email", "t@t"]);
+		execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
+		writeFileSync(join(repo, "f.txt"), "x");
+		execFileSync("git", ["-C", repo, "add", "."]);
+		execFileSync("git", ["-C", repo, "commit", "-qm", "init"]);
+		execFileSync("git", ["-C", repo, "tag", "v1.2.3"]);
+		const { installedMarker } = await import("../../publish.ts");
+		const written = JSON.parse(installedMarker(repo, agentDir).content);
+		expect(written.version).toBe("v1.2.3");
+		expect(written.describe).toMatch(/^v1\.2\.3-0-g[0-9a-f]+$/);
+	});
+
+	test("untagged checkout with reachable tags records null version plus describe distance", async () => {
+		const { execFileSync } = await import("node:child_process");
+		const repo = tempDir("publish-marker-describe-ahead-");
+		const agentDir = tempDir("publish-marker-agent-");
+		execFileSync("git", ["init", "-q", repo]);
+		execFileSync("git", ["-C", repo, "config", "user.email", "t@t"]);
+		execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
+		writeFileSync(join(repo, "f.txt"), "x");
+		execFileSync("git", ["-C", repo, "add", "."]);
+		execFileSync("git", ["-C", repo, "commit", "-qm", "init"]);
+		execFileSync("git", ["-C", repo, "tag", "v0.1.0"]);
+		writeFileSync(join(repo, "g.txt"), "y");
+		execFileSync("git", ["-C", repo, "add", "."]);
+		execFileSync("git", ["-C", repo, "commit", "-qm", "second"]);
+		const { installedMarker } = await import("../../publish.ts");
+		const written = JSON.parse(installedMarker(repo, agentDir).content);
+		expect(written.version).toBeNull();
+		expect(written.describe).toMatch(/^v0\.1\.0-1-g[0-9a-f]+$/);
+	});
+
+	test("checkout with no tags at all records null describe (tagless guidance path)", async () => {
+		const { execFileSync } = await import("node:child_process");
+		const repo = tempDir("publish-marker-describe-none-");
+		const agentDir = tempDir("publish-marker-agent-");
+		execFileSync("git", ["init", "-q", repo]);
+		execFileSync("git", ["-C", repo, "config", "user.email", "t@t"]);
+		execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
+		writeFileSync(join(repo, "f.txt"), "x");
+		execFileSync("git", ["-C", repo, "add", "."]);
+		execFileSync("git", ["-C", repo, "commit", "-qm", "init"]);
+		const { installedMarker } = await import("../../publish.ts");
+		const written = JSON.parse(installedMarker(repo, agentDir).content);
+		expect(written.version).toBeNull();
+		expect(written.describe).toBeNull();
+		expect(typeof written.sha).toBe("string");
+	});
 });

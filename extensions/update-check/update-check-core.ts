@@ -20,8 +20,19 @@
  *   - no releases published yet → silent (nothing to compare against);
  *   - malformed remote tag → silent (the maintainer's problem, not the
  *     session's — never nag a user over a tag typo);
- *   - unknown/corrupt installed marker → guidance notice (re-publish from a
- *     tagged checkout), never an update notice;
+ *   - exact installed version → compared against remote (newer → update
+ *     notice, same or installed-newer → silent); it always wins over describe;
+ *   - no exact version but a recorded `git describe --long` (untagged dev
+ *     checkout) → its base tag is compared instead: base at/after remote →
+ *     silent (ahead of releases, nothing to install), base behind remote →
+ *     update notice naming base + ahead count and remote;
+ *   - no version and no usable describe with NO marker file → guidance notice
+ *     (publish once to record it — actionable: publish writes the marker);
+ *   - no version and no usable describe WITH a marker file (tagless checkout:
+ *     publish ran where no git tag was reachable) → guidance notice naming
+ *     `git fetch --tags` + re-publish (actionable: re-publish then records
+ *     describe and the notice clears — a bare re-publish can never fix this,
+ *     so the publish-once text must not be shown here);
  *   - remote newer → update notice naming both versions plus the exact
  *     commands (`git pull` + `bun run publish`);
  *   - same or installed-newer → silent (up to date covers equal; a dev
@@ -60,6 +71,24 @@ export function parseVersion(tag: string): [number, number, number] | undefined 
 	}
 }
 
+/** Parse `git describe --tags --long` output (`v1.2.3-5-gabc1234`) into its base
+ * tag, parsed base version and ahead count; garbage → undefined (never throws). */
+export function parseDescribe(describe: string): { base: [number, number, number]; baseTag: string; ahead: number } | undefined {
+	try {
+		const m = /^((?:v)?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))-(\d+)-g([0-9a-fA-F]+)$/.exec(describe.trim());
+		if (!m) return undefined;
+		const base = parseVersion(m[1]);
+		if (base === undefined) return undefined;
+		return { base, baseTag: m[1].trim(), ahead: Number(m[2]) };
+	} catch {
+		return undefined;
+	}
+}
+
+/** "v1.0.0 (+5 commits)" — how a describe position reads in notices and status. */
+export function formatDescribed(described: { baseTag: string; ahead: number }): string {
+	return `${described.baseTag} (+${described.ahead} commit${described.ahead === 1 ? "" : "s"})`;
+}
 /** Compare two parsed versions: -1 | 0 | 1. */
 export function compareVersions(a: readonly [number, number, number], b: readonly [number, number, number]): -1 | 0 | 1 {
 	for (let i = 0; i < 3; i += 1) {
@@ -75,6 +104,14 @@ export interface CheckInput {
 	readonly networkUp: boolean;
 	/** Installed version from the marker file; null = no marker (never installed via publish). */
 	readonly installed: string | null;
+	/** `git describe --tags --long` as recorded at publish; null = tagless checkout
+	 * or a marker written before describe was recorded. Compared via its base tag
+	 * when `installed` is null; `installed` always wins when both are present. */
+	readonly installedDescribe?: string | null;
+	/** False (or absent, for callers predating it) = no marker file at all → the
+	 * publish-once guidance. True with no usable version info = tagless checkout
+	 * → the fetch-tags guidance (a bare re-publish cannot fix that state). */
+	readonly markerPresent?: boolean;
 	/** Latest remote release tag; null = none published yet or fetch failed. */
 	readonly remoteTag: string | null;
 	/** Present when the fetch itself failed (reported verbosely, never at session start). */
@@ -114,6 +151,45 @@ export function decideCheck(input: CheckInput): CheckDecision {
 		return { action: "silent", reason: `silent: remote tag ${input.remoteTag} is not semver — maintainer's problem, not the session's` };
 	}
 	if (input.installed === null) {
+		const described = input.installedDescribe != null ? parseDescribe(input.installedDescribe) : undefined;
+		if (described !== undefined) {
+			const order = compareVersions(described.base, remote);
+			if (order >= 0) {
+				return {
+					action: "silent",
+					reason:
+						order === 0
+							? `silent: dev checkout at ${formatDescribed(described)} (ahead of latest release ${input.remoteTag})`
+							: `silent: installed base ${formatDescribed(described)} is ahead of latest release ${input.remoteTag} (dev checkout)`,
+				};
+			}
+			return {
+				action: "notice",
+				kind: "update",
+				reason: `update: ${input.remoteTag} is newer than installed ${formatDescribed(described)}`,
+				text: capCheckText(
+					`update-check: integration update available — installed ${formatDescribed(described)}, latest release ${input.remoteTag}.\n` +
+						"To update:\n" +
+						"  git pull\n" +
+						"  bun run publish\n" +
+						"  bun run check\n" +
+						"For pi itself, run `pi update`.",
+				),
+			};
+		}
+		if (input.markerPresent === true) {
+			return {
+				action: "notice",
+				kind: "guidance",
+				reason: "guidance: marker present but the checkout has no git tags for publish to record — fetch tags and re-publish",
+				text: capCheckText(
+					"update-check: installed version unknown (this checkout has no git tags for publish to record).\n" +
+						"Fetch tags once, then re-publish: `git fetch --tags && bun run publish`. " +
+						"Future sessions then compare against GitHub releases automatically. " +
+						"For pi itself, `pi update` stays the path.",
+				),
+			};
+		}
 		return {
 			action: "notice",
 			kind: "guidance",
