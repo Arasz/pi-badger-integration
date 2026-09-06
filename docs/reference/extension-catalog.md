@@ -19,15 +19,15 @@ blocked by the monitor's enforcement). To keep a strict order, queue work with t
 **`queue` tool**: `add` (serial group — members run one at a time, in order),
 `add-parallel` (members run concurrently once they all fit), `clear` (cancel every queued
 task; running ones untouched), `list` (the queued groups with live positions). The whole
-queue tool is TUI-only. An explicit `background: false` in the TUI is rejected at execution
-time (`reason: "blocking-removed"`, no child runs) with guidance pointing at `queue`
-(ordering), the monitor extension's `wait` tool (spending idle time; user input interrupts
-it) and `delegations abort` (stopping runs). Every delegation enters the queue as a
+queue tool is TUI-only. The `background` parameter is gone — mode alone decides: the TUI
+always backgrounds with a receipt, and a stale `background` key replayed from an old session
+is stripped before schema validation. Ordering, idle waiting, and stopping runs work as above
+(`queue`, the monitor extension's `wait` tool, `delegations abort`). Every delegation enters the queue as a
 one-element serial group — on an idle system it starts immediately, otherwise it waits its
 turn behind a blocked queue head (cap full, a mid-flight serial group, or a parallel group that cannot use a slot); the queue is the only admission path. In headless modes (`-p`, json, rpc) delegation stays **blocking** — the result
 is the tool result, byte-compatible with the pre-background contract, plus `details.usage`;
-an explicit `background: true` outside the TUI degrades to blocking with a note in the tool
-result and `details.degraded`. There is no automatic wall-clock timeout: runs
+there is no background opt-in to degrade, so the result carries no `degraded` key and no
+degrade line. There is no automatic wall-clock timeout: runs
 are unbounded unless the `delegate` call passes `timeoutMs` (clamped to 1 s–24 h; on expiry
 the run is aborted and settles as `aborted (timeout)`). The inactivity watchdog is
 automatic: a child that emits no stream events for 10 minutes (default) is aborted and
