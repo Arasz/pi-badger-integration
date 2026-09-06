@@ -1,7 +1,19 @@
 {
-  "lastUpdated": "2026-09-05",
+  "lastUpdated": "2026-09-06",
   "next": null,
   "completedTasks": [
+    {
+      "taskId": "pbi-remove-delegate-background-param-compat",
+      "title": "Remove delegate background param, mode alone decides",
+      "finishedAt": "2026-09-06T09:51:41Z",
+      "summary": "Deleted background from DelegateParams; prepareArguments strips stale keys (old-session compat, SDK-cited); dropped B-A1 rejection + degraded flag/branch; wantsBackground = mode === tui. Tests 69 green (schema-absence proof, shim unit + joined keys-subset tests, mode-only matrix incl. rpc stale-key row; aids: Static retype, Value-absence workaround, catalog dedupe). PR #4 squash-merged over moved main (model-tiers #3): 3-hunk conflict resolved compositionally, join gate 232/0 over 7 suites. No manual VERSION (auto-bump owns it). Published, --check in sync. Low-effort: in-session draft + plan review (READY-WITH-FOLDS) + impl + impl review (SHIP-WITH-FIXES) + qa review-tests (GATE).",
+      "decisions": [
+        "Delete vs keep-as-ignored: an ignored-but-present field still advertises background:false to the model and silently converts explicit blocking into background; deletion + prepareArguments shim is the SDK-documented shape",
+        "No in-branch VERSION bump: auto-bump cuts releases on cadence and any in-branch number collides (1.0.10 taken mid-task); orchestrator leaves versioning to the chain",
+        "typebox@1 exports no Value: joined shim test asserts keys-subset-of-schema + preservation instead of Value.Check",
+        "Merge-conflict rule vs active lanes: keep their additive plumbing (levelOverride), let removal win on shared lines, verify with residue grep + full related suites"
+      ]
+    },
     {
       "taskId": "pbi-ai-raccoon-tool-cards-ui",
       "title": "UI cards for ai-raccoon tool results",
