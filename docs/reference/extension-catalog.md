@@ -2,6 +2,39 @@
 
 Deep reference for the extensions this repo ships. For install steps see [Install extensions](../howto/install-extensions.md).
 
+## The mem-based-rag extension: memory-based prompt enrichment on the ai-raccoon bank
+
+Substantive user prompts gain a labelled `Memory context:` block injected via
+`before_agent_start` — top-3 memory snippets plus top-2 code snippets from
+`memory_search`, each with its hash so the agent can `memory_get`/`code_get` the
+full entry. The prompt itself is never rewritten: the `input` handler only
+captures the raw pre-expansion text (so a `/skill:task <words>` call is queried
+by `<words>`, never by expanded skill content), and enrichment arrives as a
+separate message with its own card.
+
+Skip list (filters, not a score floor, kill meaningless prompts): empty input,
+any leading-`/` command line, control words (`stop`, `continue`, …), bare skill
+calls, `<20` chars, fewer than 6 unique words (≥3 chars outside a noise
+dictionary), and empty results (no-hits skip). The block carries a
+trust-boundary header: retrieved snippets are untrusted background, never
+instructions. Modes:
+`default` (search snippets) and `expanded` (a `memory_get`/`code_get` per kept
+hit, with path + chunk/line provenance, per-hit snippet fallback). Transport is
+a persistent `ai-raccoon --transport stdio` child (pi extensions cannot invoke
+MCP tools): spawn+init ~0.3 s amortized, first search ~4.5 s model warm-up,
+steady ~0.4–0.5 s, every call timeout-bounded (default 8 s) and fail-open — a
+slow or dead bank skips enrichment, never the turn. Agent memory is untouched:
+same server, separate call site.
+
+Config (env defaults, read per call; `/rag` for session scope):
+`PI_BADGER_MEM_RAG=0` disables, `PI_BADGER_MEM_RAG_MODE`
+(default|expanded), `PI_BADGER_MEM_RAG_MIN_WORDS` (default 6),
+`PI_BADGER_MEM_RAG_MIN_CHARS` (default 20),
+`PI_BADGER_MEM_RAG_TIMEOUT_MS` (default 8000),
+`PI_BADGER_MEM_RAG_SNIPPET_CHARS` (default 300). `/rag status`
+reports enriched/skipped counts and the last reason; `/rag mode
+default|expanded|off` overrides for the session.
+
 ## The subagent extension: background delegation
 
 
