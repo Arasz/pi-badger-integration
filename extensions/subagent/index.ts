@@ -56,6 +56,7 @@ import {
   formatUsage,
   FROZEN_MODEL_GROUPS,
   isUsableModelRegistry,
+  levelOverrideSentence,
   pruneLogFiles,
   renderDelegationStatus,
   resolveDelegationModel,
@@ -64,6 +65,7 @@ import {
   type DelegationState,
   type DelegationUsage,
   type LevelRegistry,
+  type ModelGroupsLoad,
   type LogDirEntry,
   type LogRunFile,
   type LogRunSummary,
@@ -104,17 +106,10 @@ export const AGENTS_DIR = [".pi", "agents"];
 export const MODEL_GROUPS_FILE = [".ai-badger", "model-groups.json"];
 
 /**
- * What `loadModelGroups` resolved: the project's registry file, or the frozen fallback
- * with the reason it degraded (absence rule — the caller surfaces `warning` via
- * ui.notify, so the degrade is loud, never silent).
+ * What `loadModelGroups` resolved — shape owned by delegation-core.ts (re-exported here
+ * for tool-layer consumers).
  */
-export interface ModelGroupsLoad {
-  registry: LevelRegistry;
-  /** "project" = the target project's file; "frozen" = degrade-on-stale fallback. */
-  source: "project" | "frozen";
-  /** Present exactly when `source` is "frozen": names the file + the rule that forced it. */
-  warning?: string;
-}
+export type { ModelGroupsLoad };
 
 /**
  * Read the model-tier registry for one delegation (PKG-5 5a, impure wiring half — the
@@ -1012,10 +1007,35 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     agentsDirFor: (cwd) => join(cwd, ...AGENTS_DIR),
     unknownPersonaMessage: (agent, agentsDir, personas) => unknownPersonaMessage(agent, agentsDir, personas),
     validateChildCwd,
-    buildInvocation: (persona, task, model) => {
-      const args = delegationArgs(persona, task, model);
+    loadModelGroups: (cwd) => loadModelGroups(cwd),
+    recordLevelOverride: (id, sentence) => rememberLevelOverride(id, sentence),
+    buildInvocation: (persona, task, models) => {
+      // PKG-5 5c: the single G-6 resolution for queue members (tool-override > frontmatter
+      // model > level-resolved > session). The argv renders from the RESOLVED pin, so this
+      // stays consistent with the delegate path's delegationArgs by construction.
+      const registry = models.registry ?? FROZEN_MODEL_GROUPS;
+      const resolution = resolveDelegationModel(registry, {
+        toolModel: models.toolModel,
+        frontmatterModel: persona.model,
+        level: models.level ?? persona.level,
+        sessionModel: models.sessionModel,
+      });
+      const args = delegationArgs({ systemPrompt: persona.systemPrompt, model: resolution.model }, task, undefined, registry);
       const invocation = piInvocation(args);
-      return { command: invocation.command, args: invocation.args, fallbackArgs: fallbackArgsFor(invocation.args, persona, model) };
+      // The fallback retries on the session ("parent") model and arms only when a pin won
+      // over it — a session-passthrough argv must not arm an identical retry.
+      const pin =
+        resolution.model !== undefined && resolution.model !== models.sessionModel ? resolution.model : undefined;
+      const fallbackArgs =
+        pin !== undefined
+          ? fallbackArgsFor(invocation.args, { model: pin, level: models.level ?? persona.level }, models.sessionModel, registry)
+          : undefined;
+      return {
+        command: invocation.command,
+        args: invocation.args,
+        ...(fallbackArgs !== undefined ? { fallbackArgs } : {}),
+        resolution,
+      };
     },
   };
   registerDelegationQueue(pi, registry, queueOpts);
@@ -1199,12 +1219,8 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
 
       // PKG-5 acceptance 3: a valid level beaten by an explicit model is recorded for the
       // result note (deliverNote merges it like modelFallback) and the receipt details.
-      if (resolution.overriddenLevel !== undefined && resolution.overridingModel !== undefined) {
-        rememberLevelOverride(
-          outcome.id,
-          `explicit model "${resolution.overridingModel}" overrode level "${resolution.overriddenLevel}"`,
-        );
-      }
+      const overrideSentence = levelOverrideSentence(resolution);
+      if (overrideSentence !== undefined) rememberLevelOverride(outcome.id, overrideSentence);
 
       if (wantsBackground && !degraded) {
         return receiptResult(outcome, toolCallId);

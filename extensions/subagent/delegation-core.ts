@@ -1145,6 +1145,20 @@ export function resolveLevel(registry: LevelRegistry, opts: ResolveLevelOptions 
 }
 
 /**
+ * What the registry loader resolved: the project's file, or the frozen fallback with
+ * the reason it degraded (absence rule — the caller surfaces `warning` via ui.notify,
+ * so the degrade is loud, never silent). Shape lives here (pure) so both tool layers
+ * can name it without importing each other.
+ */
+export interface ModelGroupsLoad {
+  registry: LevelRegistry;
+  /** "project" = the target project's file; "frozen" = degrade-on-stale fallback. */
+  source: "project" | "frozen";
+  /** Present exactly when `source` is "frozen": names the file + the rule that forced it. */
+  warning?: string;
+}
+
+/**
  * The four G-6 model sources, highest precedence first. Blank ≡ absent at every rank.
  * The delegate tool has no call-time override (toolModel stays undefined there); the queue
  * tool's group `model:` is the tool-override rank.
@@ -1172,4 +1186,15 @@ export function resolveDelegationModel(registry: LevelRegistry, sources: Delegat
   if (resolved.model !== undefined) return resolved;
   const session = nonBlank(sources.sessionModel);
   return session === undefined ? {} : { model: session };
+}
+
+/**
+ * The G-6 explicit-wins sentence for a resolution (`explicit model "X" overrode level
+ * "low"`), or undefined when no valid level lost to an explicit model. ONE builder so the
+ * delegate tool, the queue tool, receipts, and cards record it byte-identically — the
+ * modelFallback pattern (acceptance 3: recorded, never silent).
+ */
+export function levelOverrideSentence(resolved: ResolvedLevelPin): string | undefined {
+  if (resolved.overriddenLevel === undefined || resolved.overridingModel === undefined) return undefined;
+  return `explicit model "${resolved.overridingModel}" overrode level "${resolved.overriddenLevel}"`;
 }

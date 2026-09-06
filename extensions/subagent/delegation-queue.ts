@@ -21,7 +21,15 @@
 
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { clampRunTimeoutMs, type GroupMode } from "./delegation-core.ts";
+import {
+  clampRunTimeoutMs,
+  levelOverrideSentence,
+  VALID_LEVELS,
+  type GroupMode,
+  type LevelRegistry,
+  type ModelGroupsLoad,
+  type ResolvedLevelPin,
+} from "./delegation-core.ts";
 import type { DelegationRegistry, StartRequest } from "./delegation-registry.ts";
 
 /** The tool name as registered (R9's drift guard reads this, not a hardcoded string). */
@@ -37,6 +45,11 @@ export interface QueuePersona {
    * derives the model-fallback argv from it). index.ts's full Persona scan satisfies this
    * structurally. */
   model?: string;
+  /**
+   * The persona's `level:` pin (PKG-5 dual-key per G-2/G-3): routing intent resolved at
+   * delegation time. Loses to the group's call-time `level:`/`model:` params (G-6).
+   */
+  level?: string;
 }
 
 /** Structural view of the persona scan (index.ts's PersonaScan). */
@@ -45,6 +58,28 @@ export interface QueuePersonaScan {
   errors: string[];
   duplicates?: string[];
   missingDir?: string;
+}
+
+/**
+ * The four G-6 model sources for one queue member, resolved by the index.ts buildInvocation
+ * implementation through the single `resolveDelegationModel` order (tool-override >
+ * frontmatter `model:` > `level:`-resolved > session). `level` is the effective tier
+ * (group `level:` param ?? persona `level:`); `registry` the loaded project registry
+ * (frozen fallback when the project has none).
+ */
+export interface QueueModelInputs {
+  readonly toolModel?: string;
+  readonly sessionModel?: string;
+  readonly level?: string;
+  readonly registry?: LevelRegistry;
+}
+
+/** What buildInvocation decided: the child invocation plus its G-6 resolution. */
+export interface BuiltInvocation {
+  command: string;
+  args: string[];
+  fallbackArgs?: string[];
+  resolution: ResolvedLevelPin;
 }
 
 /**
@@ -62,14 +97,26 @@ export interface DelegationQueueOpts {
   unknownPersonaMessage(agent: string, agentsDir: string, personas: QueuePersona[]): string;
   /** validateChildCwd: the failure reason, or undefined when the cwd is a usable directory (T74). */
   validateChildCwd(cwd: string): string | undefined;
-  /** The child invocation for one member; `model` is the resolved model string (the group-level
-   * override, else the session model — the delegate default). `fallbackArgs` (f: 2026-09-02)
-   * is the model-pin retry argv — derived beside `args`, passed through to the runner. */
+  /**
+   * Load the target project's model-tier registry (PKG-5 5a: import + frozen fallback).
+   * index.ts's loadModelGroups — the queue never reads the registry file itself.
+   */
+  loadModelGroups(cwd: string): ModelGroupsLoad;
+  /**
+   * Remember one run's G-6 override sentence for the result note (PKG-5 acceptance 3).
+   * index.ts merges it at deliverNote like modelFallback; the queue only reports it.
+   */
+  recordLevelOverride(id: string, sentence: string): void;
+  /**
+   * The child invocation for one member, resolved through G-6 (PKG-5). `fallbackArgs`
+   * (f: 2026-09-02) is the model-pin retry argv — derived beside `args`, passed through
+   * to the runner. `resolution` carries the G-6 decision (warnings + override record).
+   */
   buildInvocation(
     persona: QueuePersona,
     task: string,
-    model: string | undefined,
-  ): { command: string; args: string[]; fallbackArgs?: string[] };
+    models: QueueModelInputs,
+  ): BuiltInvocation;
 }
 
 /** The slice of pi's execute context the queue tool reads. */
@@ -86,6 +133,8 @@ export interface QueueTaskReceipt {
   id: string;
   state: string;
   queuePosition?: number;
+  /** PKG-5: the G-6 explicit-wins sentence, when an explicit model overrode this member's level. */
+  levelOverride?: string;
 }
 
 /** The add/add-parallel result details. */
@@ -136,7 +185,10 @@ const QueueParams = Type.Object({
     Type.String({ description: "add/add-parallel only: the persona plain-string tasks run as; use {agent, task} entries to override per task" }),
   ),
   model: Type.Optional(
-    Type.String({ description: "add/add-parallel only: model override for the whole group (default: this session's model, like delegate)" }),
+    Type.String({ description: "add/add-parallel only: model override for the whole group — outranks persona model:/level: pins (G-6 tool-override rank); default: this session's model" }),
+  ),
+  level: Type.Optional(
+    Type.String({ description: "add/add-parallel only: model tier low|medium|high for the whole group (default: each persona's level: pin, else the session model). An explicit group or persona model: wins and the override is recorded on the result note; an unknown value is a usage error" }),
   ),
   cwd: Type.Optional(
     Type.String({
@@ -207,11 +259,20 @@ export function registerDelegationQueue(
 		return toolCtx.model ? `${toolCtx.model.provider}/${toolCtx.model.id}` : undefined;
 	}
 
-	async function addTasks(params: { tasks?: unknown; agent?: unknown; model?: unknown; cwd?: unknown; timeoutMs?: unknown }, toolCtx: QueueToolContext, mode: GroupMode, toolCallId: string) {
+	async function addTasks(params: { tasks?: unknown; agent?: unknown; model?: unknown; level?: unknown; cwd?: unknown; timeoutMs?: unknown }, toolCtx: QueueToolContext, mode: GroupMode, toolCallId: string) {
 		const tasks = params.tasks;
 		if (!Array.isArray(tasks) || tasks.length === 0) {
 			throw new Error(
 				`queue ${mode === "serial" ? "add" : "add-parallel"} needs a non-empty tasks array — e.g. queue {action: "${mode === "serial" ? "add" : "add-parallel"}", agent: "architect", tasks: ["task one", "task two"]}`,
+			);
+		}
+		// PKG-5 5c (G5-gap closed): the group level is live caller input — an unknown value is
+		// a usage error, never a silent ignore, even when a group model overrides it (the ADR
+		// records the tool-param vs file-pin asymmetry: file pins follow the S5 warn path).
+		const groupLevel = typeof params.level === "string" && params.level.trim() ? params.level.trim() : undefined;
+		if (groupLevel !== undefined && !(VALID_LEVELS as readonly string[]).includes(groupLevel)) {
+			throw new Error(
+				`queue ${mode === "serial" ? "add" : "add-parallel"} needs level low, medium, or high — got "${groupLevel}". Valid levels are low, medium, high.`,
 			);
 		}
 		const groupAgent = typeof params.agent === "string" && params.agent.trim() ? params.agent.trim() : undefined;
@@ -263,7 +324,11 @@ export function registerDelegationQueue(
 			childCwd = params.cwd;
 		}
 
-		const model = typeof params.model === "string" && params.model.trim() ? params.model.trim() : undefined;
+		const groupModel = typeof params.model === "string" && params.model.trim() ? params.model.trim() : undefined;
+		const sessionModel = sessionModelOf(toolCtx);
+		// PKG-5 5a: the registry belongs to the project (toolCtx.cwd), loaded once per call.
+		const loaded = opts.loadModelGroups(toolCtx.cwd);
+		if (loaded.warning) toolCtx.ui.notify(`ai-badger: ${loaded.warning}`, "warning");
 		const timeoutMs = clampRunTimeoutMs(typeof params.timeoutMs === "number" ? params.timeoutMs : undefined);
 		let sessionId: string | undefined;
 		try {
@@ -272,8 +337,25 @@ export function registerDelegationQueue(
 			sessionId = undefined;
 		}
 
-		const requests: StartRequest[] = resolved.map(({ persona, task }) => {
-			const invocation = opts.buildInvocation(persona, task, model ?? sessionModelOf(toolCtx));
+		const invocations = resolved.map(({ persona, task }) =>
+			// Effective tier: call-time group param beats the persona file pin (G-6 Mirror of the
+			// model ranking); resolution itself runs once inside buildInvocation (single G-6 order).
+			opts.buildInvocation(persona, task, {
+				...(groupModel !== undefined ? { toolModel: groupModel } : {}),
+				...(sessionModel !== undefined ? { sessionModel } : {}),
+				...((groupLevel ?? persona.level) !== undefined ? { level: (groupLevel ?? persona.level) as string } : {}),
+				registry: loaded.registry,
+			}),
+		);
+		for (const invocation of invocations) {
+			// S5 file-pin half: an invalid persona level overridden by an explicit model warns
+			// (group-level invalids threw above as usage errors); deciding invalids throw here.
+			if (invocation.resolution.levelWarning) {
+				toolCtx.ui.notify(`ai-badger: ${invocation.resolution.levelWarning}`, "warning");
+			}
+		}
+		const requests: StartRequest[] = resolved.map(({ persona, task }, index) => {
+			const invocation = invocations[index]!;
 			return {
 				agent: persona.name,
 				task,
@@ -298,12 +380,17 @@ export function registerDelegationQueue(
 
 		const groupId = outcomes[0]!.ok ? outcomes[0]!.groupId : "";
 		const receiptMode = outcomes[0]!.ok ? outcomes[0]!.mode : mode;
-		const taskReceipts: QueueTaskReceipt[] = outcomes.map((outcome) => {
+		const taskReceipts: QueueTaskReceipt[] = outcomes.map((outcome, index) => {
 			if (!outcome.ok) return { id: "?", state: "rejected" };
+			// PKG-5 acceptance 3: the G-6 override sentence rides the receipt AND the result
+			// note (recorded for deliverNote like modelFallback).
+			const override = levelOverrideSentence(invocations[index]!.resolution);
+			if (override !== undefined) opts.recordLevelOverride(outcome.id, override);
 			return {
 				id: outcome.id,
 				state: outcome.record.state,
 				...(outcome.record.queuePosition !== undefined ? { queuePosition: outcome.record.queuePosition } : {}),
+				...(override !== undefined ? { levelOverride: override } : {}),
 			};
 		});
 		tracked.set(groupId, { groupId, mode: receiptMode, memberIds: taskReceipts.map((t) => t.id) });
