@@ -33,6 +33,18 @@ describe("sqlite store round-trip", () => {
 		expect(store.listForSession("s-me", "p1")).toEqual([]);
 	});
 
+	test("deliverDirectForSession returns directs only and lands past MAX (broadcasts consumed)", () => {
+		const store = createSqliteStore(tempDb(), () => 1_700_000_000_000);
+		store.send({ senderSession: "s-a", senderProject: "p1", content: "project noise", targetSession: null, targetProject: "p1" });
+		const directId = store.send({ senderSession: "s-a", senderProject: "p1", content: "private one", targetSession: "s-me", targetProject: null });
+		store.send({ senderSession: "s-a", senderProject: "p1", content: "machine noise", targetSession: null, targetProject: null });
+		const first = store.deliverDirectForSession("s-me", "p1");
+		expect(first.messages.map((m) => m.id)).toEqual([directId]);
+		// cursor past MAX: a following full deliver finds nothing (broadcasts skipped on start)
+		const second = store.deliverForSession("s-me", "p1");
+		expect(second.messages).toEqual([]);
+	});
+
 	test("missing DB file is data, never created", () => {
 		const missing = join(mkdtempSync(join(tmpdir(), "mbus-")), "nope.db");
 		let error = "";
