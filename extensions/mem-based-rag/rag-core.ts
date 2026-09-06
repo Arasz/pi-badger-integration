@@ -296,6 +296,19 @@ const CARD_TRUST_LINES = new Set([
  */
 const CARD_HIT_RE = /^\[(m|c)\d+\]\s+(.+?)\s*(?:\(([^)]*)\)\s*)?::\s?(.*)$/;
 const CARD_RANGE_RE = /^(.*)(:\d+-\d+)$/;
+const CARD_RANK_RE = /^rank\s+(-?\d+(?:\.\d+)?)$/;
+
+/** Display-only: `rank 0.997037…` → `rank 0.997` (4dp, no trailing zeros,
+ * integers stay bare). Non-rank parens (`chunk 2/36`, `lines 10-20`) pass
+ * through verbatim. The LLM block keeps full precision. */
+function shortParen(paren: string | undefined): string {
+	if (!paren) return "";
+	const rm = CARD_RANK_RE.exec(paren.trim());
+	if (!rm) return ` (${paren})`;
+	const n = Number(rm[1]);
+	if (!Number.isFinite(n)) return ` (${paren})`;
+	return ` (rank ${String(Math.round(n * 1e4) / 1e4)})`;
+}
 
 /**
  * Display-only parse of an injected block into styled card lines: hit
@@ -356,7 +369,7 @@ export function toCardLines(body: string, memDisplay?: string[], codeDisplay?: s
 			ci += 1;
 		}
 		const shown = (disp ?? pathSeg) || "?";
-		const suffix = paren ? ` (${paren})` : "";
+		const suffix = shortParen(paren);
 		out.push({ tone: "hit", text: `• ${shown}${range}${suffix} :: ${snippet}` });
 		return;
 		}

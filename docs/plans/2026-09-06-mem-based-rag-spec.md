@@ -136,8 +136,13 @@ sync IO acceptable at this rate; cache per cwd optionally.
 
 ## 10. Observability — CONFIRMED + session scope
 
-Card, `details{mode,uniqueWords,memHashes,codeHashes,latencyMs}`, counters —
+Card, `details{mode,uniqueWords,memHashes,codeHashes,memDisplay,codeDisplay,latencyMs}`,
+counters —
 all kept, all reset per session (§2.d). `/rag status` gains §7 diagnostics.
+The card is display-only: bulleted hits without `[m1]`/`[c1]` prefixes,
+cwd-relative paths (from `memDisplay`/`codeDisplay`, absolute fallback), ranks
+rounded to 4dp (`0.997037…` → `0.997`, integers stay bare); the LLM block (§5)
+keeps absolute paths, prefixes, and full-precision ranks.
 
 ## 11. Calibration — CONFIRMED, no floor
 

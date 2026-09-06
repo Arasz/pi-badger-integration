@@ -399,6 +399,20 @@ describe("card display helpers (display-only, LLM block untouched)", () => {
 		expect(texts).toContain("• (no code hits)");
 	});
 
+	test("toCardLines rounds rank floats to 4dp, leaves chunk/lines parens alone", () => {
+		const body = [
+			'Memory context (ai-raccoon memory_search, snippets — query: "q"):',
+			"- memories (snippets):",
+			"[m1] /repo/a.md (rank 0.997037037037037) :: snippet one",
+			"[m2] /repo/b.md (rank 0.44444) :: snippet two",
+			"[m3] /repo/c.md (rank 1) :: snippet three",
+		].join("\n");
+		const texts = toCardLines(body).map((l) => l.text);
+		expect(texts).toContain("• /repo/a.md (rank 0.997) :: snippet one");
+		expect(texts).toContain("• /repo/b.md (rank 0.4444) :: snippet two");
+		expect(texts).toContain("• /repo/c.md (rank 1) :: snippet three");
+	});
+
 	test("toCardLines never throws on unknown bodies", () => {
 		const lines = toCardLines("garbage\n[m9 broken");
 		expect(lines).toHaveLength(2);
