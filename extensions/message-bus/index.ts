@@ -6,6 +6,13 @@
  * turn_start) and a card renderer — all against the SAME SQLite bus tables the
  * `send-message` skill writes (`messages` + `cursors` in the user DB).
  *
+ * Startup gate: session_start reads DIRECT mail only (broadcasts are consumed
+ * silently via the cursor landing past MAX), prints a user-only summary via
+ * appendEntry (never LLM context), and asks via ctx.ui.confirm before the
+ * agent ever sees the mail. A "no" leaves the cursor advanced (marked read).
+ * Headless sessions (no confirm surface) surface directs to the agent so mail
+ * is never silently consumed. turn_start and `check` keep delivering all mail.
+ *
  * What this is NOT:
  *   - not a new transport: the backend is ai-badger's bus (badger_store.py's
  *     `messages` DDL); the protocol is multi-agent-communication (ack once,
@@ -36,8 +43,11 @@ import { Type } from "typebox";
 import {
 	ACK_PREFIX,
 	buildAckContent,
+	buildDirectStartQuestion,
 	composeDeliveryNotice,
+	composeDirectStartNotice,
 	DEFAULT_LIST_DEPTH,
+	filterDirect,
 	formatList,
 	isAck,
 	normalizeSendTargets,
@@ -46,6 +56,16 @@ import {
 
 /** The message-bus card's custom message type. */
 export const MESSAGE_BUS_CUSTOM_TYPE = "message-bus-event";
+
+/** User-only startup summary entry (appendEntry — never enters LLM context). */
+export const MESSAGE_BUS_START_ENTRY_TYPE = "message-bus-start";
+
+/** Data stored on the user-only startup summary card. */
+export interface MessageBusStartCardData {
+	text: string;
+	count: number;
+	ids: number[];
+}
 
 /** The LLM-facing tool name. */
 export const MESSAGE_BUS_TOOL_NAME = "message-bus";
@@ -84,6 +104,9 @@ export interface BusStore {
 	getMessage(id: number): BusMessage | null;
 	listForSession(sessionId: string, projectId: string | null): BusMessage[];
 	deliverForSession(sessionId: string, projectId: string | null): { messages: BusMessage[]; cursor: number };
+	/** Startup read: direct-only batch, cursor still lands past MAX(id) so stale
+	 * broadcasts are consumed silently and never re-delivered on turn_start. */
+	deliverDirectForSession(sessionId: string, projectId: string | null): { messages: BusMessage[]; cursor: number };
 	getCursor(sessionId: string): number;
 }
 
@@ -236,6 +259,19 @@ export function createSqliteStore(dbPath: string, now: () => number = Date.now):
 			)
 			.all(...params) as Record<string, unknown>[];
 	};
+	const readDirect = (db: SqliteDb, sessionId: string, afterId: number, sinceTs: string | null): Record<string, unknown>[] => {
+		const clauses = ["target_session = ?", "id > ?", "sender_session <> ?"];
+		const params: unknown[] = [sessionId, afterId, sessionId];
+		if (sinceTs !== null) {
+			clauses.push("ts >= ?");
+			params.push(sinceTs);
+		}
+		return db
+			.prepare(
+				`SELECT id, ts, sender_session, sender_project, content, target_session, target_project FROM messages WHERE ${clauses.join(" AND ")} ORDER BY id ASC`,
+			)
+			.all(...params) as Record<string, unknown>[];
+	};
 	return {
 		send(args) {
 			if (!args.senderSession) throw new Error("send refused: missing sender identity (sessionId)");
@@ -283,6 +319,37 @@ export function createSqliteStore(dbPath: string, now: () => number = Date.now):
 					const rows = readAddressed(db, sessionId, projectId, Number(cursorRow.cursor_id ?? 0), null);
 					messages = rows.map(rowToMessage);
 					nextCursor = messages.length > 0 ? messages[messages.length - 1]!.id : Number(cursorRow.cursor_id ?? 0);
+				}
+				db.prepare("INSERT INTO cursors(session_id, cursor_id, ts) VALUES (?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET cursor_id = excluded.cursor_id, ts = excluded.ts").run(
+					sessionId,
+					nextCursor,
+					new Date(now()).toISOString(),
+				);
+				return { messages, cursor: nextCursor };
+			});
+		},
+		deliverDirectForSession(sessionId, _projectId) {
+			return withDb((db) => {
+				const cursorRow = db.prepare("SELECT cursor_id FROM cursors WHERE session_id = ?").get(sessionId) as { cursor_id?: unknown } | null | undefined;
+				let messages: BusMessage[];
+				let nextCursor: number;
+				if (cursorRow === null || cursorRow === undefined) {
+					const cutoff = new Date(now() - FIRST_READ_WINDOW_MS).toISOString();
+					const rows = readDirect(db, sessionId, 0, cutoff);
+					messages = rows.slice(0, FIRST_READ_CAP).map(rowToMessage);
+					const maxRow = db.prepare("SELECT COALESCE(MAX(id), 0) AS max_id FROM messages").get() as { max_id?: unknown };
+					nextCursor = Number(maxRow?.max_id ?? 0);
+				} else {
+					const cursor = Number(cursorRow.cursor_id ?? 0);
+					const rows = readDirect(db, sessionId, cursor, null);
+					messages = rows.map(rowToMessage);
+					if (messages.length > 0) {
+						const maxRow = db.prepare("SELECT COALESCE(MAX(id), 0) AS max_id FROM messages").get() as { max_id?: unknown };
+						nextCursor = Number(maxRow?.max_id ?? 0);
+					} else {
+						const maxRow = db.prepare("SELECT COALESCE(MAX(id), 0) AS max_id FROM messages").get() as { max_id?: unknown };
+						nextCursor = Math.max(cursor, Number(maxRow?.max_id ?? 0));
+					}
 				}
 				db.prepare("INSERT INTO cursors(session_id, cursor_id, ts) VALUES (?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET cursor_id = excluded.cursor_id, ts = excluded.ts").run(
 					sessionId,
@@ -360,12 +427,74 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		return notice;
 	};
 
+	/** Startup read: direct-only batch (broadcasts consumed silently via cursor). */
+	const deliverDirectBatch = (store: BusStore, sessionId: string, projectId: string | null): BusMessage[] => {
+		if (typeof store.deliverDirectForSession === "function") {
+			return store.deliverDirectForSession(sessionId, projectId).messages;
+		}
+		return filterDirect(store.deliverForSession(sessionId, projectId).messages);
+	};
+
+	/**
+	 * Startup gate: read directs, print a user-only summary, ask before the
+	 * agent ever sees the mail. A "no" leaves the cursor advanced (marked read).
+	 * User-only, never a prompt by default: the summary rides appendEntry so it
+	 * renders in the TUI transcript without entering LLM context (update-check
+	 * pattern — even triggerTurn:false would leak into history on next turn).
+	 */
+	const runDirectStart = async (ctx: ExtensionContext): Promise<string> => {
+		const sessionId = resolveSid(ctx);
+		if (!sessionId) return "message-bus unavailable: no session id (sessionManager.getSessionId() answered empty)";
+		let store: BusStore;
+		try {
+			store = storeFor(ctx.cwd);
+		} catch (error) {
+			return `message-bus unavailable: ${error instanceof Error ? error.message : String(error)}`;
+		}
+		let directs: BusMessage[];
+		try {
+			directs = deliverDirectBatch(store, sessionId, resolvePid(ctx));
+		} catch (error) {
+			console.error("ai-badger message-bus: startup delivery failed — fail-open, mail stays queued", error);
+			return `message-bus startup check failed (mail stays queued): ${error instanceof Error ? error.message : String(error)}`;
+		}
+		if (directs.length === 0) return "no new private messages.";
+		const notice = composeDirectStartNotice(directs);
+		const ids = directs.map((m) => m.id);
+		try {
+			pi.appendEntry<MessageBusStartCardData>(MESSAGE_BUS_START_ENTRY_TYPE, { text: notice, count: directs.length, ids });
+		} catch (error) {
+			console.error("ai-badger message-bus: startup summary append failed — fail-open", error);
+		}
+		const canAsk =
+			(ctx as { hasUI?: boolean }).hasUI !== false &&
+			typeof (ctx as unknown as { ui?: { confirm?: unknown } }).ui?.confirm === "function";
+		if (!canAsk) {
+			// No user to ask (print/json/rpc or headless ctx): surface to the agent
+			// so the mail is not silently consumed — same wire as the old start.
+			sendCard(composeDeliveryNotice(directs), { kind: "delivery", count: directs.length, ids }, true);
+			return notice;
+		}
+		try {
+			const confirm = (ctx as unknown as { ui: { confirm: (title: string, message: string) => Promise<boolean> } }).ui.confirm;
+			const acted = await confirm("Private messages", buildDirectStartQuestion(directs.length));
+			if (acted) {
+				sendCard(composeDeliveryNotice(directs), { kind: "delivery", count: directs.length, ids }, true);
+			}
+			return notice;
+		} catch (error) {
+			console.error("ai-badger message-bus: startup confirm failed — surfacing to agent instead of losing mail", error);
+			sendCard(composeDeliveryNotice(directs), { kind: "delivery", count: directs.length, ids }, true);
+			return notice;
+		}
+	};
+
 	// ---- hooks (turn-boundary seam; the adapter's timer owns the idle wake)
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", async (_event, ctx) => {
 		if (hooksDisabled()) return undefined;
 		try {
-			runCheck(ctx, true);
+			await runDirectStart(ctx);
 		} catch (error) {
 			console.error("ai-badger message-bus: session_start delivery failed — fail-open", error);
 		}
@@ -559,7 +688,7 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		},
 	});
 
-	// ---- renderer (grouped card, never raw JSON)
+	// ---- renderers (delivery card for the agent, startup card user-only)
 
 	pi.registerMessageRenderer(MESSAGE_BUS_CUSTOM_TYPE, (message, options, theme) => {
 		const body = typeof message.content === "string" ? message.content : "";
@@ -569,4 +698,18 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		box.addChild(new Text([theme.fg("success", lines[0] ?? ""), ...lines.slice(1)].join("\n"), 0, 0));
 		return box;
 	});
+
+	// User-only startup summary: appendEntry keeps it out of LLM context and
+	// never triggers a turn (update-check pattern). Guarded: older pi builds
+	// without registerEntryRenderer simply skip the card (the confirm still gates).
+	if (typeof (pi as unknown as { registerEntryRenderer?: unknown }).registerEntryRenderer === "function") {
+		pi.registerEntryRenderer<MessageBusStartCardData>(MESSAGE_BUS_START_ENTRY_TYPE, (entry, _options, theme) => {
+			const body = entry.data?.text ?? "";
+			if (!body) return undefined;
+			const box = new Box(1, 1, (line: string) => theme.bg("customMessageBg", line));
+			const lines = body.split("\n");
+			box.addChild(new Text([theme.fg("success", lines[0] ?? ""), ...lines.slice(1)].join("\n"), 0, 0));
+			return box;
+		});
+	}
 }

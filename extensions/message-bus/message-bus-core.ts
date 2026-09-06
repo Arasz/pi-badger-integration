@@ -148,3 +148,31 @@ export function composeDeliveryNotice(messages: BusMessage[]): string {
 	const tail = messages.length > 10 ? `…and ${messages.length - 10} more (see /messages)` : "see /messages for the grouped list";
 	return [head, ...rows, tail].join("\n");
 }
+
+/** Keep only 1:1 rows (session_start reads directs, never broadcasts). */
+export function filterDirect(messages: BusMessage[]): BusMessage[] {
+	return messages.filter((m) => scopeOf(m) === "direct");
+}
+
+/**
+ * Startup summary for newly delivered DIRECT mail (the user-only card text).
+ * Broadcasts are consumed silently on start, so they never appear here.
+ * Empty batch → "" (the caller appends nothing).
+ */
+export function composeDirectStartNotice(messages: BusMessage[]): string {
+	const directs = filterDirect(messages);
+	if (directs.length === 0) return "";
+	const head = `message-bus: ${directs.length} private message${directs.length === 1 ? "" : "s"} (broadcasts skipped on startup)`;
+	const rows = directs.slice(0, 10).map((m) => `#${m.id} [direct] ${excerpt(m.content)}`);
+	const tail = directs.length > 10 ? `…and ${directs.length - 10} more (see /messages)` : "see /messages for the grouped list";
+	return [head, ...rows, tail].join("\n");
+}
+
+/**
+ * The startup user-decision question. Asked via ctx.ui.confirm before any
+ * direct mail enters LLM context — a "no" leaves the cursor advanced
+ * (mail marked read, nothing further sent).
+ */
+export function buildDirectStartQuestion(count: number): string {
+	return `agent got ${count} private message${count === 1 ? "" : "s"}, do you want to act on them?`;
+}

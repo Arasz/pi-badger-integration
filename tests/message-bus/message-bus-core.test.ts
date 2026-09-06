@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import {
 	ACK_PREFIX,
 	buildAckContent,
+	buildDirectStartQuestion,
 	composeDeliveryNotice,
+	composeDirectStartNotice,
+	filterDirect,
 	formatList,
 	groupLastPerScope,
 	isAck,
@@ -126,6 +129,37 @@ describe("composeDeliveryNotice", () => {
 		expect(notice).toContain("1");
 		const empty = composeDeliveryNotice([]);
 		expect(empty).toBe("");
+	});
+});
+
+describe("startup direct gate", () => {
+	test("filterDirect keeps only 1:1 rows", () => {
+		const all = [
+			msg({ id: 1, targetSession: "s-me", content: "one" }),
+			msg({ id: 2, targetSession: null, targetProject: "p1", content: "two" }),
+			msg({ id: 3, content: "three" }),
+		];
+		expect(filterDirect(all).map((m) => m.id)).toEqual([1]);
+	});
+	test("composeDirectStartNotice names private count, skips broadcasts", () => {
+		const notice = composeDirectStartNotice([
+			msg({ id: 1, targetSession: "s-me", content: "one" }),
+			msg({ id: 2, targetSession: null, targetProject: "p1", content: "two" }),
+			msg({ id: 3, content: "three" }),
+		]);
+		expect(notice).toContain("1 private");
+		expect(notice).toContain("one");
+		expect(notice).not.toContain("two");
+		expect(notice).not.toContain("three");
+		expect(notice).toMatch(/broadcasts skipped/i);
+	});
+	test("composeDirectStartNotice empty states silent-shape", () => {
+		expect(composeDirectStartNotice([])).toBe("");
+		expect(composeDirectStartNotice([msg({ id: 2, targetSession: null, targetProject: "p1" })])).toBe("");
+	});
+	test("buildDirectStartQuestion matches the user-decision wording", () => {
+		expect(buildDirectStartQuestion(1)).toBe("agent got 1 private message, do you want to act on them?");
+		expect(buildDirectStartQuestion(3)).toBe("agent got 3 private messages, do you want to act on them?");
 	});
 });
 
