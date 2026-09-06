@@ -949,3 +949,85 @@ export function elideTeeStream(headerLine: string, stream: string, capBytes: num
   const marker = JSON.stringify({ type: TEE_ELIDED_TYPE, droppedBytes });
   return `${headerLine}\n${marker}\n${tail.replace(/\n$/, "")}\n`;
 }
+
+// ------------------------------------------------------------------ model-tier (level) registry (PKG-5)
+
+/**
+ * Model-tier vocabulary (PKG-5, ADR docs/work/2026-09-06-pkg5-level-registry-adr.md).
+ *
+ * The resolver consumes a VALIDATED registry object — never the filesystem. Ordering
+ * invariants (preferred-first, lexicographic price order, intra-group uniqueness, the
+ * demoted-tail exemption) are PKG-1 validator territory; this half reads
+ * `groups[level][0].id` only and re-validates the resolved id against MODEL_ID_PATTERN
+ * before emit (M8: the file is project-writable, the argv is not). Same purity rules as
+ * the rest of this file: no imports, no clock, no fs — decisions take injected data.
+ */
+
+/** Closed level set (contract §1 inv 6): exactly low|medium|high. */
+export const VALID_LEVELS = ["low", "medium", "high"] as const;
+
+/** One of the closed levels. */
+export type ModelLevel = (typeof VALID_LEVELS)[number];
+
+/**
+ * Tight model-id shape (M8): `openrouter/` + two bounded segments — no whitespace, no
+ * leading dash, no shell metacharacters. A resolved id that fails this is refused, never
+ * emitted into `--model` argv.
+ */
+export const MODEL_ID_PATTERN = /^openrouter\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+/**
+ * Minimal structural view of one registry member. Member-objects only (T-FAKESHAPE: never
+ * string lists) — the resolver reads `.id` and nothing else; `aliases`/`weightsId` are
+ * refresh-time metadata the resolver must never dereference (T-ALIAS).
+ */
+export interface LevelRegistryMember {
+  readonly id: string;
+  readonly preferred?: boolean;
+  readonly [key: string]: unknown;
+}
+
+/** Minimal structural view of the registry — `groups[level][0].id` is the only read. */
+export interface LevelRegistry {
+  readonly groups: Record<ModelLevel, readonly LevelRegistryMember[]>;
+  readonly registryVersion?: number;
+  readonly [key: string]: unknown;
+}
+
+/**
+ * Frozen fallback (router degrade-on-stale precedent): preferred pins only, copied from
+ * the PKG-1 canonical (`tiers/pkg1-registry:.ai-badger/model-groups.json`, read-only).
+ * Served when the target project has no usable registry file (absence rule — the warning
+ * rides `ModelGroupsLoad.warning`). `{ frozen: true }` marks degraded resolutions in
+ * telemetry; re-pin against the PKG-1 canonical when preferreds rotate (G1 follow-up).
+ */
+export const FROZEN_MODEL_GROUPS: LevelRegistry & { readonly frozen: true } = {
+  registryVersion: 1,
+  frozen: true,
+  source: "tiers/pkg1-registry canonical preferred pins (frozen fallback, revisit on rotation)",
+  groups: {
+    low: [{ id: "openrouter/z-ai/glm-5.3-flash", preferred: true }],
+    medium: [{ id: "openrouter/meta/muse-spark-1.3-contributor", preferred: true }],
+    high: [{ id: "openrouter/meta/muse-spark-1.3-contributor", preferred: true }],
+  },
+};
+
+/**
+ * Structural gate for an imported registry file (loader side): every closed level present
+ * as a non-empty list whose first entry bears a non-empty string id. Lifecycle invariants
+ * (preferred-first, price order, uniqueness) belong to PKG-1's validator, not this gate —
+ * this only refuses what the resolver cannot consume without guessing (§4 step 8: an
+ * empty group never auto-picks).
+ */
+export function isUsableModelRegistry(value: unknown): value is LevelRegistry {
+  if (typeof value !== "object" || value === null) return false;
+  const groups = (value as { groups?: unknown }).groups;
+  if (typeof groups !== "object" || groups === null) return false;
+  for (const level of VALID_LEVELS) {
+    const group = (groups as Record<string, unknown>)[level];
+    if (!Array.isArray(group) || group.length === 0) return false;
+    const first = group[0] as { id?: unknown } | null;
+    if (typeof first !== "object" || first === null || typeof first.id !== "string" || !first.id) return false;
+  }
+  return true;
+}

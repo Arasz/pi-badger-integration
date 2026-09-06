@@ -54,11 +54,14 @@ import {
   clampRunTimeoutMs,
   formatDuration,
   formatUsage,
+  FROZEN_MODEL_GROUPS,
+  isUsableModelRegistry,
   pruneLogFiles,
   renderDelegationStatus,
   RUN_TIMEOUT_MAX_MS,
   type DelegationState,
   type DelegationUsage,
+  type LevelRegistry,
   type LogDirEntry,
   type LogRunFile,
   type LogRunSummary,
@@ -90,6 +93,71 @@ export const CHILD_EXCLUDED_TOOLS = `${TOOL_NAME},${TOOL_NAME_PLURAL},queue,moni
 
 /** Where adjust_agents.py writes, relative to the project root. */
 export const AGENTS_DIR = [".pi", "agents"];
+
+/**
+ * Where the target project keeps its model-tier registry, relative to the project root
+ * (PKG-5 5a ADR: import-from-target-project — the same root `scanPersonas` reads, one
+ * root predicate). Never the ai-badger repo, never a vendored copy.
+ */
+export const MODEL_GROUPS_FILE = [".ai-badger", "model-groups.json"];
+
+/**
+ * What `loadModelGroups` resolved: the project's registry file, or the frozen fallback
+ * with the reason it degraded (absence rule — the caller surfaces `warning` via
+ * ui.notify, so the degrade is loud, never silent).
+ */
+export interface ModelGroupsLoad {
+  registry: LevelRegistry;
+  /** "project" = the target project's file; "frozen" = degrade-on-stale fallback. */
+  source: "project" | "frozen";
+  /** Present exactly when `source` is "frozen": names the file + the rule that forced it. */
+  warning?: string;
+}
+
+/**
+ * Read the model-tier registry for one delegation (PKG-5 5a, impure wiring half — the
+ * caller owns the project root, usually the tool context cwd). Missing, unreadable,
+ * unparseable, or structurally unusable files degrade to `FROZEN_MODEL_GROUPS` with a
+ * warning (router degrade-on-stale precedent) — delegation never bricks for lack of a
+ * registry file. Lifecycle validation (preferred-first, price order) is PKG-1's validator;
+ * this gate only refuses what the resolver cannot consume without guessing.
+ */
+export function loadModelGroups(
+  cwd: string,
+  readFile: (path: string) => string = (path) => readFileSync(path, "utf-8"),
+): ModelGroupsLoad {
+  const file = join(cwd, ...MODEL_GROUPS_FILE);
+  let text: string;
+  try {
+    text = readFile(file);
+  } catch (error) {
+    return {
+      registry: FROZEN_MODEL_GROUPS,
+      source: "frozen",
+      warning: `${file} could not be read (${String(error)}) — using frozen model tiers`,
+    };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    return {
+      registry: FROZEN_MODEL_GROUPS,
+      source: "frozen",
+      warning: `${file} could not be parsed as a registry (${String(error)}) — using frozen model tiers`,
+    };
+  }
+  if (!isUsableModelRegistry(parsed)) {
+    return {
+      registry: FROZEN_MODEL_GROUPS,
+      source: "frozen",
+      warning:
+        `${file} has no usable low|medium|high groups ` +
+        `(each needs a non-empty list with an id-bearing first entry) — using frozen model tiers`,
+    };
+  }
+  return { registry: parsed, source: "project" };
+}
 
 /** Output kept from the child, so one runaway subagent cannot flood the parent's context. */
 export const MAX_OUTPUT_CHARS = 64 * 1024;
