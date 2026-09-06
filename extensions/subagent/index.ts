@@ -82,7 +82,7 @@ import { registerDelegationStatus } from "./delegation-status.ts";
 import { DelegationResultCache } from "./result-cache.ts";
 import { registerDelegationQueue, type DelegationQueueOpts } from "./delegation-queue.ts";
 import { type AgentToolUpdateCallback, type ExtensionAPI, parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 
 /** The tool the LLM calls. Also excluded from the child, so a delegation cannot re-delegate. */
 export const TOOL_NAME = "delegate";
@@ -484,24 +484,15 @@ export interface ReceiptDetails {
   levelOverride?: string;
 }
 
-/** Blocking result details: today's shape (rows 2–7 oracle) + `usage` + optional `degraded`. */
+/** Blocking result details: today's shape (rows 2–7 oracle) + `usage`. */
 export interface BlockingDetails {
   agent: string;
   exitCode: number | null;
   agentsDir: string;
   errors: string[];
   usage?: DelegationUsage;
-  /** Set when an explicit `background:true` degraded to full blocking outside tui (T67). */
-  degraded?: boolean;
   /** PKG-5: the G-6 explicit-wins sentence, when an explicit model overrode a valid level. */
   levelOverride?: string;
-}
-
-/** B-A1 rejection details (R1): an explicit `background:false` in the TUI, where blocking no
- * longer exists. Nothing was spawned and nothing was enqueued. */
-export interface BlockingRemovedDetails {
-  reason: "blocking-removed";
-  agent: string;
 }
 
 function envCap(): number | undefined {
@@ -728,12 +719,6 @@ export function pidAlive(pid: number): boolean {
 const DelegateParams = Type.Object({
   agent: Type.String({ description: "Name of the ai-badger persona to delegate to" }),
   task: Type.String({ description: "The task, stated so the persona can act on it alone" }),
-  background: Type.Optional(
-    Type.Boolean({
-      description:
-        "Compatibility only. In the TUI delegation is always background: an explicit background:false is rejected at execution time (reason 'blocking-removed') — use the queue tool for ordered work or the monitor extension's wait tool (user input interrupts it) to spend idle time until results land. Outside the TUI an explicit background:true degrades to full blocking (details.degraded); headless modes block by default.",
-    }),
-  ),
   timeoutMs: Type.Optional(
     Type.Number({
       description:
@@ -1090,6 +1075,18 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     ].join(" "),
     parameters: DelegateParams,
 
+    // Old-session compat: sessions stored before the `background` param was removed may
+    // replay calls carrying the key. pi runs this before schema validation, so stripping
+    // it unconditionally keeps those calls validating — post-removal any such key is
+    // schema-dead, and mode alone decides background vs blocking below.
+    prepareArguments(args: unknown): Static<typeof DelegateParams> {
+      if (!args || typeof args !== "object") return args as Static<typeof DelegateParams>;
+      if (!("background" in args)) return args as Static<typeof DelegateParams>;
+      const rest = { ...(args as Record<string, unknown>) };
+      delete rest.background;
+      return rest as Static<typeof DelegateParams>;
+    },
+
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const toolCtx = ctx as unknown as DelegateToolContext;
       const scan = scanPersonas(toolCtx.cwd);
@@ -1137,29 +1134,13 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       }
 
       // R1 (plan v2): blocking was removed from the TUI — delegate always receipts and the
-      // result arrives as a followUp on its own. An explicit background:false here is rejected
-      // at execute time, BEFORE anything spawns or enqueues; the guidance redirects each
-      // former blocking use to the tool that replaces it (B-A1).
-      if (toolCtx.mode === "tui" && params.background === false) {
-        const message =
-          "ai-badger: blocking delegation was removed in the TUI — delegate returns a receipt immediately and the result arrives as a followUp message on its own. " +
-          "To run work in a strict order, queue it with the queue tool (actions add/add-parallel). " +
-          "To spend idle time until results land, use the monitor extension's wait tool (user input interrupts it) or register a monitor. " +
-          "To stop a running delegation, use delegations abort <id> (or delegations abort all).";
-        toolCtx.ui.notify(message, "warning");
-        return {
-          content: text(message),
-          details: { reason: "blocking-removed", agent: persona.name } satisfies BlockingRemovedDetails,
-        };
-      }
-
-      // R2: auto = background iff ctx.mode === "tui" (NOT hasUI — rpc has UI and still blocks);
-      // an explicit value always wins. An explicit background:true outside tui degrades to FULL
-      // blocking with the warning riding the tool result content AND details.degraded — never
-      // ui.notify alone, which is a no-op in print/json. (background:false in tui never reaches
-      // here — rejected above; background:false outside tui IS the blocking default.)
-      const wantsBackground = params.background ?? toolCtx.mode === "tui";
-      const degraded = wantsBackground && toolCtx.mode !== "tui";
+      // result arrives as a followUp on its own. There is no opt-out: the `background` param
+      // is gone (a stale key is stripped by prepareArguments before validation), so nothing
+      // here reads it — ordered work belongs to the queue tool, idle waiting to the monitor
+      // extension's wait tool, stopping runs to delegations abort.
+      // R2: background iff ctx.mode === "tui" (NOT hasUI — rpc has UI and still blocks).
+      // Headless modes stay fully blocking: there the result IS the tool result.
+      const wantsBackground = toolCtx.mode === "tui";
 
       const model = toolCtx.model ? `${toolCtx.model.provider}/${toolCtx.model.id}` : undefined;
       // PKG-5: the registry belongs to the project (toolCtx.cwd — the same root personas scan
@@ -1222,10 +1203,10 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       const overrideSentence = levelOverrideSentence(resolution);
       if (overrideSentence !== undefined) rememberLevelOverride(outcome.id, overrideSentence);
 
-      if (wantsBackground && !degraded) {
+      if (wantsBackground) {
         return receiptResult(outcome, toolCallId);
       }
-      return blockingResult(outcome, { personaName: persona.name, agentsDir, errors: scan.errors, degraded, onUpdate });
+      return blockingResult(outcome, { personaName: persona.name, agentsDir, errors: scan.errors, onUpdate });
     },
   });
 
@@ -1267,7 +1248,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   /** Blocking path: await the run's done; today's result shape + details.usage (AC6). */
   async function blockingResult(
     outcome: DelegationReceipt,
-    context: { personaName: string; agentsDir: string; errors: string[]; degraded: boolean; onUpdate: AgentToolUpdateCallback<unknown> | undefined },
+    context: { personaName: string; agentsDir: string; errors: string[]; onUpdate: AgentToolUpdateCallback<unknown> | undefined },
   ) {
     const { id } = outcome;
     if (context.onUpdate) {
@@ -1289,20 +1270,13 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
 
     const body = blockingContent(record, note, context.personaName);
     return {
-      // T67: the degrade warning rides the tool result content AND details.degraded — never
-      // ui.notify alone (a no-op in print/json).
-      content: text(
-        context.degraded
-          ? `[ai-badger] background was requested outside tui mode — running fully blocking instead.\n${body}`
-          : body,
-      ),
+      content: text(body),
       details: {
         agent: context.personaName,
         exitCode: record.exitCode ?? null,
         agentsDir: context.agentsDir,
         errors: context.errors,
         ...(record.usage !== undefined ? { usage: record.usage } : {}),
-        ...(context.degraded ? { degraded: true } : {}),
         // PKG-5: the merged note carries the G-6 override sentence when one was recorded.
         ...(note?.levelOverride !== undefined ? { levelOverride: note.levelOverride } : {}),
       } satisfies BlockingDetails,

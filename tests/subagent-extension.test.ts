@@ -251,9 +251,9 @@ describe("row 44 — unknown agent answers immediately with the persona list", (
   });
 });
 
-// ------------------------------------------------------------------ T66: background auto-resolution matrix
+// ------------------------------------------------------------------ T66: mode-only matrix
 
-describe("T66 — background auto-resolution matrix (auto = background iff mode tui)", () => {
+describe("T66 — mode-only matrix (background iff mode tui)", () => {
   test("mode tui, no explicit value → background receipt", async () => {
     h = makeHarness();
     const result = await callDelegate({ agent: "architect", task: "t" }, makeCtx("tui"));
@@ -292,30 +292,6 @@ describe("T66 — background auto-resolution matrix (auto = background iff mode 
     expect(result.details.degraded).toBeUndefined();
   });
 
-  test("B-A1: background:false in tui → execute-time rejection (reason 'blocking-removed'), guidance names the queue, the monitor wait tool and delegations abort, NO child spawned", async () => {
-    h = makeHarness();
-    const result = await callDelegate({ agent: "architect", task: "t", background: false }, makeCtx("tui"));
-
-    expect((result.details as Record<string, unknown>).reason).toBe("blocking-removed");
-    const guidance = contentOf(result);
-    expect(guidance).toContain("queue"); // ordering → the queue tool
-    expect(guidance).toContain("the monitor extension's wait tool (user input interrupts it)"); // spending idle time — the only waiting surface
-    expect(guidance).toContain("delegations abort"); // stopping a running delegation
-    expect(h.children).toHaveLength(0); // NO child spawned
-    expect(h.api!.registry.list()).toHaveLength(0); // nothing enqueued either
-  });
-
-  test("explicit background:true wins in tui → background receipt", async () => {
-    h = makeHarness();
-    // f: 2026-09-02 — queue-only admission: on an idle system the delegate's one-element
-    // serial group dequeues on enqueue, so the receipt reads "running" (identical UX to the
-    // old start-now path; the queue is still the only admission path).
-    const result = await callDelegate({ agent: "architect", task: "t", background: true }, makeCtx("tui"));
-
-    expect(result.details.state).toBe("running");
-    expect(h.children).toHaveLength(1);
-  });
-
   test("wiring (task scope): blocking onUpdate reports live progress per message_end", async () => {
     h = makeHarness();
     const updates: any[] = [];
@@ -338,21 +314,86 @@ describe("T66 — background auto-resolution matrix (auto = background iff mode 
   });
 });
 
-// ------------------------------------------------------------------ T67: degrade rides the tool result
+// ------------------------------------------------------------------ background removal: schema proof + compat shim + mode-only stale-key behavior
 
-describe("T67 — background:true outside tui degrades to blocking on the tool result", () => {
-  test("print mode + explicit background:true → blocking result, degrade line in content, details.degraded", async () => {
+describe("background removal — no schema property, stale keys strip, mode alone decides", () => {
+  test("schema-removal proof: `background` is not in the delegate parameters", () => {
+    h = makeHarness();
+    const params = h.tools.get("delegate")!.parameters as { properties: Record<string, unknown> };
+
+    expect("background" in params.properties).toBe(false);
+  });
+
+  test("prepareArguments strips a stale `background` key (booleans and non-boolean staleness) and leaves the rest intact", () => {
+    h = makeHarness();
+    const tool = h.tools.get("delegate")!;
+
+    for (const background of [false, true, "yes", 0]) {
+      const stripped = tool.prepareArguments({ agent: "architect", task: "t", background }) as Record<string, unknown>;
+      expect("background" in stripped).toBe(false);
+      expect(stripped).toMatchObject({ agent: "architect", task: "t" });
+    }
+  });
+
+  test("prepareArguments passes args without the key through and leaves non-objects alone", () => {
+    h = makeHarness();
+    const tool = h.tools.get("delegate")!;
+
+    expect(tool.prepareArguments({ agent: "architect", task: "t" })).toEqual({ agent: "architect", task: "t" });
+    expect(tool.prepareArguments(undefined)).toBeUndefined();
+    expect(tool.prepareArguments(null)).toBeNull();
+    expect(tool.prepareArguments(42)).toBe(42);
+    expect(tool.prepareArguments("task")).toBe("task");
+  });
+
+  test("mode-only: a stale `background:false` reaching execute in tui is ignored — receipt, no rejection", async () => {
+    h = makeHarness();
+    const result = await callDelegate({ agent: "architect", task: "t", background: false }, makeCtx("tui"));
+
+    expect(result.details.state).toBe("running");
+    expect((result.details as Record<string, unknown>).reason).toBeUndefined();
+    expect(h.children).toHaveLength(1);
+  });
+
+  test("mode-only: a stale `background:true` reaching execute in print is ignored — blocking, no degrade line, no `degraded`", async () => {
     h = makeHarness();
     const pending = callDelegate({ agent: "architect", task: "t", background: true }, makeCtx("print"));
-    h.children[0]!.write(`${assistantEnd("degraded answer")}\n`);
+    h.children[0]!.write(`${assistantEnd("plain blocking answer")}\n`);
     h.children[0]!.exit(0);
     const result = await pending;
 
-    expect(contentOf(result)).toContain("background");
-    expect(contentOf(result)).toContain("blocking");
-    expect(contentOf(result)).toContain("degraded answer"); // fully blocking: the answer rides the result
-    expect(result.details.degraded).toBeDefined();
+    expect(contentOf(result)).toContain("plain blocking answer");
+    expect(contentOf(result)).not.toContain("background was requested");
     expect(result.details.exitCode).toBe(0);
+    expect(result.details.degraded).toBeUndefined();
+  });
+
+  test("mode-only: a stale `background:false` reaching execute in rpc is ignored — blocking (rpc has UI yet blocks), no `degraded`", async () => {
+    h = makeHarness();
+    const pending = callDelegate({ agent: "architect", task: "t", background: false }, makeCtx("rpc"));
+    h.children[0]!.write(`${assistantEnd("plain blocking answer")}\n`);
+    h.children[0]!.exit(0);
+    const result = await pending;
+
+    expect(contentOf(result)).toContain("plain blocking answer");
+    expect(result.details.exitCode).toBe(0);
+    expect(result.details.degraded).toBeUndefined();
+  });
+
+  test("joined (G1+G4): shim output with stale key + timeoutMs contains only schema-known keys", () => {
+    // typebox@1 (this repo's "typebox" dep) exports no Value validator from its
+    // entry point, so instead of Value.Check we assert the property that makes
+    // validation succeed under either pi policy (reject-unknown or ignore-unknown):
+    // every key of the shim output is a known schema property, and timeoutMs survived.
+    h = makeHarness();
+    const tool = h.tools.get("delegate")!;
+    const prepared = tool.prepareArguments({ agent: "architect", task: "t", background: true, timeoutMs: 1000 }) as Record<string, unknown>;
+    const props = (tool.parameters as { properties: Record<string, unknown> }).properties;
+    for (const key of Object.keys(prepared)) {
+      expect(key in props, key).toBe(true);
+    }
+    expect(prepared).toMatchObject({ agent: "architect", task: "t", timeoutMs: 1000 });
+    expect("background" in prepared).toBe(false);
   });
 });
 
@@ -663,7 +704,7 @@ describe("T86–T91 — per-run timeout surfaces (deferral pkg P2)", () => {
     // timeoutMs 1000 is applied verbatim → the limit renders "1s"; the "1m00s" zero-pad shape is
     // pinned exactly by T88 (a 60 s limit would cost a 60 s real wait here — the row's intent is
     // that the blocking result names the timeout, which this drives end-to-end).
-    const pending = callDelegate({ agent: "architect", task: "t", background: false, timeoutMs: 1000 }, makeCtx("print"));
+    const pending = callDelegate({ agent: "architect", task: "t", timeoutMs: 1000 }, makeCtx("print"));
     await drainTimeout(); // expiry aborts the child through the kill path
     const result = await pending;
 
@@ -678,12 +719,9 @@ describe("T86–T91 — per-run timeout surfaces (deferral pkg P2)", () => {
 
     expect(String(tool.description)).not.toContain("no automatic per-run timeout");
     expect(String(tool.description)).toContain("timeoutMs");
-    // Q-C5/R1 migration: the background param's line now carries the rejection/redirect wording
-    // (blocking-removed in the TUI; queue/wait as the replacements) instead of a default-value claim.
-    const backgroundDescription = params.properties.background?.description ?? "";
-    expect(backgroundDescription).not.toContain("no automatic per-run timeout");
-    expect(backgroundDescription).toContain("blocking-removed");
-    expect(backgroundDescription).toContain("queue");
+    // The `background` param is gone: mode alone decides background vs blocking, and old
+    // sessions carrying the key are stripped by prepareArguments before validation.
+    expect("background" in params.properties).toBe(false);
     const timeoutDescription = params.properties.timeoutMs?.description ?? "";
     expect(timeoutDescription).toContain("1000 ms"); // the floor
     expect(timeoutDescription).toContain("86400000"); // the cap
