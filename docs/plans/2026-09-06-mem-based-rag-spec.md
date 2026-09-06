@@ -1,7 +1,7 @@
 # mem-based-rag — specification (v1, MoE-refined, awaiting owner review)
 
 **Date:** 2026-09-06 (v0 draft → v1 after 4-expert MoE panel, same day)
-**Status:** refined spec — DO NOT IMPLEMENT YET, waiting owner review
+**Status:** refined spec — accepted by owner 2026-09-06, implementation in progress (`pbi-mem-based-rag-implementation`)
 **Code (v0, implements pre-MoE draft):** `extensions/mem-based-rag/` (`index.ts`, `rag-core.ts`)
 **Tests (v0):** `tests/mem-based-rag/rag-core.test.ts` (16 pass)
 **Panel:** architect d-582, api-engineer d-583, code-reviewer d-584,
