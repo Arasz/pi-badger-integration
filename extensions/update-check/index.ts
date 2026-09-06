@@ -4,8 +4,14 @@
  * What this is NOT (read before extending): pi exposes no update lifecycle
  * event, so nothing here "hooks into `pi update`". The extension checks the
  * integration repo's GitHub releases in the background after startup and
- * posts at most one notice per session when a newer release exists. `pi
- * update` stays the path for pi itself, by documentation only.
+ * appends at most one user-only card per session when a newer release exists.
+ * `pi update` stays the path for pi itself, by documentation only.
+ *
+ * User-only, never a prompt: the notice is stored via `pi.appendEntry` with a
+ * `registerEntryRenderer` card, so it renders in the TUI transcript without
+ * entering LLM context and without triggering a turn. Never use `sendMessage`
+ * here — even with `triggerTurn: false` the card would land in LLM history on
+ * the next turn and agents would treat it as something to act on.
  *
  * Notify-only, never auto-install: the update path (`git pull` + publish)
  * mutates user scope and possibly another checkout, which needs a human.
@@ -36,8 +42,17 @@ import {
 /** The human command: `/update-check [status|check]`. */
 export const UPDATE_CHECK_COMMAND = "update-check";
 
-/** Custom message type of the update notice cards. */
+/** Custom entry type of the update notice cards (TUI-only, never in LLM context). */
 export const UPDATE_CHECK_CUSTOM_TYPE = "update-check-event";
+
+/** Data stored on the user-only update notice card. */
+export interface UpdateCheckCardData {
+	text: string;
+	kind: "guidance" | "update";
+	installed: string | null;
+	describe: string | null;
+	remoteTag: string | null;
+}
 
 /** Usage line answered to unknown `/update-check` subcommands. */
 export const UPDATE_CHECK_USAGE = "usage: /update-check [status|check]";
@@ -171,11 +186,15 @@ export default function (pi: ExtensionAPI, deps: UpdateCheckDeps = {}) {
 		}
 	};
 
-	const sendNotice = (content: string, details: Record<string, unknown>): void => {
-		pi.sendMessage(
-			{ customType: UPDATE_CHECK_CUSTOM_TYPE, content, display: true, details },
-			{ deliverAs: "followUp", triggerTurn: true },
-		);
+	/** User-only notice: appendEntry keeps the card out of LLM context and never triggers a turn. */
+	const sendNotice = (content: string, details: Pick<UpdateCheckCardData, "kind"> & Partial<UpdateCheckCardData>): void => {
+		pi.appendEntry<UpdateCheckCardData>(UPDATE_CHECK_CUSTOM_TYPE, {
+			text: content,
+			kind: details.kind ?? "update",
+			installed: details.installed ?? null,
+			describe: details.describe ?? null,
+			remoteTag: details.remoteTag ?? null,
+		});
 	};
 
 	/** Run one check; notices at most once per session. Returns the report either way. */
@@ -287,10 +306,10 @@ export default function (pi: ExtensionAPI, deps: UpdateCheckDeps = {}) {
 		},
 	});
 
-	pi.registerMessageRenderer(UPDATE_CHECK_CUSTOM_TYPE, (message, options, theme) => {
-		const body = typeof message.content === "string" ? message.content : "";
+	pi.registerEntryRenderer<UpdateCheckCardData>(UPDATE_CHECK_CUSTOM_TYPE, (entry, _options, theme) => {
+		const body = entry.data?.text ?? "";
 		if (!body) return undefined;
-		const box = new Box(options.outputPad, 1, (line: string) => theme.bg("customMessageBg", line));
+		const box = new Box(1, 1, (line: string) => theme.bg("customMessageBg", line));
 		const lines = body.split("\n");
 		box.addChild(new Text([theme.fg("warning", lines[0] ?? ""), ...lines.slice(1)].join("\n"), 0, 0));
 		return box;

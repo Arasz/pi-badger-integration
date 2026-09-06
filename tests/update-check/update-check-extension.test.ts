@@ -5,6 +5,9 @@
  * The wiring owns every side effect the core refuses: fetch with timeout,
  * marker read, scheduling, notices. Env is read per call; notices fire at
  * most once per session; offline and fetch failures never error a session.
+ *
+ * Notices are user-only: they land via `appendEntry` (never `sendMessage`), so
+ * they render in the TUI without entering LLM context or triggering a turn.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -54,8 +57,12 @@ async function flush(scheduled: Array<() => void>) {
 	}
 }
 
+function cardText(entry: { customType: string; data: unknown }): string {
+	return (entry.data as { text?: unknown }).text as string;
+}
+
 describe("session_start background check", () => {
-	test("remote newer than marker posts one update notice", async () => {
+	test("remote newer than marker posts one user-only update card", async () => {
 		const pi = createFakePi();
 		const { scheduler, scheduled } = immediateScheduler();
 		makeExtension(pi as never, {
@@ -65,9 +72,23 @@ describe("session_start background check", () => {
 		});
 		await fire(pi, "session_start", {}, undefined);
 		await flush(scheduled);
-		const notices = pi.sent.filter((s) => s.message.customType === "update-check-event");
+		const notices = pi.entries.filter((e) => e.customType === "update-check-event");
 		expect(notices.length).toBe(1);
-		expect(notices[0].message.content as string).toContain("v1.2.0");
+		expect(cardText(notices[0])).toContain("v1.2.0");
+		// User-only: nothing enters LLM context, no turn is triggered.
+		expect(pi.sent.length).toBe(0);
+	});
+
+	test("notice card renders via the entry renderer, not a message renderer", async () => {
+		const pi = createFakePi();
+		const { scheduler } = immediateScheduler();
+		makeExtension(pi as never, {
+			fetchFn: stubFetch(() => okRelease("v1.0.0")),
+			scheduler,
+			markerPath: markerInTmp(JSON.stringify({ version: "v1.0.0" })),
+		});
+		expect(pi.entryRenderers.has("update-check-event")).toBe(true);
+		expect(pi.renderers.has("update-check-event")).toBe(false);
 	});
 
 	test("up to date posts nothing", async () => {
@@ -80,6 +101,7 @@ describe("session_start background check", () => {
 		});
 		await fire(pi, "session_start", {}, undefined);
 		await flush(scheduled);
+		expect(pi.entries.length).toBe(0);
 		expect(pi.sent.length).toBe(0);
 	});
 
@@ -95,6 +117,7 @@ describe("session_start background check", () => {
 		});
 		await fire(pi, "session_start", {}, undefined);
 		await flush(scheduled);
+		expect(pi.entries.length).toBe(0);
 		expect(pi.sent.length).toBe(0);
 	});
 
@@ -114,6 +137,7 @@ describe("session_start background check", () => {
 		await fire(pi, "session_start", {}, undefined);
 		await flush(scheduled);
 		expect(fetched).toBe(false);
+		expect(pi.entries.length).toBe(0);
 		expect(pi.sent.length).toBe(0);
 	});
 
@@ -129,7 +153,8 @@ describe("session_start background check", () => {
 		await flush(scheduled);
 		await fire(pi, "session_start", {}, undefined);
 		await flush(scheduled);
-		expect(pi.sent.length).toBe(1);
+		expect(pi.entries.length).toBe(1);
+		expect(pi.sent.length).toBe(0);
 	});
 
 	test("dev checkout at the latest tag line (describe, null version) posts nothing", async () => {
@@ -142,10 +167,11 @@ describe("session_start background check", () => {
 		});
 		await fire(pi, "session_start", {}, undefined);
 		await flush(scheduled);
+		expect(pi.entries.length).toBe(0);
 		expect(pi.sent.length).toBe(0);
 	});
 
-	test("dev checkout behind the latest release (describe base older) posts one update notice", async () => {
+	test("dev checkout behind the latest release (describe base older) posts one user-only update card", async () => {
 		const pi = createFakePi();
 		const { scheduler, scheduled } = immediateScheduler();
 		makeExtension(pi as never, {
@@ -155,9 +181,10 @@ describe("session_start background check", () => {
 		});
 		await fire(pi, "session_start", {}, undefined);
 		await flush(scheduled);
-		const notices = pi.sent.filter((s) => s.message.customType === "update-check-event");
+		const notices = pi.entries.filter((e) => e.customType === "update-check-event");
 		expect(notices.length).toBe(1);
-		expect(notices[0].message.content as string).toContain("v1.1.0");
+		expect(cardText(notices[0])).toContain("v1.1.0");
+		expect(pi.sent.length).toBe(0);
 	});
 
 	test("tagless marker (present, no version info) guides to fetch --tags", async () => {
@@ -170,9 +197,10 @@ describe("session_start background check", () => {
 		});
 		await fire(pi, "session_start", {}, undefined);
 		await flush(scheduled);
-		const notices = pi.sent.filter((s) => s.message.customType === "update-check-event");
+		const notices = pi.entries.filter((e) => e.customType === "update-check-event");
 		expect(notices.length).toBe(1);
-		expect(notices[0].message.content as string).toMatch(/fetch --tags/);
+		expect(cardText(notices[0])).toMatch(/fetch --tags/);
+		expect(pi.sent.length).toBe(0);
 	});
 
 	test("missing marker file guides to publish once", async () => {
@@ -185,9 +213,10 @@ describe("session_start background check", () => {
 		});
 		await fire(pi, "session_start", {}, undefined);
 		await flush(scheduled);
-		const notices = pi.sent.filter((s) => s.message.customType === "update-check-event");
+		const notices = pi.entries.filter((e) => e.customType === "update-check-event");
 		expect(notices.length).toBe(1);
-		expect(notices[0].message.content as string).toMatch(/bun run publish/);
+		expect(cardText(notices[0])).toMatch(/bun run publish/);
+		expect(pi.sent.length).toBe(0);
 	});
 });
 

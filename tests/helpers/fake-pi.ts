@@ -79,6 +79,7 @@ export interface FakePi {
   tools: Map<string, { name: string } & Record<string, unknown>>;
   commands: Map<string, unknown>;
   renderers: Map<string, FakePiRenderer>;
+  entryRenderers: Map<string, FakePiRenderer>;
   sent: FakePiSentMessage[];
   entries: Array<{ customType: string; data: unknown }>;
   /** Every events.emit, in order — the T60 recording surface. */
@@ -96,6 +97,7 @@ export interface FakePi {
   registerTool(tool: { name: string } & Record<string, unknown>): void;
   registerCommand(name: string, opts: unknown): void;
   registerMessageRenderer(customType: string, renderer: FakePiRenderer): void;
+  registerEntryRenderer(customType: string, renderer: FakePiRenderer): void;
   on(name: string, handler: FakePiHandler): void;
   sendMessage(message: FakePiSentMessage["message"], options?: FakePiSentMessage["options"]): void;
   appendEntry(customType: string, data?: unknown): void;
@@ -106,6 +108,7 @@ export function createFakePi(options: { now?: number } = {}): FakePi {
   const tools = new Map<string, { name: string } & Record<string, unknown>>();
   const commands = new Map<string, unknown>();
   const renderers = new Map<string, FakePiRenderer>();
+  const entryRenderers = new Map<string, FakePiRenderer>();
   const sent: FakePiSentMessage[] = [];
   const entries: Array<{ customType: string; data: unknown }> = [];
   const transitions: FakePiEmission[] = [];
@@ -121,6 +124,7 @@ export function createFakePi(options: { now?: number } = {}): FakePi {
     tools,
     commands,
     renderers,
+    entryRenderers,
     sent,
     entries,
     transitions,
@@ -157,6 +161,9 @@ export function createFakePi(options: { now?: number } = {}): FakePi {
     },
     registerMessageRenderer: (customType, renderer) => {
       renderers.set(customType, renderer);
+    },
+    registerEntryRenderer: (customType, renderer) => {
+      entryRenderers.set(customType, renderer);
     },
     on: (name, handler) => {
       const list = handlers.get(name) ?? [];
