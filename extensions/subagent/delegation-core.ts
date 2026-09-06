@@ -1031,3 +1031,145 @@ export function isUsableModelRegistry(value: unknown): value is LevelRegistry {
   }
   return true;
 }
+
+// ------------------------------------------------------------------ level resolution (PKG-5 5b)
+
+/**
+ * RFC 7807 §5 invalid-level error (contract §5): `message` is the `detail` sentence
+ * (echoes the received value + the valid set — the fail-loud requirement), with the
+ * extension fields `invalidLevel`/`validLevels` and the stable `type`/`status` pair.
+ * No fuzzy match, no prefix match, no case folding — `Low` is invalid (T-CASE).
+ */
+export class InvalidLevelError extends Error {
+  readonly invalidLevel: string;
+  readonly validLevels: readonly string[] = [...VALID_LEVELS];
+  readonly status = 400;
+  readonly type = "https://github.com/Arasz/ai-badger/problems/invalid-level";
+  constructor(invalidLevel: string) {
+    super(`Unknown level "${invalidLevel}". Valid levels are ${VALID_LEVELS.join(", ")}.`);
+    this.name = "InvalidLevelError";
+    this.invalidLevel = invalidLevel;
+  }
+}
+
+/** Two-source pin: the level to resolve plus the explicit model that wins verbatim over it. */
+export interface ResolveLevelOptions {
+  readonly level?: unknown;
+  readonly model?: unknown;
+}
+
+/** What a resolution decided: the `--model` value (absent = no pin, inherit) + how it won. */
+export interface ResolvedLevelPin {
+  /** The `--model` value, or undefined for no pin (omit `--model`, inherit session/parent). */
+  readonly model?: string;
+  /** The level that resolved, when a valid level decided (telemetry per §4 step 10). */
+  readonly resolvedLevel?: ModelLevel;
+  /** The registry the id resolved from, when a level decided. */
+  readonly registryVersion?: number;
+  /**
+   * S5 non-deciding-pin warning: the level was invalid but an explicit model overrode it,
+   * so the call proceeds on the explicit model — validated, never silent. The caller
+   * surfaces this (ui.notify); the pure half only reports it.
+   */
+  readonly levelWarning?: string;
+  /** G-6 explicit-wins record: a valid level this explicit model overrode (note, like modelFallback). */
+  readonly overriddenLevel?: ModelLevel;
+  /** The explicit model that won (verbatim), when one did. */
+  readonly overridingModel?: string;
+}
+
+/** Non-empty trimmed string, or undefined — blank ≡ absent at every rank (T-EMPTY). */
+function nonBlank(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+/** The preferred id of one group — throws naming the rule instead of guessing (§4 step 8). */
+function readPreferredId(registry: LevelRegistry, level: ModelLevel): string {
+  const group = registry.groups[level];
+  if (!Array.isArray(group) || group.length === 0) {
+    throw new Error(
+      `ai-badger: model registry has no usable "${level}" group (missing or empty) — ` +
+      `refusing to guess; valid levels are ${VALID_LEVELS.join(", ")}.`,
+    );
+  }
+  const id = group[0]?.id;
+  if (typeof id !== "string" || !id) {
+    throw new Error(`ai-badger: model registry "${level}" preferred entry has no usable id — refusing to guess.`);
+  }
+  return id;
+}
+
+/**
+ * Pure `resolveLevel(registry, {level, model})` (contract §4, ADR §consumer-posture).
+ *
+ * 1. Blank level ≡ absent (inherit); surrounding whitespace stripped, case-sensitive.
+ * 2. Invalid level with an explicit model → the model wins verbatim + `levelWarning`
+ *    (S5: validated, never silent). Invalid level deciding → `InvalidLevelError` (§5).
+ * 3. Valid level + explicit model → the model wins verbatim + `overriddenLevel` (G-6).
+ * 4. Valid level alone → `groups[level][0].id`, re-validated against MODEL_ID_PATTERN
+ *    before emit (M8: refusal, never a dirty `--model`).
+ * 5. Neither → no pin (inherit — the caller omits `--model`).
+ * 6. Never falls back silently: empty groups and id-less entries throw (step 8).
+ * 7. Never follows `aliases`/`weightsId` — only `.id` is read (T-ALIAS).
+ */
+export function resolveLevel(registry: LevelRegistry, opts: ResolveLevelOptions = {}): ResolvedLevelPin {
+  const explicit = nonBlank(opts.model);
+  const rawLevel = opts.level;
+  const trimmedLevel = typeof rawLevel === "string" ? rawLevel.trim() : undefined;
+  if (rawLevel === undefined || trimmedLevel === "") return explicit === undefined ? {} : { model: explicit, overridingModel: explicit };
+  if (trimmedLevel === undefined || !(VALID_LEVELS as readonly string[]).includes(trimmedLevel)) {
+    const received = trimmedLevel ?? String(rawLevel);
+    if (explicit !== undefined) {
+      return {
+        model: explicit,
+        overridingModel: explicit,
+        levelWarning: `Unknown level "${received}". Valid levels are ${VALID_LEVELS.join(", ")}.`,
+      };
+    }
+    throw new InvalidLevelError(received);
+  }
+  const level = trimmedLevel as ModelLevel;
+  const id = readPreferredId(registry, level);
+  if (!MODEL_ID_PATTERN.test(id)) {
+    throw new Error(
+      `ai-badger: model registry "${level}" preferred id "${id}" fails ${String(MODEL_ID_PATTERN)} — ` +
+      `refusing to emit it into --model argv.`,
+    );
+  }
+  if (explicit !== undefined) return { model: explicit, overridingModel: explicit, overriddenLevel: level };
+  return {
+    model: id,
+    resolvedLevel: level,
+    ...(registry.registryVersion !== undefined ? { registryVersion: registry.registryVersion } : {}),
+  };
+}
+
+/**
+ * The four G-6 model sources, highest precedence first. Blank ≡ absent at every rank.
+ * The delegate tool has no call-time override (toolModel stays undefined there); the queue
+ * tool's group `model:` is the tool-override rank.
+ */
+export interface DelegationModelSources {
+  /** Call-time tool override (queue group `model:`) — G-6 rank 1. */
+  readonly toolModel?: unknown;
+  /** Persona frontmatter `model:` pin — G-6 rank 2. */
+  readonly frontmatterModel?: unknown;
+  /** Effective level (queue `level:` param ?? persona `level:`) — G-6 rank 3. */
+  readonly level?: unknown;
+  /** Delegating session model — G-6 rank 4 (fallback). */
+  readonly sessionModel?: unknown;
+}
+
+/**
+ * G-6 implemented verbatim, once: tool-override > frontmatter `model:` > `level:`-resolved
+ * > session model. Both tool layers (delegate, queue) resolve through here, so the order
+ * cannot drift between them. `level` is validated even when overridden (A7: deciding pin
+ * raises, non-deciding pin warns per S5).
+ */
+export function resolveDelegationModel(registry: LevelRegistry, sources: DelegationModelSources = {}): ResolvedLevelPin {
+  const explicit = nonBlank(sources.toolModel) ?? nonBlank(sources.frontmatterModel);
+  const resolved = resolveLevel(registry, { level: sources.level, model: explicit });
+  if (resolved.model !== undefined) return resolved;
+  const session = nonBlank(sources.sessionModel);
+  return session === undefined ? {} : { model: session };
+}
