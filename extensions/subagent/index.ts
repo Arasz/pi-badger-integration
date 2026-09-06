@@ -54,11 +54,18 @@ import {
   clampRunTimeoutMs,
   formatDuration,
   formatUsage,
+  FROZEN_MODEL_GROUPS,
+  isUsableModelRegistry,
+  levelOverrideSentence,
   pruneLogFiles,
   renderDelegationStatus,
+  resolveDelegationModel,
+  resolveLevel,
   RUN_TIMEOUT_MAX_MS,
   type DelegationState,
   type DelegationUsage,
+  type LevelRegistry,
+  type ModelGroupsLoad,
   type LogDirEntry,
   type LogRunFile,
   type LogRunSummary,
@@ -90,6 +97,64 @@ export const CHILD_EXCLUDED_TOOLS = `${TOOL_NAME},${TOOL_NAME_PLURAL},queue,moni
 
 /** Where adjust_agents.py writes, relative to the project root. */
 export const AGENTS_DIR = [".pi", "agents"];
+
+/**
+ * Where the target project keeps its model-tier registry, relative to the project root
+ * (PKG-5 5a ADR: import-from-target-project — the same root `scanPersonas` reads, one
+ * root predicate). Never the ai-badger repo, never a vendored copy.
+ */
+export const MODEL_GROUPS_FILE = [".ai-badger", "model-groups.json"];
+
+/**
+ * What `loadModelGroups` resolved — shape owned by delegation-core.ts (re-exported here
+ * for tool-layer consumers).
+ */
+export type { ModelGroupsLoad };
+
+/**
+ * Read the model-tier registry for one delegation (PKG-5 5a, impure wiring half — the
+ * caller owns the project root, usually the tool context cwd). Missing, unreadable,
+ * unparseable, or structurally unusable files degrade to `FROZEN_MODEL_GROUPS` with a
+ * warning (router degrade-on-stale precedent) — delegation never bricks for lack of a
+ * registry file. Lifecycle validation (preferred-first, price order) is PKG-1's validator;
+ * this gate only refuses what the resolver cannot consume without guessing.
+ */
+export function loadModelGroups(
+  cwd: string,
+  readFile: (path: string) => string = (path) => readFileSync(path, "utf-8"),
+): ModelGroupsLoad {
+  const file = join(cwd, ...MODEL_GROUPS_FILE);
+  let text: string;
+  try {
+    text = readFile(file);
+  } catch (error) {
+    return {
+      registry: FROZEN_MODEL_GROUPS,
+      source: "frozen",
+      warning: `${file} could not be read (${String(error)}) — using frozen model tiers`,
+    };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    return {
+      registry: FROZEN_MODEL_GROUPS,
+      source: "frozen",
+      warning: `${file} could not be parsed as a registry (${String(error)}) — using frozen model tiers`,
+    };
+  }
+  if (!isUsableModelRegistry(parsed)) {
+    return {
+      registry: FROZEN_MODEL_GROUPS,
+      source: "frozen",
+      warning:
+        `${file} has no usable low|medium|high groups ` +
+        `(each needs a non-empty list with an id-bearing first entry) — using frozen model tiers`,
+    };
+  }
+  return { registry: parsed, source: "project" };
+}
 
 /** Output kept from the child, so one runaway subagent cannot flood the parent's context. */
 export const MAX_OUTPUT_CHARS = 64 * 1024;
@@ -142,6 +207,15 @@ export interface Persona {
    * result note — never silent, never fatal.
    */
   model?: string;
+  /**
+   * The persona's `level:` frontmatter pin (PKG-5, dual-key per G-2/G-3): routing intent
+   * (`low`|`medium`|`high`), resolved at delegation time against the target project's
+   * `.ai-badger/model-groups.json` preferred id (import + frozen fallback). Raw here —
+   * validated at resolve time, where the override context exists (A7/S5): a deciding
+   * invalid level throws naming the valid levels; a non-deciding one warns. An explicit
+   * `model:` pin always wins (G-6) and the override is recorded on the result note.
+   */
+  level?: string;
   /** The file body below the frontmatter — appended to the child's system prompt. */
   systemPrompt: string;
   filePath: string;
@@ -161,7 +235,7 @@ export interface PersonaScan {
   duplicates?: string[];
 }
 
-type PersonaFrontmatter = { name?: unknown; description?: unknown; model?: unknown };
+type PersonaFrontmatter = { name?: unknown; description?: unknown; model?: unknown; level?: unknown };
 
 /**
  * One persona file, or the reason it is not one.
@@ -171,7 +245,8 @@ type PersonaFrontmatter = { name?: unknown; description?: unknown; model?: unkno
  * are required because a delegation names an agent and the model picks one from descriptions.
  * `model` is optional and only taken when it is a non-empty string — any other value leaves the
  * persona without a pin rather than invalidating the file (the pin is a routing preference, not
- * part of the persona's identity).
+ * part of the persona's identity). `level` loads under the same rule (PKG-5 dual-key): raw and
+ * unvalidated here — resolution validates it, where the explicit-model context exists.
  */
 export function parsePersona(text: string, filePath: string): Persona | { error: string } {
   const { frontmatter, body } = parseFrontmatter<PersonaFrontmatter>(text);
@@ -184,10 +259,14 @@ export function parsePersona(text: string, filePath: string): Persona | { error:
   const model = typeof frontmatter.model === "string" && frontmatter.model.trim()
     ? frontmatter.model.trim()
     : undefined;
+  const level = typeof frontmatter.level === "string" && frontmatter.level.trim()
+    ? frontmatter.level.trim()
+    : undefined;
   return {
     name: frontmatter.name.trim(),
     description: frontmatter.description.trim(),
     ...(model !== undefined ? { model } : {}),
+    ...(level !== undefined ? { level } : {}),
     systemPrompt: body,
     filePath,
   };
@@ -271,16 +350,27 @@ function unknownPersonaMessage(agent: string, agentsDir: string, personas: Array
  * task.
  *
  * The `model` argument is the delegating session's model — the child's fallback. The persona's
- * own `model:` pin (Persona.model) takes precedence when present. f: 2026-09-02: the pin is
- * best-effort, not a hard requirement — when the pinned model cannot START the child (the
+ * own `model:` pin (Persona.model) takes precedence when present, and a persona `level:`
+ * (PKG-5) resolves against the registry between the two: frontmatter `model:` >
+ * `level:`-resolved > session model (G-6; the queue tool's group `model:` outranks both —
+ * see its buildInvocation). `registry` is the loaded project registry (frozen fallback when
+ * the project has none); an invalid deciding level throws naming the valid levels (L1-D3),
+ * a non-deciding one is reported through `resolveDelegationModel` by the caller — this
+ * argv builder stays pure and returns the argv only.
+ *
+ * f: 2026-09-02: the pin is best-effort, not a hard requirement — when the pinned model cannot START the child (the
  * d-324 class: pi's credential-blind alias resolution picked an unauthenticated provider),
  * the runner retries once on the parent model via `fallbackArgsFor` and records the fallback
  * on the result note. A pin therefore never fails a delegation, and the fallback is never
  * silent.
  */
-export function delegationArgs(persona: Pick<Persona, "systemPrompt" | "model">, task: string, model?: string): string[] {
+export function delegationArgs(persona: Pick<Persona, "systemPrompt" | "model" | "level">, task: string, model?: string, registry: LevelRegistry = FROZEN_MODEL_GROUPS): string[] {
   const args = ["-p", "--mode", "json", "--no-session", "--exclude-tools", CHILD_EXCLUDED_TOOLS];
-  const resolvedModel = persona.model ?? model;
+  const { model: resolvedModel } = resolveDelegationModel(registry, {
+    frontmatterModel: persona.model,
+    level: persona.level,
+    sessionModel: model,
+  });
   if (resolvedModel) args.push("--model", resolvedModel);
   if (persona.systemPrompt.trim()) args.push("--append-system-prompt", persona.systemPrompt);
   args.push("--", task);
@@ -294,15 +384,36 @@ export function delegationArgs(persona: Pick<Persona, "systemPrompt" | "model">,
  * the argv's `--model` value (defensive — the tool layer is the only argv builder). With a
  * parent model the pin value is swapped; without one the `--model` pair is dropped and the
  * child picks its own default. Pure: the primary argv is never mutated.
+ *
+ * PKG-5: a persona `level:` arms the same retry for its level-resolved pin (L1-D4) — the
+ * `--model` value is verified against the registry resolution, so a foreign argv never
+ * arms a fallback. An undecidable level (invalid with no explicit model — the argv build
+ * already threw for the deciding case) yields no fallback instead of throwing.
  */
 export function fallbackArgsFor(
   args: string[],
-  persona: Pick<Persona, "model">,
+  persona: Pick<Persona, "model" | "level">,
   model: string | undefined,
+  registry: LevelRegistry = FROZEN_MODEL_GROUPS,
 ): string[] | undefined {
-  if (!persona.model) return undefined;
+  let pin: string | undefined;
+  if (persona.model) {
+    pin = persona.model;
+  } else if (persona.level) {
+    let expected: string | undefined;
+    try {
+      expected = resolveLevel(registry, { level: persona.level }).model;
+    } catch {
+      return undefined;
+    }
+    const index = args.indexOf("--model");
+    const actual = index >= 0 && index + 1 < args.length ? args[index + 1] : undefined;
+    pin = actual === expected ? actual : undefined;
+  } else {
+    return undefined;
+  }
   const index = args.indexOf("--model");
-  if (index < 0 || index + 1 >= args.length || args[index + 1] !== persona.model) return undefined;
+  if (index < 0 || index + 1 >= args.length || args[index + 1] !== pin) return undefined;
   const fallback = [...args];
   if (model) fallback[index + 1] = model;
   else fallback.splice(index, 2);
@@ -369,6 +480,8 @@ export interface ReceiptDetails {
   queuePosition?: number;
   toolCallId: string;
   logFile?: string;
+  /** PKG-5: the G-6 explicit-wins sentence, when an explicit model overrode a valid level. */
+  levelOverride?: string;
 }
 
 /** Blocking result details: today's shape (rows 2–7 oracle) + `usage`. */
@@ -378,6 +491,8 @@ export interface BlockingDetails {
   agentsDir: string;
   errors: string[];
   usage?: DelegationUsage;
+  /** PKG-5: the G-6 explicit-wins sentence, when an explicit model overrode a valid level. */
+  levelOverride?: string;
 }
 
 function envCap(): number | undefined {
@@ -401,14 +516,24 @@ function extensionVersion(): string {
 }
 
 /**
+ * A completion note carrying the G-6 explicit-wins record (PKG-5 acceptance 3):
+ * `levelOverride` is the sentence for a valid level beaten by an explicit model
+ * (`explicit model "X" overrode level "low"`), merged onto the runner's note at deliverNote
+ * and rendered on the card verdict — the modelFallback pattern, never silent.
+ */
+export type DelegationNoteWithLevel = DelegationNote & { levelOverride?: string };
+
+/**
  * The completion verdict line of a delegation-result card (R5). State-driven: completed with a
  * non-zero exit renders "exited N"; the silent-JSON variant names itself loudly (R3/CR4).
  * f: 2026-09-02: a model-pin fallback appends its recorded reason — the card says the pin was
  * rejected and what the run retried on, so the fallback is never silent.
+ * PKG-5: a G-6 explicit-model-over-level override appends its recorded sentence the same way.
  */
-export function notificationVerdict(note: DelegationNote): string {
+export function notificationVerdict(note: DelegationNoteWithLevel): string {
   const verdict = notificationStateVerdict(note);
-  return note.modelFallback !== undefined ? `${verdict} ${note.modelFallback}.` : verdict;
+  const withFallback = note.modelFallback !== undefined ? `${verdict} ${note.modelFallback}.` : verdict;
+  return note.levelOverride !== undefined ? `${withFallback} ${note.levelOverride}.` : withFallback;
 }
 
 function notificationStateVerdict(note: DelegationNote): string {
@@ -652,7 +777,22 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
    * execute subscribed to that run id (the widget in P4 polls the registry instead); the
    * latest-progress buffer replays anything that fired between start and subscribe.
    */
-  const notes = new Map<string, DelegationNote>();
+  const notes = new Map<string, DelegationNoteWithLevel>();
+  /**
+   * G-6 explicit-wins record, run id → override sentence (PKG-5 acceptance 3). Remembered
+   * at start (the tool layer knows the resolution then) and merged onto the runner's note
+   * at deliverNote — the modelFallback pattern. Capped like notes; entries are consumed
+   * exactly once, at delivery.
+   */
+  const levelOverrides = new Map<string, string>();
+  /** Remember one run's G-6 override sentence for deliverNote (capped — same discipline as notes). */
+  function rememberLevelOverride(id: string, sentence: string): void {
+    levelOverrides.set(id, sentence);
+    if (levelOverrides.size > 64) {
+      const oldest = levelOverrides.keys().next().value;
+      if (oldest !== undefined) levelOverrides.delete(oldest);
+    }
+  }
   /** Run ids this session has already handed out — group batches allocate all member ids
    * before any of them registers, so the allocator needs its own memory (★M3). */
   const allocatedIds = new Set<string>();
@@ -669,8 +809,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     }
   };
 
-  /** One followUp for 1..n cards: a single card is the v1 shape byte-identical (T92); 2+ cards
-   * render as one batched message with per-card notes in details (RR3). Empty input sends
+  /** One followUp for 1..n cards: a single card is the v1 shape byte-identical (T92); 2+ cards render as one batched message with per-card notes in details (RR3). Empty input sends
    * nothing — a window expiry over an empty buffer is a no-op, never an empty batch (T98).
    * f: 2026-09-02 (option c): each card also carries its structured result — the SINGLE shape
    * on `details.result`, the batched shape on `details.notes[i].result` — read back from the
@@ -715,7 +854,11 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
    * flush does not close the window (T96). Each note is delivered exactly once, as the lead or
    * inside exactly one batch (T97); T70's double-close pin is upstream and unaffected. */
   const deliverNote = (note: DelegationNote): void => {
-    notes.set(note.id, note);
+    const levelOverride = levelOverrides.get(note.id);
+    if (levelOverride !== undefined) levelOverrides.delete(note.id);
+    const enriched: DelegationNoteWithLevel =
+      levelOverride !== undefined ? { ...note, levelOverride } : note;
+    notes.set(note.id, enriched);
     if (notes.size > 64) {
       const oldest = notes.keys().next().value;
       if (oldest !== undefined) notes.delete(oldest);
@@ -724,15 +867,15 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     // the batch-window branch — a note held inside an open window is already queryable via
     // `delegations results`, and a sendMessage failure still leaves the result cached.
     // flushHeldNotes/sendCards never put; they only read the cache back onto the cards.
-    resultCache.put(note, { now });
+    resultCache.put(enriched, { now });
     if (batchWindowTimer === undefined) {
-      sendCards([note]);
+      sendCards([enriched]);
       batchWindowTimer = setTimeout(() => {
         batchWindowTimer = undefined;
         flushHeldNotes();
       }, batchWindowMs);
     } else {
-      heldNotes.push(note);
+      heldNotes.push(enriched);
       if (heldNotes.length >= batchMaxCards) flushHeldNotes();
     }
   };
@@ -849,10 +992,35 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     agentsDirFor: (cwd) => join(cwd, ...AGENTS_DIR),
     unknownPersonaMessage: (agent, agentsDir, personas) => unknownPersonaMessage(agent, agentsDir, personas),
     validateChildCwd,
-    buildInvocation: (persona, task, model) => {
-      const args = delegationArgs(persona, task, model);
+    loadModelGroups: (cwd) => loadModelGroups(cwd),
+    recordLevelOverride: (id, sentence) => rememberLevelOverride(id, sentence),
+    buildInvocation: (persona, task, models) => {
+      // PKG-5 5c: the single G-6 resolution for queue members (tool-override > frontmatter
+      // model > level-resolved > session). The argv renders from the RESOLVED pin, so this
+      // stays consistent with the delegate path's delegationArgs by construction.
+      const registry = models.registry ?? FROZEN_MODEL_GROUPS;
+      const resolution = resolveDelegationModel(registry, {
+        toolModel: models.toolModel,
+        frontmatterModel: persona.model,
+        level: models.level ?? persona.level,
+        sessionModel: models.sessionModel,
+      });
+      const args = delegationArgs({ systemPrompt: persona.systemPrompt, model: resolution.model }, task, undefined, registry);
       const invocation = piInvocation(args);
-      return { command: invocation.command, args: invocation.args, fallbackArgs: fallbackArgsFor(invocation.args, persona, model) };
+      // The fallback retries on the session ("parent") model and arms only when a pin won
+      // over it — a session-passthrough argv must not arm an identical retry.
+      const pin =
+        resolution.model !== undefined && resolution.model !== models.sessionModel ? resolution.model : undefined;
+      const fallbackArgs =
+        pin !== undefined
+          ? fallbackArgsFor(invocation.args, { model: pin, level: models.level ?? persona.level }, models.sessionModel, registry)
+          : undefined;
+      return {
+        command: invocation.command,
+        args: invocation.args,
+        ...(fallbackArgs !== undefined ? { fallbackArgs } : {}),
+        resolution,
+      };
     },
   };
   registerDelegationQueue(pi, registry, queueOpts);
@@ -975,9 +1143,20 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       const wantsBackground = toolCtx.mode === "tui";
 
       const model = toolCtx.model ? `${toolCtx.model.provider}/${toolCtx.model.id}` : undefined;
-      const args = delegationArgs(persona, params.task, model);
+      // PKG-5: the registry belongs to the project (toolCtx.cwd — the same root personas scan
+      // from), never to the child's cwd. Resolution runs twice (here for warnings + the
+      // override record, inside delegationArgs for the argv) — pure and cheap, one G-6 order.
+      const loaded = loadModelGroups(toolCtx.cwd);
+      if (loaded.warning) toolCtx.ui.notify(`ai-badger: ${loaded.warning}`, "warning");
+      const resolution = resolveDelegationModel(loaded.registry, {
+        frontmatterModel: persona.model,
+        level: persona.level,
+        sessionModel: model,
+      });
+      if (resolution.levelWarning) toolCtx.ui.notify(`ai-badger: ${resolution.levelWarning}`, "warning");
+      const args = delegationArgs(persona, params.task, model, loaded.registry);
       const invocation = piInvocation(args);
-      const fallbackArgs = fallbackArgsFor(invocation.args, persona, model);
+      const fallbackArgs = fallbackArgsFor(invocation.args, persona, model, loaded.registry);
       let sessionId: string | undefined;
       try {
         sessionId = toolCtx.sessionManager?.getSessionId();
@@ -1019,6 +1198,11 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         };
       }
 
+      // PKG-5 acceptance 3: a valid level beaten by an explicit model is recorded for the
+      // result note (deliverNote merges it like modelFallback) and the receipt details.
+      const overrideSentence = levelOverrideSentence(resolution);
+      if (overrideSentence !== undefined) rememberLevelOverride(outcome.id, overrideSentence);
+
       if (wantsBackground) {
         return receiptResult(outcome, toolCallId);
       }
@@ -1033,9 +1217,13 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   // ------------------------------------------------------------------ result builders
 
   /** Row 45 / T68 (§4): the receipt — running and queued variants, details { id, agent, state,
-   * queuePosition?, toolCallId, logFile? }. */
+   * queuePosition?, toolCallId, logFile? }.
+   *
+   * PKG-5: when an explicit model overrode a valid level, the override sentence rides
+   * details.levelOverride (read, not consumed — deliverNote consumes it at settle). */
   function receiptResult(outcome: DelegationReceipt, toolCallId: string) {
     const record = outcome.record;
+    const override = levelOverrides.get(record.id);
     const tail = "the result will arrive as a followUp message when it completes.";
     const line =
       record.state === "queued"
@@ -1052,6 +1240,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         ...(record.queuePosition !== undefined ? { queuePosition: record.queuePosition } : {}),
         toolCallId,
         ...(record.logFile !== undefined ? { logFile: record.logFile } : {}),
+        ...(override !== undefined ? { levelOverride: override } : {}),
       } satisfies ReceiptDetails,
     };
   }
@@ -1088,6 +1277,8 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         agentsDir: context.agentsDir,
         errors: context.errors,
         ...(record.usage !== undefined ? { usage: record.usage } : {}),
+        // PKG-5: the merged note carries the G-6 override sentence when one was recorded.
+        ...(note?.levelOverride !== undefined ? { levelOverride: note.levelOverride } : {}),
       } satisfies BlockingDetails,
     };
   }
