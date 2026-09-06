@@ -10,7 +10,7 @@
  * Transport: pi extensions cannot invoke MCP tools, so this extension speaks
  * MCP itself — a persistent `ai-raccoon --transport stdio` child (JSON-RPC,
  * line-delimited) spawned lazily on the first enrichable prompt and reaped at
- * session_shutdown. Measured 2026-09-06: spawn+init ~0.3 s (amortized), first
+ * session boundaries. Measured 2026-09-06: spawn+init ~0.3 s (amortized), first
  * search ~4.5 s (model warm-up), steady ~0.4–0.5 s. Every search is bounded by
  * a timeout and fail-open: a slow or dead bank skips enrichment, never the turn.
  *
@@ -25,6 +25,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { Box, Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
+	pruneHits,
 	shouldEnrich,
 	toExpandedMemoryContext,
 	toMemoryContext,
@@ -72,7 +73,7 @@ function readConfig(sessionMode: PromptContextMode | "off" | undefined): PromptC
 	return {
 		enabled: process.env[MEM_RAG_ENV] !== "0" && sessionMode !== "off",
 		mode: sessionMode === "default" || sessionMode === "expanded" ? sessionMode : baseMode,
-		minWords: numEnv(MEM_RAG_MIN_WORDS_ENV, 8, 1, 100),
+		minWords: numEnv(MEM_RAG_MIN_WORDS_ENV, 6, 1, 100),
 		minChars: numEnv(MEM_RAG_MIN_CHARS_ENV, 20, 0, 10000),
 		timeoutMs: numEnv(MEM_RAG_TIMEOUT_ENV, 8000, 500, 60000),
 		snippetChars: numEnv(MEM_RAG_SNIPPET_ENV, 300, 50, 2000),
@@ -96,7 +97,8 @@ function resolveProjectId(cwd: string, env: Record<string, string | undefined>):
 			}
 			return null;
 		}
-		if (existsSync(aib)) return null;
+		// A bare .ai-badger/ dir (no project-id file) must not shadow a real id
+		// higher up the tree — keep walking.
 		const parent = dirname(dir);
 		if (parent === dir) return null;
 		dir = parent;
@@ -106,7 +108,8 @@ function resolveProjectId(cwd: string, env: Record<string, string | undefined>):
 function resolveSessionId(ctx: ExtensionContext): string {
 	try {
 		const id = ctx.sessionManager?.getSessionId?.();
-		if (typeof id === "string" && id) return id;
+		// Trimmed like queueKeyFor: whitespace-only is blank, not a session.
+		if (typeof id === "string" && id.trim()) return id;
 	} catch {
 		// older build shape — fail-open below
 	}
@@ -122,19 +125,35 @@ interface PendingCall {
 }
 
 /**
- * Minimal MCP client over a stdio child: initialize once, tools/call per
- * search. Single-flight via a promise chain so concurrent turns cannot
- * interleave lines on the pipe. Fail-open throughout — every failure is an
- * Error to the caller, which skips enrichment.
+ * Minimal MCP client over a stdio child: initialize once (memoized, dropped on
+ * any restart so the next call re-initializes), tools/call per search.
+ * Concurrent in-flight ids are safe — each request is one synchronous stdin
+ * write and replies demux via the pending map — so expanded-mode gets fan out
+ * under one shared deadline while searches stay single-flight via the
+ * factory's chain. Fail-open throughout — every failure is an Error to the
+ * caller, which skips enrichment.
  */
-class RaccoonClient {
+export class RaccoonClient {
 	private proc: ChildProcess | null = null;
 	private seq = 0;
 	private readonly pending = new Map<number, PendingCall>();
 	private buffer = "";
-	private chain: Promise<void> = Promise.resolve();
+	private initPromise: Promise<void> | null = null;
 
 	constructor(private readonly bin: string) {}
+
+	/** True while the stdio child handle is held (diagnostics for /rag status). */
+	isAlive(): boolean {
+		return this.proc !== null && this.proc.exitCode === null;
+	}
+
+	private rejectAll(error: Error): void {
+		for (const [, call] of this.pending) {
+			clearTimeout(call.timer);
+			call.reject(error);
+		}
+		this.pending.clear();
+	}
 
 	private ensureStarted(): void {
 		if (this.proc) return;
@@ -145,14 +164,14 @@ class RaccoonClient {
 		proc.stdout?.on("data", (chunk: Buffer) => this.onData(chunk.toString("utf8")));
 		proc.on("exit", () => {
 			this.proc = null;
-			for (const [, call] of this.pending) {
-				clearTimeout(call.timer);
-				call.reject(new Error("ai-raccoon child exited"));
-			}
-			this.pending.clear();
+			this.initPromise = null;
+			this.rejectAll(new Error("ai-raccoon child exited"));
 		});
-		proc.on("error", () => {
+		proc.on("error", (error: Error) => {
+			console.error(`ai-badger mem-based-rag: failed to spawn "${this.bin}" —`, error);
 			this.proc = null;
+			this.initPromise = null;
+			this.rejectAll(error instanceof Error ? error : new Error(`ai-raccoon spawn failed: ${String(error)}`));
 		});
 	}
 
@@ -186,10 +205,27 @@ class RaccoonClient {
 
 	private send(method: string, params: unknown, id: number): void {
 		this.ensureStarted();
-		this.proc?.stdin?.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+		// One synchronous write per message: concurrent in-flight ids cannot
+		// interleave on the pipe; replies demux via the pending map.
+		const stdin = this.proc?.stdin;
+		if (!stdin) throw new Error("ai-raccoon child has no stdin");
+		stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
 	}
 
-	async initialize(): Promise<void> {
+	/**
+	 * Handshake, memoized: overlapping turns share one in-flight initialize,
+	 * and any failure (or child restart) drops the memo so the next call
+	 * re-initializes instead of talking to a never-initialized server.
+	 */
+	initialize(): Promise<void> {
+		this.initPromise ??= this.doInitialize().catch((error) => {
+			this.initPromise = null;
+			throw error;
+		});
+		return this.initPromise;
+	}
+
+	private async doInitialize(): Promise<void> {
 		this.ensureStarted();
 		const id = ++this.seq;
 		const ready = new Promise<void>((resolve, reject) => {
@@ -202,53 +238,75 @@ class RaccoonClient {
 					clearTimeout(timer);
 					resolve();
 				},
-				reject: (error) => {
+				reject: (error: Error) => {
 					clearTimeout(timer);
 					reject(error);
 				},
 				timer,
 			});
 		});
-		this.send("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "pi-mem-based-rag", version: "1.0.0" } }, id);
+		try {
+			this.send("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "pi-mem-based-rag", version: "1.0.0" } }, id);
+		} catch (error) {
+			const call = this.pending.get(id);
+			if (call) {
+				this.pending.delete(id);
+				clearTimeout(call.timer);
+				call.reject(error instanceof Error ? error : new Error(String(error)));
+			}
+		}
 		await ready;
 		this.proc?.stdin?.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
 	}
 
+	/**
+	 * Raw tools/call: safe for concurrent use (unique ids, pending-map demux).
+	 * Searches go through the factory's single-flight chain; expanded-mode
+	 * gets call this directly under one shared deadline.
+	 */
 	call(tool: string, args: Record<string, unknown>, timeoutMs: number): Promise<string> {
-		const run = async (): Promise<string> => {
-			const id = ++this.seq;
-			const result = new Promise<string>((resolve, reject) => {
-				const timer = setTimeout(() => {
-					this.pending.delete(id);
-					reject(new Error(`ai-raccoon ${tool} timed out after ${timeoutMs}ms`));
-				}, timeoutMs);
-				this.pending.set(id, { resolve, reject, timer });
-			});
+		const id = ++this.seq;
+		const result = new Promise<string>((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this.pending.delete(id);
+				reject(new Error(`ai-raccoon ${tool} timed out after ${timeoutMs}ms`));
+			}, timeoutMs);
+			this.pending.set(id, { resolve, reject, timer });
+		});
+		try {
 			this.send("tools/call", { name: tool, arguments: args }, id);
-			return result;
-		};
-		// Single-flight: chain onto the tail so two turns never interleave.
-		const next = this.chain.then(run, run);
-		this.chain = next.then(
-			() => undefined,
-			() => undefined,
-		);
-		return next;
+		} catch (error) {
+			const call = this.pending.get(id);
+			if (call) {
+				this.pending.delete(id);
+				clearTimeout(call.timer);
+				call.reject(error instanceof Error ? error : new Error(String(error)));
+			}
+		}
+		return result;
 	}
 
 	stop(): void {
+		this.initPromise = null;
 		try {
 			this.proc?.kill();
 		} catch {
 			// already gone — nothing to reap
 		}
 		this.proc = null;
+		this.rejectAll(new Error("ai-raccoon client stopped"));
 	}
 }
 
 // ---------------------------------------------------------------- factory
 
-export default function (pi: ExtensionAPI) {
+/** Injectable client seam for the wiring-test lane (no stdio in `bun test`). */
+export type RaccoonClientLike = Pick<RaccoonClient, "call" | "stop">;
+export interface MemRagDeps {
+	createClient?: (bin: string) => RaccoonClientLike;
+}
+
+export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 	if (typeof pi?.registerTool !== "function" || typeof pi?.on !== "function") {
 		console.error(
 			"ai-badger: mem-based-rag extension API unavailable — prompt enrichment is not installed.",
@@ -256,63 +314,128 @@ export default function (pi: ExtensionAPI) {
 		return;
 	}
 
-	let client: RaccoonClient | null = null;
-	let initialized = false;
+	let client: RaccoonClientLike | null = null;
 	let sessionMode: PromptContextMode | "off" | undefined;
-	let rawPrompt = "";
+	/** Session-keyed FIFO of raw pre-expansion prompts ("*" = blank session id). */
+	const promptQueues = new Map<string, string[]>();
+	/** Single-flight chain for searches; expanded-mode gets bypass it. */
+	let searchFlight: Promise<void> = Promise.resolve();
 	let enriched = 0;
 	let skipped = 0;
 	let lastMs = 0;
 	let lastReason = "none yet";
 
-	const getClient = async (bin: string): Promise<RaccoonClient> => {
+	const createClient = deps?.createClient ?? ((bin: string): RaccoonClientLike => new RaccoonClient(bin));
+
+	const getClient = async (bin: string): Promise<RaccoonClientLike> => {
 		if (!client) {
-			client = new RaccoonClient(bin);
-			await client.initialize();
-			initialized = true;
-		} else if (!initialized) {
-			await client.initialize();
-			initialized = true;
+			const fresh = createClient(bin);
+			// Real clients handshake; injected fakes (Pick<"call" | "stop">) skip it.
+			if (fresh instanceof RaccoonClient) await fresh.initialize();
+			client = fresh;
 		}
 		return client;
 	};
 
+	/** Searches stay single-flight so two turns never interleave a query. */
+	const searchCall = (
+		raccoon: RaccoonClientLike,
+		tool: string,
+		args: Record<string, unknown>,
+		timeoutMs: number,
+	): Promise<string> => {
+		const run = (): Promise<string> => raccoon.call(tool, args, timeoutMs);
+		const next = searchFlight.then(run, run);
+		searchFlight = next.then(
+			() => undefined,
+			() => undefined,
+		);
+		return next;
+	};
+
+	const queueKeyFor = (ctx: ExtensionContext): string => {
+		try {
+			const id = ctx.sessionManager?.getSessionId?.();
+			if (typeof id === "string" && id.trim()) return id;
+		} catch {
+			// session shape unavailable — fall through to the shared queue
+		}
+		return "*";
+	};
+
+	/** Injected fakes expose only call/stop — probe liveness when available. */
+	const isChildAlive = (candidate: RaccoonClientLike | null): boolean => {
+		if (!candidate) return false;
+		const maybe = candidate as Partial<Pick<RaccoonClient, "isAlive">>;
+		return typeof maybe.isAlive === "function" ? maybe.isAlive() : true;
+	};
+
+	const resetSessionState = (): void => {
+		try {
+			client?.stop();
+		} catch {
+			// already gone — nothing to reap
+		}
+		client = null;
+		searchFlight = Promise.resolve();
+		sessionMode = undefined;
+		promptQueues.clear();
+		enriched = 0;
+		skipped = 0;
+		lastMs = 0;
+		lastReason = "none yet";
+	};
+
 	// Raw prompt capture: `input` sees text BEFORE skill/template expansion,
 	// which is exactly the query contract (user words, never skill content).
-	pi.on("input", async (event) => {
-		if (typeof event.text === "string") rawPrompt = event.text;
+	// Extension-echoed turns must neither seed nor clobber the queue.
+	pi.on("input", async (event, ctx) => {
+		if (event.source === "extension") return { action: "continue" };
+		if (typeof event.text === "string") {
+			const key = queueKeyFor(ctx);
+			const queue = promptQueues.get(key) ?? [];
+			queue.push(event.text);
+			promptQueues.set(key, queue);
+		}
 		return { action: "continue" };
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
+		// Drain one queued raw prompt FIRST: a skipped or disabled turn must
+		// never leak stale raw into the next turn.
+		const key = queueKeyFor(ctx);
+		const queue = promptQueues.get(key);
+		const queued = queue?.shift();
+		if (queue !== undefined && queue.length === 0) promptQueues.delete(key);
 		const config = readConfig(sessionMode);
 		if (!config.enabled) return undefined;
 		// Prefer the raw pre-expansion prompt; fall back to the expanded one
-		// (rpc/extension-injected turns may never pass through `input`).
-		const raw = rawPrompt || event.prompt;
-		rawPrompt = "";
+		// (rpc/extension-injected turns may never pass through `input`, and a
+		// whitespace-only capture carries no query).
+		const raw = queued !== undefined && queued.trim() ? queued : String(event.prompt ?? "");
 		const decision = shouldEnrich(raw, { minChars: config.minChars, minWords: config.minWords });
 		if (!decision.enrich) {
 			skipped += 1;
 			lastReason = `skipped (${decision.reason})`;
 			return undefined;
 		}
-		const projectId = resolveProjectId(ctx.cwd, process.env);
-		if (!projectId) {
-			skipped += 1;
-			lastReason = "skipped (no project id)";
-			return undefined;
-		}
-		const sessionId = resolveSessionId(ctx);
-		if (!sessionId) {
-			skipped += 1;
-			lastReason = "skipped (no session id)";
-			return undefined;
-		}
 		const startedAt = Date.now();
 		try {
+			const projectId = resolveProjectId(ctx.cwd, process.env);
+			if (!projectId) {
+				skipped += 1;
+				lastReason = "skipped (no project id)";
+				return undefined;
+			}
+			const sessionId = resolveSessionId(ctx);
+			if (!sessionId) {
+				skipped += 1;
+				lastReason = "skipped (no session id)";
+				return undefined;
+			}
 			const raccoon = await getClient(config.bin);
-			const searchText = await raccoon.call(
+			const searchText = await searchCall(
+				raccoon,
 				"memory_search",
 				{ projectId, sessionId, query: decision.query, limit: 5 },
 				config.timeoutMs,
@@ -320,17 +443,25 @@ export default function (pi: ExtensionAPI) {
 			const envelope = JSON.parse(searchText) as {
 				data?: { results?: MemoryHit[]; code?: MemoryHit[] };
 			};
-			const mem = (envelope.data?.results ?? []).slice(0, 3);
-			const code = (envelope.data?.code ?? []).slice(0, 2);
+			const pruned = pruneHits(envelope.data?.results ?? [], envelope.data?.code ?? []);
+			const mem = pruned.mem.slice(0, 3);
+			const code = pruned.code.slice(0, 2);
+			if (mem.length === 0 && code.length === 0) {
+				skipped += 1;
+				lastReason = "skipped (no-hits)";
+				return undefined;
+			}
 			let content: string;
 			if (config.mode === "expanded") {
-				const items: Array<{ hit: MemoryHit; kind: "memory" | "code"; value?: string; path?: string; chunk?: string }> = [];
-				for (const hit of mem) {
-					items.push({ hit, kind: "memory", ...(await fetchFull(raccoon, "memory_get", projectId, hit, config.timeoutMs)) });
-				}
-				for (const hit of code) {
-					items.push({ hit, kind: "code", ...(await fetchFull(raccoon, "code_get", projectId, hit, config.timeoutMs)) });
-				}
+				// One shared deadline for the whole fan-out: concurrent
+				// in-flight ids, each budgeted from the same expiry — never a
+				// sequential per-hit timeout inside this blocking handler.
+				const deadline = Date.now() + config.timeoutMs;
+				const remaining = (): number => Math.max(1, deadline - Date.now());
+				const items = await Promise.all([
+					...mem.map(async (hit) => ({ hit, kind: "memory" as const, ...(await fetchFull(raccoon, "memory_get", projectId, hit, remaining())) })),
+					...code.map(async (hit) => ({ hit, kind: "code" as const, ...(await fetchFull(raccoon, "code_get", projectId, hit, remaining())) })),
+				]);
 				content = toExpandedMemoryContext(decision.query, items, { snippetChars: config.snippetChars });
 			} else {
 				content = toMemoryContext(decision.query, mem, code, { snippetChars: config.snippetChars });
@@ -362,7 +493,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	async function fetchFull(
-		raccoon: RaccoonClient,
+		raccoon: RaccoonClientLike,
 		tool: "memory_get" | "code_get",
 		projectId: string,
 		hit: MemoryHit,
@@ -395,14 +526,21 @@ export default function (pi: ExtensionAPI) {
 		},
 		async handler(args, ctx) {
 			const notify = (message: string, type: "info" | "warning" | "error"): void => {
-				ctx.ui.notify(message, type);
+				ctx.ui?.notify?.(message, type);
 			};
 			const config = readConfig(sessionMode);
 			const trimmed = args.trim().toLowerCase();
 			if (trimmed === "" || trimmed === "status") {
+				let project: string;
+				try {
+					project = resolveProjectId(ctx.cwd, process.env) ? "found" : "missing";
+				} catch {
+					project = "unknown";
+				}
 				notify(
 					`mem-based-rag: ${config.enabled ? `on (${config.mode})` : "off"} — enriched ${enriched}, skipped ${skipped}, last: ${lastReason}. ` +
-						`Floors: ≥${config.minWords} unique words (>3 chars), ≥${config.minChars} chars, timeout ${config.timeoutMs}ms.`,
+						`Project: ${project}, child: ${isChildAlive(client) ? "alive" : "idle"}. ` +
+						`Floors: ≥${config.minWords} unique words (≥3 chars ex-noise), ≥${config.minChars} chars, timeout ${config.timeoutMs}ms.`,
 					"info",
 				);
 				return;
@@ -420,16 +558,29 @@ export default function (pi: ExtensionAPI) {
 	pi.registerMessageRenderer(MEM_RAG_CUSTOM_TYPE, (message, options, theme) => {
 		const body = typeof message.content === "string" ? message.content : "";
 		if (!body) return undefined;
-		const box = new Box(options.outputPad, 1, (line: string) => theme.bg("customMessageBg", line));
-		const lines = body.split("\n");
-		box.addChild(new Text([theme.fg("success", lines[0] ?? ""), ...lines.slice(1)].join("\n"), 0, 0));
-		return box;
+		// A partial theme (or renderer double) without paint helpers degrades
+		// to a plain Text block instead of throwing inside render.
+		try {
+			const paint = theme as unknown as {
+				fg: (color: string, text: string) => string;
+				bg: (color: string, line: string) => string;
+			};
+			const box = new Box(options.outputPad, 1, (line: string) => paint.bg("customMessageBg", line));
+			const lines = body.split("\n");
+			box.addChild(new Text([paint.fg("success", lines[0] ?? ""), ...lines.slice(1)].join("\n"), 0, 0));
+			return box;
+		} catch {
+			return new Text(body, 0, 0);
+		}
+	});
+
+	// Factory-closure state (queues, counters, mode override, client) survives
+	// new/resume/reload in-process — reset it on both session boundaries.
+	pi.on("session_start", () => {
+		resetSessionState();
 	});
 
 	pi.on("session_shutdown", () => {
-		client?.stop();
-		client = null;
-		initialized = false;
-		rawPrompt = "";
+		resetSessionState();
 	});
 }
