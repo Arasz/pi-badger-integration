@@ -324,11 +324,11 @@ describe("background removal — no schema property, stale keys strip, mode alon
     expect("background" in params.properties).toBe(false);
   });
 
-  test("prepareArguments strips a stale `background` key (both values) and leaves the rest intact", () => {
+  test("prepareArguments strips a stale `background` key (booleans and non-boolean staleness) and leaves the rest intact", () => {
     h = makeHarness();
     const tool = h.tools.get("delegate")!;
 
-    for (const background of [false, true]) {
+    for (const background of [false, true, "yes", 0]) {
       const stripped = tool.prepareArguments({ agent: "architect", task: "t", background }) as Record<string, unknown>;
       expect("background" in stripped).toBe(false);
       expect(stripped).toMatchObject({ agent: "architect", task: "t" });
@@ -341,6 +341,9 @@ describe("background removal — no schema property, stale keys strip, mode alon
 
     expect(tool.prepareArguments({ agent: "architect", task: "t" })).toEqual({ agent: "architect", task: "t" });
     expect(tool.prepareArguments(undefined)).toBeUndefined();
+    expect(tool.prepareArguments(null)).toBeNull();
+    expect(tool.prepareArguments(42)).toBe(42);
+    expect(tool.prepareArguments("task")).toBe("task");
   });
 
   test("mode-only: a stale `background:false` reaching execute in tui is ignored — receipt, no rejection", async () => {
@@ -361,6 +364,18 @@ describe("background removal — no schema property, stale keys strip, mode alon
 
     expect(contentOf(result)).toContain("plain blocking answer");
     expect(contentOf(result)).not.toContain("background was requested");
+    expect(result.details.exitCode).toBe(0);
+    expect(result.details.degraded).toBeUndefined();
+  });
+
+  test("mode-only: a stale `background:false` reaching execute in rpc is ignored — blocking (rpc has UI yet blocks), no `degraded`", async () => {
+    h = makeHarness();
+    const pending = callDelegate({ agent: "architect", task: "t", background: false }, makeCtx("rpc"));
+    h.children[0]!.write(`${assistantEnd("plain blocking answer")}\n`);
+    h.children[0]!.exit(0);
+    const result = await pending;
+
+    expect(contentOf(result)).toContain("plain blocking answer");
     expect(result.details.exitCode).toBe(0);
     expect(result.details.degraded).toBeUndefined();
   });
