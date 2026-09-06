@@ -3,7 +3,7 @@
 Canonical source for pi coding-agent extensions that are not part of ai-badger (the ai-badger hooks adapter, shift-enter-newline, session-signals, pi-cron, pi-mcp-tools, subagent), plus the publish flow that installs them to pi's user scope and vendors the adapter back into an ai-badger checkout.
 
 > Domain: Developer tooling for coding agents - extension distribution and ai-badger/pi integration
-> Stacks: node, ts, pi
+> Stacks: node, ts, pi, github
 > Scaffolded by ai-badger 0.165.0. Source of truth for this file: `.ai-badger/CLAUDE.md`.
 
 ## Commands
@@ -19,6 +19,7 @@ Before editing matching files, read the applicable scoped instruction file:
 - `**/package.json,**/bun.lock,**/*.mjs,**/*.cjs` → `.ai-badger/instructions/node.instructions.md`
 - `**/*.ts,**/*.tsx,**/tsconfig.json` → `.ai-badger/instructions/typescript.instructions.md`
 - `**/AGENTS.override.md,**/CLAUDE.md,.pi/**` → `.ai-badger/instructions/pi.instructions.md`
+- `**/.github/workflows/*.yml,**/.github/workflows/*.yaml` → `.ai-badger/instructions/github-actions.instructions.md`
 
 Additional invariants load contextually via these paths — see `.ai-badger/invariants/` for the full set.
 
@@ -196,6 +197,9 @@ Each tool's own description covers the rest.
 
 - **Releases are traceable** — Every release records the version it went out at and what changed in it, using whatever version marker and release notes this project already keeps.
   → `.ai-badger/invariants/traceable-releases.md`
+
+- **Pin actions to a commit SHA; declare least-privilege permissions** — Every third-party GitHub Action referenced in a workflow is pinned to a full commit SHA, never a tag or branch — a mutable tag is remote code you re-fetch on every run, not a fixed dependency.
+  → `.ai-badger/invariants/pin-actions-to-sha.md`
 
 ## Framework
 

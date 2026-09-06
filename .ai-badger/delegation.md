@@ -4,7 +4,7 @@
 
 ## Stacks
 
-node, ts, pi
+node, ts, pi, github
 
 ## Personas available here
 

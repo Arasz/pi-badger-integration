@@ -13,7 +13,7 @@
   ],
   "skillScope": "default",
   "pluginScope": "default",
-  "configHash": "243c2a6f709e7179952c57b71a3ff291275518311c44c01da4d3dd136955af34",
+  "configHash": "5c09be6c26a019e8d4885897cc806fe1993c6c8c042df91781f9365b19e1bf6c",
   "generatedConfig": [
     {
       "path": ".claude/settings.json",
@@ -126,6 +126,15 @@
       "target": ".ai-badger/instructions/pi.instructions.md",
       "frameworkVersion": "0.165.0",
       "hash": "1e6af88ee3231024a6adc2b0890cd9baa5a491a5ea07cc2a6ce1728856a7fd22"
+    },
+    {
+      "feature": "instructions",
+      "stack": "github",
+      "name": "github-actions.instructions",
+      "source": "features/github/instructions/github-actions.instructions.md",
+      "target": ".ai-badger/instructions/github-actions.instructions.md",
+      "frameworkVersion": "0.165.0",
+      "hash": "dddff56e7b9d977c6aad71dcb7d5bade6a20358f8aa869b6a4a5d4d0a7af8918"
     },
     {
       "feature": "invariants",
@@ -405,6 +414,15 @@
       "target": ".ai-badger/invariants/traceable-releases.md",
       "frameworkVersion": "0.165.0",
       "hash": "377265b6f5764fba81ec41fc5f8e6447ae3bb6d6f9aa38344e13e0c4dd1867b4"
+    },
+    {
+      "feature": "invariants",
+      "stack": "github",
+      "name": "pin-actions-to-sha",
+      "source": "features/github/invariants/pin-actions-to-sha.md",
+      "target": ".ai-badger/invariants/pin-actions-to-sha.md",
+      "frameworkVersion": "0.165.0",
+      "hash": "775423167ecb74b8ce5abdb1994a9c44b516a142d50b6da567a77362819993d8"
     },
     {
       "feature": "skills",
@@ -1092,6 +1110,27 @@
       ]
     },
     {
+      "feature": "skills",
+      "stack": "github",
+      "name": "code-review",
+      "source": "features/github/skills/code-review",
+      "target": ".ai-badger/skills/code-review",
+      "frameworkVersion": "0.165.0",
+      "hash": "f5e58e681ac1fa577453b13541ac07f4a703e484bbf43fdeebb3e73a2afd71a8",
+      "dirMeta": {
+        "file_count": 1,
+        "dir_count": 0
+      },
+      "sourceHash": "26b9e3fc986f1fe94a8753313f006010cf812d25e12afcbbfa6c84e382fef149",
+      "sourceMeta": {
+        "file_count": 1,
+        "dir_count": 0
+      },
+      "projectOwned": [
+        "project-local.md"
+      ]
+    },
+    {
       "feature": "templates",
       "stack": "common",
       "name": "agent-instructions/schema.json",
@@ -1508,6 +1547,15 @@
     {
       "feature": "adjustments",
       "stack": "claude",
+      "name": "adjustments/.claude/skills/code-review",
+      "source": "features/claude/adjustments/adjust_skills.py",
+      "target": ".claude/skills/code-review",
+      "frameworkVersion": "0.165.0",
+      "hash": "02a4b86fbc983d9fb302f93eb674787a545d65c40204ac9c46bbaa452ce150d5"
+    },
+    {
+      "feature": "adjustments",
+      "stack": "claude",
       "name": "adjustments/.ai-badger/skills/mcp-index/scripts/tokenizer.py",
       "source": "features/claude/adjustments/adjust_retrieval.py",
       "target": ".ai-badger/skills/mcp-index/scripts/tokenizer.py",
@@ -1826,6 +1874,15 @@
       "name": "adjustments/.github/skills/evidence-first-research",
       "source": "features/copilot/adjustments/adjust_skills.py",
       "target": ".github/skills/evidence-first-research",
+      "frameworkVersion": "0.165.0",
+      "hash": "54042cfd8d94054ed08fc1d3f74694f3a35c01c6ddc7930cfff62d71eadcaa1c"
+    },
+    {
+      "feature": "adjustments",
+      "stack": "copilot",
+      "name": "adjustments/.github/skills/code-review",
+      "source": "features/copilot/adjustments/adjust_skills.py",
+      "target": ".github/skills/code-review",
       "frameworkVersion": "0.165.0",
       "hash": "54042cfd8d94054ed08fc1d3f74694f3a35c01c6ddc7930cfff62d71eadcaa1c"
     },
@@ -2224,6 +2281,15 @@
       "target": ".ai-badger/skills-data/pi/skills.json",
       "frameworkVersion": "0.165.0",
       "hash": "ecb582d7b30a3b72e202e4ab44330004cccf8a8fc4245712090744a7d2882cfc"
+    },
+    {
+      "feature": "skills",
+      "stack": "github",
+      "name": "github/skills.json",
+      "source": "features/github/skills.json",
+      "target": ".ai-badger/skills-data/github/skills.json",
+      "frameworkVersion": "0.165.0",
+      "hash": "5875bafd3c61f4bbdbd0dbd8f7ce1e26870e1d03289ada235f6aeaf7f8b6265e"
     }
   ]
 }
