@@ -886,3 +886,57 @@ describe("review gate: session reset, isolation, renderer fallback, shared deadl
 		expect(elapsed).toBeLessThan(4000);
 	}, 15_000);
 });
+
+describe("card UI: bullets, no prefixes, relative paths (display-only)", () => {
+	const ABS_MEM = [
+		{ hash: "m1", ranking: 1, path: "/tmp/wiring-card/docs/a.md", snippet: "first memory snippet about delegation" },
+		{ hash: "m2", ranking: 0.9, path: "/tmp/wiring-card/docs/b.md", snippet: "second memory snippet about timeouts" },
+	];
+	const ABS_CODE = [
+		{ hash: "c1", ranking: 1, path: "/tmp/wiring-card/src/a.ts", snippet: "some code snippet", lineStart: 10, lineEnd: 20 },
+	];
+
+	test("content keeps prefixes + absolute paths; card shows bullets + relative", async () => {
+		clearRagEnv();
+		process.env["AI_BADGER_PROJECT_ID"] = "proj-card";
+		const { pi } = install({ results: ABS_MEM, code: ABS_CODE });
+		const ctx = makeCtx("/tmp/wiring-card", "sess-card");
+
+		await fireInput(pi, P1, ctx as never);
+		const r = await fireBefore(pi, "", ctx as never);
+		const content = String(r?.message?.content ?? "");
+
+		// LLM block untouched: prefixes + absolute paths + rank intact.
+		expect(content).toContain("[m1] /tmp/wiring-card/docs/a.md (rank 1)");
+		expect(content).toContain("[c1] /tmp/wiring-card/src/a.ts:10-20 (rank 1)");
+
+		// Display paths ride in details, cwd-relative.
+		expect(r?.message?.details?.memDisplay).toEqual(["docs/a.md", "docs/b.md"]);
+		expect(r?.message?.details?.codeDisplay).toEqual(["src/a.ts"]);
+
+		// Card: bullets, relative, no prefixes, no absolute paths.
+		const text = renderedText(renderMessage(pi, r.message));
+		expect(text).toContain("Memory context");
+		expect(text).toContain("• docs/a.md (rank 1) :: first memory snippet about delegation");
+		expect(text).toContain("• src/a.ts:10-20 (rank 1) :: some code snippet");
+		expect(text).toContain("memories:");
+		expect(text).toContain("code:");
+		expect(text).not.toContain("[m1]");
+		expect(text).not.toContain("[c1]");
+		expect(text).not.toContain("/tmp/wiring-card");
+	});
+
+	test("renderer without details falls back to raw paths, still no prefixes", async () => {
+		clearRagEnv();
+		process.env["AI_BADGER_PROJECT_ID"] = "proj-card-legacy";
+		const { pi } = install({ results: ABS_MEM, code: ABS_CODE });
+		const ctx = makeCtx("/tmp/wiring-card", "sess-card-legacy");
+
+		await fireInput(pi, P1, ctx as never);
+		const r = await fireBefore(pi, "", ctx as never);
+		const legacy = { content: r.message.content }; // pre-upgrade shape: no details
+		const text = renderedText(renderMessage(pi, legacy));
+		expect(text).toContain("• /tmp/wiring-card/docs/a.md (rank 1)");
+		expect(text).not.toContain("[m1]");
+	});
+});

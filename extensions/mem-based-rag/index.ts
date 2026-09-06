@@ -25,8 +25,10 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { Box, Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
+	hitDisplayPath,
 	pruneHits,
 	shouldEnrich,
+	toCardLines,
 	toExpandedMemoryContext,
 	toMemoryContext,
 	type MemoryHit,
@@ -482,6 +484,10 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 						uniqueWords: decision.uniqueWords,
 						memHashes: mem.map((hit) => hit.hash),
 						codeHashes: code.map((hit) => hit.hash),
+						// Display-only relative paths for the card renderer —
+						// the block content above keeps absolute paths for the agent.
+						memDisplay: mem.map((hit) => hitDisplayPath(hit, ctx.cwd)),
+						codeDisplay: code.map((hit) => hitDisplayPath(hit, ctx.cwd)),
 						latencyMs: lastMs,
 					},
 				},
@@ -568,9 +574,30 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 				fg: (color: string, text: string) => string;
 				bg: (color: string, line: string) => string;
 			};
+			if (typeof paint.fg !== "function" || typeof paint.bg !== "function") return new Text(body, 0, 0);
+			// Display-only transform: bullets, no [m1]/[c1] prefixes,
+			// cwd-relative paths. The LLM block (message.content) is untouched.
+			const details = (message as { details?: { memDisplay?: string[]; codeDisplay?: string[] } }).details;
+			const lines = toCardLines(body, details?.memDisplay, details?.codeDisplay);
 			const box = new Box(options.outputPad, 1, (line: string) => paint.bg("customMessageBg", line));
-			const lines = body.split("\n");
-			box.addChild(new Text([paint.fg("success", lines[0] ?? ""), ...lines.slice(1)].join("\n"), 0, 0));
+			const styled = lines
+				.map((line) => {
+					switch (line.tone) {
+						case "head":
+							return paint.fg("success", line.text);
+						case "section":
+							return paint.fg("accent", line.text);
+						case "hit":
+							return paint.fg("mdListBullet", "• ") + line.text.slice(2);
+						case "dim":
+						case "empty":
+							return paint.fg("dim", line.text);
+						default:
+							return line.text;
+					}
+				})
+				.join("\n");
+			box.addChild(new Text(styled, 0, 0));
 			return box;
 		} catch {
 			return new Text(body, 0, 0);
