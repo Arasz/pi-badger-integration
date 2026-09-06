@@ -194,8 +194,11 @@ export class RaccoonClient {
 				else {
 					const content = (msg.result as { content?: Array<{ type?: string; text?: string }> } | undefined)?.content;
 					const textPart = content?.find((part) => part?.type === "text" && typeof part.text === "string")?.text;
-					if (textPart === undefined) call.reject(new Error("ai-raccoon: empty tool result"));
-					else call.resolve(textPart);
+					// initialize/results without a text envelope resolve raw: only
+					// tools/call responses are expected to carry content, and a
+					// missing envelope there degrades downstream (no data →
+					// no-hits skip) instead of rejecting the handshake.
+					call.resolve(textPart ?? JSON.stringify(msg.result ?? null));
 				}
 			} catch {
 				// a non-JSON line on stdout — ignore, keep framing on later lines

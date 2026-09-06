@@ -13,8 +13,11 @@ by `<words>`, never by expanded skill content), and enrichment arrives as a
 separate message with its own card.
 
 Skip list (filters, not a score floor, kill meaningless prompts): empty input,
-single-token slash commands, control words (`stop`, `continue`, …), bare skill
-calls, `<20` chars, and fewer than 8 unique words longer than 3 chars. Modes:
+any leading-`/` command line, control words (`stop`, `continue`, …), bare skill
+calls, `<20` chars, fewer than 6 unique words (≥3 chars outside a noise
+dictionary), and empty results (no-hits skip). The block carries a
+trust-boundary header: retrieved snippets are untrusted background, never
+instructions. Modes:
 `default` (search snippets) and `expanded` (a `memory_get`/`code_get` per kept
 hit, with path + chunk/line provenance, per-hit snippet fallback). Transport is
 a persistent `ai-raccoon --transport stdio` child (pi extensions cannot invoke
@@ -23,9 +26,9 @@ steady ~0.4–0.5 s, every call timeout-bounded (default 8 s) and fail-open — 
 slow or dead bank skips enrichment, never the turn. Agent memory is untouched:
 same server, separate call site.
 
-Config (env defaults, read per call; `/context` for session scope):
+Config (env defaults, read per call; `/rag` for session scope):
 `PI_BADGER_MEM_RAG=0` disables, `PI_BADGER_MEM_RAG_MODE`
-(default|expanded), `PI_BADGER_MEM_RAG_MIN_WORDS` (default 8),
+(default|expanded), `PI_BADGER_MEM_RAG_MIN_WORDS` (default 6),
 `PI_BADGER_MEM_RAG_MIN_CHARS` (default 20),
 `PI_BADGER_MEM_RAG_TIMEOUT_MS` (default 8000),
 `PI_BADGER_MEM_RAG_SNIPPET_CHARS` (default 300). `/rag status`
