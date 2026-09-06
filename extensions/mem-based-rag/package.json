@@ -1,0 +1,12 @@
+{
+  "name": "ai-badger-mem-based-rag",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Prompt-enriching RAG on the ai-raccoon bank: before_agent_start injects a labelled Memory context block (memory + code snippets) for substantive prompts; agent memory path untouched. pi discovers the entry as ~/.pi/agent/extensions/<name>/index.ts; this manifest records metadata only and does not register the entry.",
+  "main": "index.ts",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}
