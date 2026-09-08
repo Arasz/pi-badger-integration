@@ -120,6 +120,14 @@ export interface BusStore {
 	 * dropped* (P4) count the swept-past mail when the store knows them —
 	 * absent on old stores (unknown, never zero). */
 	deliverDirectForSession(sessionId: string, projectId: string | null): { messages: BusMessage[]; cursor: number; droppedDirects?: number; droppedBroadcasts?: number };
+	/** Hook-path read (A1): the deliverForSession selection WITHOUT the cursor
+	 * write, so the hook can hand the card to pi BEFORE the cursor passes it.
+	 * OPTIONAL with fallback — stores without it keep deliver-then-post. The
+	 * `check` tool never uses it. */
+	peekForSession?(sessionId: string, projectId: string | null): { messages: BusMessage[]; cursor: number };
+	/** Hook-path read for startup (A1): the deliverDirectForSession selection
+	 * WITHOUT the cursor write. Same optional-with-fallback contract. */
+	peekDirectForSession?(sessionId: string, projectId: string | null): { messages: BusMessage[]; cursor: number; droppedDirects?: number; droppedBroadcasts?: number };
 	getCursor(sessionId: string): number;
 	/** Identity registry (P3, OPTIONAL with fallback): extension-owned
 	 * `bus_identities` rows written best-effort at session_start. Absent on
@@ -295,6 +303,62 @@ export function createSqliteStore(dbPath: string, now: () => number = Date.now):
 			)
 			.all(...params) as Record<string, unknown>[];
 	};
+	/** Shared full-batch selection (A1): peek and deliver read the same rows —
+	 * the only difference is the cursor write, so the hook can post the card
+	 * before the cursor passes it with zero selection divergence. */
+	const selectBatch = (db: SqliteDb, sessionId: string, projectId: string | null): { messages: BusMessage[]; cursor: number } => {
+		const cursorRow = db.prepare("SELECT cursor_id FROM cursors WHERE session_id = ?").get(sessionId) as { cursor_id?: unknown } | null | undefined;
+		if (cursorRow === null || cursorRow === undefined) {
+			const cutoff = new Date(now() - FIRST_READ_WINDOW_MS).toISOString();
+			const rows = readAddressed(db, sessionId, projectId, 0, cutoff);
+			const messages = rows.slice(0, FIRST_READ_CAP).map(rowToMessage);
+			const maxRow = db.prepare("SELECT COALESCE(MAX(id), 0) AS max_id FROM messages").get() as { max_id?: unknown };
+			return { messages, cursor: Number(maxRow?.max_id ?? 0) };
+		}
+		const rows = readAddressed(db, sessionId, projectId, Number(cursorRow.cursor_id ?? 0), null);
+		const messages = rows.map(rowToMessage);
+		return { messages, cursor: messages.length > 0 ? messages[messages.length - 1]!.id : Number(cursorRow.cursor_id ?? 0) };
+	};
+	/** Shared direct-batch selection (A1): same read/write split for startup. */
+	const selectDirectBatch = (
+		db: SqliteDb,
+		sessionId: string,
+		projectId: string | null,
+	): { messages: BusMessage[]; cursor: number; droppedDirects: number; droppedBroadcasts: number } => {
+		const cursorRow = db.prepare("SELECT cursor_id FROM cursors WHERE session_id = ?").get(sessionId) as { cursor_id?: unknown } | null | undefined;
+		// P4 swept-past counters: directs to me above the old cursor this
+		// batch does NOT deliver (older-than-window + over-cap) +
+		// broadcasts addressed to me above the old cursor (never
+		// delivered on start — the cursor still lands past MAX).
+		const countDirects = (afterId: number): number => {
+			const row = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE target_session = ? AND id > ? AND sender_session <> ?").get(sessionId, afterId, sessionId) as { n?: unknown };
+			return Number(row?.n ?? 0);
+		};
+		const countBroadcasts = (afterId: number): number => {
+			if (!projectId) return 0; // project-less sessions are never delivered broadcasts (readAddressed parity)
+			const row = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE target_session IS NULL AND (target_project = ? OR target_project IS NULL) AND id > ? AND sender_session <> ?").get(projectId, afterId, sessionId) as { n?: unknown };
+			return Number(row?.n ?? 0);
+		};
+		if (cursorRow === null || cursorRow === undefined) {
+			const cutoff = new Date(now() - FIRST_READ_WINDOW_MS).toISOString();
+			const rows = readDirect(db, sessionId, 0, cutoff);
+			const messages = rows.slice(0, FIRST_READ_CAP).map(rowToMessage);
+			const maxRow = db.prepare("SELECT COALESCE(MAX(id), 0) AS max_id FROM messages").get() as { max_id?: unknown };
+			return { messages, cursor: Number(maxRow?.max_id ?? 0), droppedDirects: countDirects(0) - messages.length, droppedBroadcasts: countBroadcasts(0) };
+		}
+		const cursor = Number(cursorRow.cursor_id ?? 0);
+		const rows = readDirect(db, sessionId, cursor, null);
+		const messages = rows.map(rowToMessage);
+		let nextCursor: number;
+		if (messages.length > 0) {
+			const maxRow = db.prepare("SELECT COALESCE(MAX(id), 0) AS max_id FROM messages").get() as { max_id?: unknown };
+			nextCursor = Number(maxRow?.max_id ?? 0);
+		} else {
+			const maxRow = db.prepare("SELECT COALESCE(MAX(id), 0) AS max_id FROM messages").get() as { max_id?: unknown };
+			nextCursor = Math.max(cursor, Number(maxRow?.max_id ?? 0));
+		}
+		return { messages, cursor: nextCursor, droppedDirects: countDirects(cursor) - messages.length, droppedBroadcasts: countBroadcasts(cursor) };
+	};
 	return {
 		send(args) {
 			if (!args.senderSession) throw new Error("send refused: missing sender identity (sessionId)");
@@ -344,77 +408,31 @@ export function createSqliteStore(dbPath: string, now: () => number = Date.now):
 		},
 		deliverForSession(sessionId, projectId) {
 			return withDb((db) => {
-				const cursorRow = db.prepare("SELECT cursor_id FROM cursors WHERE session_id = ?").get(sessionId) as { cursor_id?: unknown } | null | undefined;
-				let messages: BusMessage[];
-				let nextCursor: number;
-				if (cursorRow === null || cursorRow === undefined) {
-					const cutoff = new Date(now() - FIRST_READ_WINDOW_MS).toISOString();
-					const rows = readAddressed(db, sessionId, projectId, 0, cutoff);
-					messages = rows.slice(0, FIRST_READ_CAP).map(rowToMessage);
-					const maxRow = db.prepare("SELECT COALESCE(MAX(id), 0) AS max_id FROM messages").get() as { max_id?: unknown };
-					nextCursor = Number(maxRow?.max_id ?? 0);
-				} else {
-					const rows = readAddressed(db, sessionId, projectId, Number(cursorRow.cursor_id ?? 0), null);
-					messages = rows.map(rowToMessage);
-					nextCursor = messages.length > 0 ? messages[messages.length - 1]!.id : Number(cursorRow.cursor_id ?? 0);
-				}
+				const selected = selectBatch(db, sessionId, projectId);
 				db.prepare("INSERT INTO cursors(session_id, cursor_id, ts) VALUES (?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET cursor_id = excluded.cursor_id, ts = excluded.ts").run(
 					sessionId,
-					nextCursor,
+					selected.cursor,
 					new Date(now()).toISOString(),
 				);
-				return { messages, cursor: nextCursor };
+				return selected;
 			});
+		},
+		peekForSession(sessionId, projectId) {
+			return withDb((db) => selectBatch(db, sessionId, projectId));
 		},
 		deliverDirectForSession(sessionId, projectId) {
 			return withDb((db) => {
-				const cursorRow = db.prepare("SELECT cursor_id FROM cursors WHERE session_id = ?").get(sessionId) as { cursor_id?: unknown } | null | undefined;
-				let messages: BusMessage[];
-				let nextCursor: number;
-				let droppedDirects: number;
-				let droppedBroadcasts: number;
-				// P4 swept-past counters: directs to me above the old cursor this
-				// batch does NOT deliver (older-than-window + over-cap) +
-				// broadcasts addressed to me above the old cursor (never
-				// delivered on start — the cursor still lands past MAX).
-				const countDirects = (afterId: number): number => {
-					const row = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE target_session = ? AND id > ? AND sender_session <> ?").get(sessionId, afterId, sessionId) as { n?: unknown };
-					return Number(row?.n ?? 0);
-				};
-				const countBroadcasts = (afterId: number): number => {
-					if (!projectId) return 0; // project-less sessions are never delivered broadcasts (readAddressed parity)
-					const row = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE target_session IS NULL AND (target_project = ? OR target_project IS NULL) AND id > ? AND sender_session <> ?").get(projectId, afterId, sessionId) as { n?: unknown };
-					return Number(row?.n ?? 0);
-				};
-				if (cursorRow === null || cursorRow === undefined) {
-					const cutoff = new Date(now() - FIRST_READ_WINDOW_MS).toISOString();
-					const rows = readDirect(db, sessionId, 0, cutoff);
-					messages = rows.slice(0, FIRST_READ_CAP).map(rowToMessage);
-					droppedDirects = countDirects(0) - messages.length;
-					droppedBroadcasts = countBroadcasts(0);
-					const maxRow = db.prepare("SELECT COALESCE(MAX(id), 0) AS max_id FROM messages").get() as { max_id?: unknown };
-					nextCursor = Number(maxRow?.max_id ?? 0);
-				} else {
-					const cursor = Number(cursorRow.cursor_id ?? 0);
-					const rows = readDirect(db, sessionId, cursor, null);
-					messages = rows.map(rowToMessage);
-					droppedDirects = countDirects(cursor) - messages.length;
-					droppedBroadcasts = countBroadcasts(cursor);
-					if (messages.length > 0) {
-						const maxRow = db.prepare("SELECT COALESCE(MAX(id), 0) AS max_id FROM messages").get() as { max_id?: unknown };
-						nextCursor = Number(maxRow?.max_id ?? 0);
-					} else {
-						const maxRow = db.prepare("SELECT COALESCE(MAX(id), 0) AS max_id FROM messages").get() as { max_id?: unknown };
-						nextCursor = Math.max(cursor, Number(maxRow?.max_id ?? 0));
-					}
-				}
+				const selected = selectDirectBatch(db, sessionId, projectId);
 				db.prepare("INSERT INTO cursors(session_id, cursor_id, ts) VALUES (?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET cursor_id = excluded.cursor_id, ts = excluded.ts").run(
 					sessionId,
-					nextCursor,
+					selected.cursor,
 					new Date(now()).toISOString(),
 				);
-				return { messages, cursor: nextCursor, droppedDirects, droppedBroadcasts };
+				return selected;
 			});
+		},
+		peekDirectForSession(sessionId, projectId) {
+			return withDb((db) => selectDirectBatch(db, sessionId, projectId));
 		},
 	};
 }
@@ -493,6 +511,69 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		return { text: notice, cursor: result.cursor };
 	};
 
+	/** Hook-path check (turn_start, A1): the delivery card must be agent-visible
+	 * BEFORE the cursor passes it. Peeks without advancing, hands the card to
+	 * pi, and advances only after acceptance — a rejected card holds the cursor
+	 * so the next turn redelivers (at-least-once on the hook path ONLY). The
+	 * `check` tool keeps deliver-then-post (runCheck); stores without the peek
+	 * seam fall back to it. */
+	const runHookCheck = (ctx: ExtensionContext): { text: string; cursor: number } => {
+		const sessionId = resolveSid(ctx);
+		if (!sessionId) return { text: "message-bus unavailable: no session id (sessionManager.getSessionId() answered empty)", cursor: 0 };
+		let store: BusStore;
+		try {
+			store = storeFor(ctx.cwd);
+		} catch (error) {
+			return { text: `message-bus unavailable: ${error instanceof Error ? error.message : String(error)}`, cursor: 0 };
+		}
+		const peek = store.peekForSession;
+		if (!peek) return runCheck(ctx, false);
+		const projectId = resolvePid(ctx);
+		const header = formatIdentityHeader(sessionId, projectId);
+		let preview: { messages: BusMessage[]; cursor: number };
+		try {
+			preview = peek(sessionId, projectId);
+		} catch (error) {
+			console.error("ai-badger message-bus: delivery failed — fail-open, mail stays queued", error);
+			let cursor = 0;
+			try {
+				cursor = store.getCursor(sessionId);
+			} catch {
+				// cursor stays unknown — the text already says mail is queued
+			}
+			return { text: `message-bus check failed (mail stays queued): ${error instanceof Error ? error.message : String(error)}`, cursor };
+		}
+		if (preview.messages.length === 0) return runCheck(ctx, false);
+		const notice = `${header}\n${composeDeliveryNotice(preview.messages)}`;
+		try {
+			sendCard(notice, { kind: "delivery", count: preview.messages.length, ids: preview.messages.map((m) => m.id) }, false);
+		} catch (error) {
+			console.error("ai-badger message-bus: hook card rejected — fail-open, cursor held for redelivery", error);
+			let cursor = 0;
+			try {
+				cursor = store.getCursor(sessionId);
+			} catch {
+				// cursor stays unknown — the mail stays queued either way
+			}
+			return { text: notice, cursor };
+		}
+		// Card accepted: settle the cursor past it (re-read discarded — the
+			// preview above is what the agent was shown).
+		try {
+			const advanced = store.deliverForSession(sessionId, projectId);
+			return { text: notice, cursor: advanced.cursor };
+		} catch (error) {
+			console.error("ai-badger message-bus: hook cursor advance failed — fail-open, next turn redelivers", error);
+			let cursor = 0;
+			try {
+				cursor = store.getCursor(sessionId);
+			} catch {
+				// cursor stays unknown — the mail stays queued either way
+			}
+			return { text: notice, cursor };
+		}
+	};
+
 	/** Startup read: direct-only batch (broadcasts consumed silently via cursor). */
 	/** Startup read: direct-only batch (broadcasts consumed silently via cursor).
 	 * Returns the full batch: counts ride along when the store reports them,
@@ -521,9 +602,35 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		} catch (error) {
 			return `message-bus unavailable: ${error instanceof Error ? error.message : String(error)}`;
 		}
+		// A1: on stores with the peek seam, read WITHOUT advancing so the card is
+		// accepted before the cursor passes it; the cursor settles after the post
+		// (or after a "no"). Old stores keep deliver-then-post, byte for byte.
+		const peekDirect = store.peekDirectForSession;
+		let cardRejected = false;
+		const settleCursor = (): void => {
+			if (!peekDirect || cardRejected) return;
+			try {
+				deliverDirectBatch(store, sessionId, resolvePid(ctx));
+			} catch (error) {
+				console.error("ai-badger message-bus: startup cursor advance failed — fail-open, next turn redelivers", error);
+			}
+		};
+		const postStartupCard = (directs: BusMessage[], ids: number[]): void => {
+			if (!peekDirect) {
+				// old path: a throw propagates to the session_start guard, as before
+				sendCard(composeDeliveryNotice(directs), { kind: "delivery", count: directs.length, ids }, true);
+				return;
+			}
+			try {
+				sendCard(composeDeliveryNotice(directs), { kind: "delivery", count: directs.length, ids }, true);
+			} catch (error) {
+				cardRejected = true;
+				console.error("ai-badger message-bus: startup card rejected — fail-open, cursor held for redelivery", error);
+			}
+		};
 		let batch: { messages: BusMessage[]; cursor: number; droppedDirects?: number; droppedBroadcasts?: number };
 		try {
-			batch = deliverDirectBatch(store, sessionId, resolvePid(ctx));
+			batch = peekDirect ? peekDirect(sessionId, resolvePid(ctx)) : deliverDirectBatch(store, sessionId, resolvePid(ctx));
 		} catch (error) {
 			console.error("ai-badger message-bus: startup delivery failed — fail-open, mail stays queued", error);
 			return `message-bus startup check failed (mail stays queued): ${error instanceof Error ? error.message : String(error)}`;
@@ -548,8 +655,10 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 				} catch (error) {
 					console.error("ai-badger message-bus: startup summary append failed — fail-open", error);
 				}
+				settleCursor();
 				return text;
 			}
+			settleCursor();
 			return "no new private messages.";
 		}
 		const notice = composeDirectStartNotice(directs, stats);
@@ -565,19 +674,23 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		if (!canAsk) {
 			// No user to ask (print/json/rpc or headless ctx): surface to the agent
 			// so the mail is not silently consumed — same wire as the old start.
-			sendCard(composeDeliveryNotice(directs), { kind: "delivery", count: directs.length, ids }, true);
+			// A1: the cursor settles only after the card is accepted.
+			postStartupCard(directs, ids);
+			settleCursor();
 			return notice;
 		}
 		try {
 			const confirm = (ctx as unknown as { ui: { confirm: (title: string, message: string) => Promise<boolean> } }).ui.confirm;
 			const acted = await confirm("Private messages", buildDirectStartQuestion(directs.length));
 			if (acted) {
-				sendCard(composeDeliveryNotice(directs), { kind: "delivery", count: directs.length, ids }, true);
+				postStartupCard(directs, ids);
 			}
+			settleCursor();
 			return notice;
 		} catch (error) {
 			console.error("ai-badger message-bus: startup confirm failed — surfacing to agent instead of losing mail", error);
-			sendCard(composeDeliveryNotice(directs), { kind: "delivery", count: directs.length, ids }, true);
+			postStartupCard(directs, ids);
+			settleCursor();
 			return notice;
 		}
 	};
@@ -606,7 +719,7 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 	pi.on("turn_start", (_event, ctx) => {
 		if (hooksDisabled()) return undefined;
 		try {
-			runCheck(ctx, false);
+			runHookCheck(ctx);
 		} catch (error) {
 			console.error("ai-badger message-bus: turn_start delivery failed — fail-open", error);
 		}
