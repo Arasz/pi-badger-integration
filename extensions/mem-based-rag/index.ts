@@ -449,8 +449,8 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 				data?: { results?: MemoryHit[]; code?: MemoryHit[] };
 			};
 			const pruned = pruneHits(envelope.data?.results ?? [], envelope.data?.code ?? []);
-			const mem = pruned.mem.slice(0, 3);
-			const code = pruned.code.slice(0, 2);
+			const mem = pruned.mem.slice(0, 5);
+			const code = pruned.code.slice(0, 5);
 			if (mem.length === 0 && code.length === 0) {
 				skipped += 1;
 				lastReason = "skipped (no-hits)";

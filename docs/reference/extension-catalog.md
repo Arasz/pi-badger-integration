@@ -5,7 +5,7 @@ Deep reference for the extensions this repo ships. For install steps see [Instal
 ## The mem-based-rag extension: memory-based prompt enrichment on the ai-raccoon bank
 
 Substantive user prompts gain a labelled `Memory context:` block injected via
-`before_agent_start` — top-3 memory snippets plus top-2 code snippets from
+`before_agent_start` — top-5 memory snippets plus top-5 code snippets from
 `memory_search`, each with its hash so the agent can `memory_get`/`code_get` the
 full entry. The prompt itself is never rewritten: the `input` handler only
 captures the raw pre-expansion text (so a `/skill:task <words>` call is queried

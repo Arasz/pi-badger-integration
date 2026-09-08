@@ -127,13 +127,13 @@ describe("toMemoryContext (default mode)", () => {
 		expect(block).toContain("(no code hits)");
 	});
 
-	test("keeps top 3 memories and top 2 code hits", () => {
-		const many = [1, 2, 3, 4, 5].map((i) => ({ hash: `h${i}`, path: `p${i}.md`, snippet: `s${i}` }));
+	test("keeps top 5 memories and top 5 code hits", () => {
+		const many = [1, 2, 3, 4, 5, 6, 7].map((i) => ({ hash: `h${i}`, path: `p${i}.md`, snippet: `s${i}` }));
 		const block = toMemoryContext("a sufficiently long and meaningful question here", many, many);
-		expect(block).toContain("[m3]");
-		expect(block).not.toContain("[m4]");
-		expect(block).toContain("[c2]");
-		expect(block).not.toContain("[c3]");
+		expect(block).toContain("[m5]");
+		expect(block).not.toContain("[m6]");
+		expect(block).toContain("[c5]");
+		expect(block).not.toContain("[c6]");
 	});
 
 	test("sourceFile-only hits render the sourceFile, never [m?]", () => {
