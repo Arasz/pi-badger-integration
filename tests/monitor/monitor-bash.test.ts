@@ -371,11 +371,14 @@ describe("M6: bash skips the JS gates entirely", () => {
 		expect(cards[0]!.message.details).toMatchObject({ kind: "fired", predicateKind: "bash", predicate });
 	});
 
-	test("`return 0` survives registration verbatim (runtime exit 1 → idle → armed)", async () => {
+	test("`return 0` survives registration verbatim (no JS return-strip)", async () => {
+		// Portability note: `return` outside a function has no portable runtime exit status
+		// (bash 3.2 exits 1, bash 5 exits >=2), so this test asserts REGISTRATION-time facts
+		// only — resolves (not rejected) with the predicate echoed verbatim. The runtime
+		// exit-1→idle mapping is pinned separately with the stable `exit 1` probe above.
 		const { pi } = makeBashHarness();
 		const receipt = await bashRegister(pi, { predicate: "return 0", predicateKind: "bash" });
-		expect(receipt.details.state).toBe("armed");
-		expect(receipt.details.predicate).toBe("return 0");
+		expect(receipt.details.predicate).toBe("return 0"); // verbatim — a JS gate would have stripped it to `0`
 	});
 
 	test("an unknown predicateKind rejects loudly", async () => {
