@@ -25,6 +25,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { Box, Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
+	hasSkillPrefix,
 	hitDisplayPath,
 	pruneHits,
 	shouldEnrich,
@@ -48,6 +49,23 @@ export const MEM_RAG_MIN_CHARS_ENV = "PI_BADGER_MEM_RAG_MIN_CHARS";
 export const MEM_RAG_TIMEOUT_ENV = "PI_BADGER_MEM_RAG_TIMEOUT_MS";
 export const MEM_RAG_SNIPPET_ENV = "PI_BADGER_MEM_RAG_SNIPPET_CHARS";
 export const MEM_RAG_BIN_ENV = "PI_BADGER_MEM_RAG_BIN";
+
+/** Isolated RAG Q&A command (PKG-2). */
+export const ASK_COMMAND_NAME = "ask";
+
+/**
+ * `--exclude-tools` value for /ask children. Literal copy of the subagent
+ * CHILD_EXCLUDED_TOOLS (extensions/subagent/index.ts) — read-only reference,
+ * NO cross-extension runtime import so the two extensions never couple at load.
+ * Pinned equal by tests/mem-based-rag/ask.test.ts (8).
+ */
+export const ASK_CHILD_EXCLUDED_TOOLS = "delegate,delegations,queue,monitor,wait";
+
+/** Isolated child budget: spawn killed past this (default seam + injected opts). */
+export const ASK_CHILD_TIMEOUT_MS = 90000;
+
+/** Answer-tail budget: success answers cap to this tail (like capOutput). */
+export const ASK_ANSWER_CAP_CHARS = 8 * 1024;
 
 export type PromptContextMode = "default" | "expanded";
 
@@ -116,6 +134,99 @@ function resolveSessionId(ctx: ExtensionContext): string {
 		// older build shape — fail-open below
 	}
 	return "";
+}
+
+// ------------------------------------------------------------------ /ask child
+
+export interface AskSpawnOpts {
+	cwd: string;
+	timeoutMs: number;
+}
+
+export interface AskSpawnResult {
+	stdout: string;
+	stderr: string;
+	exitCode: number | null;
+}
+
+/** Isolated-child spawn seam (injected in tests — zero real processes there). */
+export type SpawnAskFn = (cmd: string, argv: string[], opts: AskSpawnOpts) => Promise<AskSpawnResult>;
+
+/**
+ * How to re-invoke pi for the isolated /ask child. Minimal copy of the
+ * subagent piInvocation pattern (extensions/subagent/index.ts): re-run this
+ * process's own script when it exists on disk, else fall back to "pi" on PATH.
+ */
+export function askPiInvocation(
+	argv: string[],
+	proc: { argv: string[]; execPath: string } = process,
+	exists: (path: string) => boolean = existsSync,
+): { command: string; args: string[] } {
+	const script = proc.argv[1];
+	if (script && exists(script)) {
+		return { command: proc.execPath, args: [script, ...argv] };
+	}
+	return { command: "pi", args: argv };
+}
+
+/**
+ * Minimal isolated-answer parse (documented): scan stdout JSONL lines, concat
+ * assistant text payloads best-effort. Accepts pi --mode json message_end blocks
+ * ({message:{content:[{type:"text",text}]}}) plus flat {result|answer|text} string
+ * fields and {event:{text|answer|result}} wrappers some runners emit. Non-JSON
+ * lines are ignored. Returns "" when nothing answer-like was found — the caller
+ * reports a skip, never an empty answer.
+ */
+export function parseAskAnswer(stdout: string): string {
+	const parts: string[] = [];
+	for (const line of stdout.split("\n")) {
+		const trimmed = line.trim();
+		if (!trimmed) continue;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(trimmed);
+		} catch {
+			continue;
+		}
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
+		const obj = parsed as Record<string, unknown>;
+		const msg = obj["message"] as { content?: Array<{ type?: string; text?: string }> } | undefined;
+		if (msg && Array.isArray(msg.content)) {
+			for (const part of msg.content) {
+				if (part?.type === "text" && typeof part.text === "string" && part.text.trim()) {
+					parts.push(part.text);
+				}
+			}
+			continue;
+		}
+		let consumed = false;
+		for (const key of ["result", "answer", "text"] as const) {
+			const v = obj[key];
+			if (typeof v === "string" && v.trim()) {
+				parts.push(v);
+				consumed = true;
+				break;
+			}
+		}
+		if (consumed) continue;
+		const ev = obj["event"] as Record<string, unknown> | undefined;
+		if (ev && typeof ev === "object" && !Array.isArray(ev)) {
+			for (const key of ["text", "answer", "result"] as const) {
+				const v = (ev as Record<string, unknown>)[key];
+				if (typeof v === "string" && v.trim()) {
+					parts.push(v);
+					break;
+				}
+			}
+		}
+	}
+	return parts.join("\n").trim();
+}
+
+/** Keep the last `limit` chars (tail semantics like capOutput); the answer lives at the end. */
+export function capAskAnswer(text: string, limit: number = ASK_ANSWER_CAP_CHARS): string {
+	if (text.length <= limit) return text;
+	return `[...${text.length - limit} earlier characters dropped]\n${text.slice(-limit)}`;
 }
 
 // ---------------------------------------------------------------- MCP client
@@ -309,6 +420,7 @@ export class RaccoonClient {
 export type RaccoonClientLike = Pick<RaccoonClient, "call" | "stop">;
 export interface MemRagDeps {
 	createClient?: (bin: string) => RaccoonClientLike;
+	spawnAsk?: SpawnAskFn;
 }
 
 export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
@@ -329,8 +441,72 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 	let skipped = 0;
 	let lastMs = 0;
 	let lastReason = "none yet";
+	let asked = 0;
+	let skippedAsk = 0;
+	let lastAskReason = "none yet";
+	/** In-flight isolated child (default seam only) — shutdown kills it, no orphans. */
+	let askChild: ChildProcess | null = null;
+	/** In-flight /ask abort — shutdown rejects the pending spawn race. */
+	let askAbort: (() => void) | null = null;
 
 	const createClient = deps?.createClient ?? ((bin: string): RaccoonClientLike => new RaccoonClient(bin));
+
+	const spawnAsk: SpawnAskFn =
+		deps?.spawnAsk ??
+		((cmd, argv, opts) =>
+			new Promise<AskSpawnResult>((resolve, reject) => {
+				let stdout = "";
+				let stderr = "";
+				let settled = false;
+				let child: ChildProcess;
+				try {
+					child = spawn(cmd, argv, { cwd: opts.cwd, stdio: ["ignore", "pipe", "pipe"] });
+				} catch (error) {
+					reject(error instanceof Error ? error : new Error(String(error)));
+					return;
+				}
+				askChild = child;
+				const cleanup = (): void => {
+					if (askChild === child) askChild = null;
+					clearTimeout(timer);
+				};
+				const timer = setTimeout(() => {
+					if (settled) return;
+					settled = true;
+					try {
+						child.kill("SIGTERM");
+					} catch {
+						// already gone — the reject below carries the timeout
+					}
+					setTimeout(() => {
+						try {
+							child.kill("SIGKILL");
+						} catch {
+							// already gone — nothing to reap
+						}
+					}, 5000)?.unref?.();
+					cleanup();
+					reject(new Error(`ask child timed out after ${opts.timeoutMs}ms`));
+				}, opts.timeoutMs);
+				child.stdout?.on("data", (chunk: Buffer | string) => {
+					stdout += chunk.toString();
+				});
+				child.stderr?.on("data", (chunk: Buffer | string) => {
+					stderr += chunk.toString();
+				});
+				child.on("error", (error: Error) => {
+					if (settled) return;
+					settled = true;
+					cleanup();
+					reject(error);
+				});
+				child.on("close", (code) => {
+					if (settled) return;
+					settled = true;
+					cleanup();
+					resolve({ stdout, stderr, exitCode: code });
+				});
+			}));
 
 	const getClient = async (bin: string): Promise<RaccoonClientLike> => {
 		if (!client) {
@@ -377,6 +553,18 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 
 	const resetSessionState = (): void => {
 		try {
+			askAbort?.();
+		} catch {
+			// abort is best-effort — the counters below still reset
+		}
+		askAbort = null;
+		try {
+			askChild?.kill();
+		} catch {
+			// already gone — nothing to reap
+		}
+		askChild = null;
+		try {
 			client?.stop();
 		} catch {
 			// already gone — nothing to reap
@@ -389,6 +577,9 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 		skipped = 0;
 		lastMs = 0;
 		lastReason = "none yet";
+		asked = 0;
+		skippedAsk = 0;
+		lastAskReason = "none yet";
 	};
 
 	// Raw prompt capture: `input` sees text BEFORE skill/template expansion,
@@ -419,6 +610,19 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 		// whitespace-only capture carries no query).
 		const raw = queued !== undefined && queued.trim() ? queued : String(event.prompt ?? "");
 		const decision = shouldEnrich(raw, { minChars: config.minChars, minWords: config.minWords });
+		// PKG-1 skill-precondition gate: auto-enrich is skill-only. shouldEnrich
+		// stays the single filter (bare-skill-call > control-word/command > length,
+		// drain-first preserved above), so already-skipped turns keep their specific
+		// reason and bare calls — which never enrich — still report bare-skill-call.
+		// The gate only converts an otherwise-enrichable non-skill turn into a
+		// non-skill skip (zero searches). Prefix-presence (hasSkillPrefix), not
+		// body-presence (isSkillCall), drives the skip so a bare call is never
+		// misreported as non-skill.
+		if (decision.enrich && !hasSkillPrefix(raw)) {
+			skipped += 1;
+			lastReason = "skipped (non-skill-call)";
+			return undefined;
+		}
 		if (!decision.enrich) {
 			skipped += 1;
 			lastReason = `skipped (${decision.reason})`;
@@ -548,8 +752,10 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 				}
 				notify(
 					`mem-based-rag: ${config.enabled ? `on (${config.mode})` : "off"} — enriched ${enriched}, skipped ${skipped}, last: ${lastReason}. ` +
+						`Ask: asked ${asked}, skippedAsk ${skippedAsk}, last: ${lastAskReason}. ` +
 						`Project: ${project}, child: ${isChildAlive(client) ? "alive" : "idle"}. ` +
-						`Floors: ≥${config.minWords} unique words (≥3 chars ex-noise), ≥${config.minChars} chars, timeout ${config.timeoutMs}ms.`,
+						`Floors: ≥${config.minWords} unique words (≥3 chars ex-noise), ≥${config.minChars} chars, timeout ${config.timeoutMs}ms. ` +
+						`Auto-enrich: skill calls only (/skill:<id> <text>); all other turns skip.`,
 					"info",
 				);
 				return;
@@ -561,6 +767,192 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 				return;
 			}
 			notify("usage: /rag [status|mode default|expanded|off]", "info");
+		},
+	});
+
+	// PKG-2 /ask: isolated RAG Q&A. Routing note (plan-review MUST-2): pi routes
+	// extension commands BEFORE input/before_agent_start (agent-session.js), so
+	// /ask turns never auto-enrich — no queue interaction, no double retrieval.
+	pi.registerCommand(ASK_COMMAND_NAME, {
+		description: "Ask the memory bank in isolation: retrieve context then answer in a tool-less child.",
+		async handler(args, ctx) {
+			const notify = (message: string, type: "info" | "warning" | "error"): void => {
+				try {
+					ctx.ui?.notify?.(message, type);
+				} catch {
+					// notify must never throw the turn
+				}
+			};
+			try {
+				const config = readConfig(sessionMode);
+				if (!config.enabled) {
+					skippedAsk += 1;
+					lastAskReason = "ask skipped (mode off)";
+					notify("mem-based-rag /ask: skipped (mode off).", "info");
+					return undefined;
+				}
+				const raw = args.trim();
+				const decision = shouldEnrich(raw, { minChars: config.minChars, minWords: config.minWords });
+				if (!decision.enrich) {
+					skippedAsk += 1;
+					lastAskReason = `ask skipped (${decision.reason})`;
+					notify(`mem-based-rag /ask: skipped (${decision.reason}).`, "info");
+					return undefined;
+				}
+				let projectId: string | null;
+				try {
+					projectId = resolveProjectId(ctx.cwd, process.env);
+				} catch {
+					projectId = null;
+				}
+				if (!projectId) {
+					skippedAsk += 1;
+					lastAskReason = "ask skipped (no project id)";
+					notify("mem-based-rag /ask: skipped (no project id).", "info");
+					return undefined;
+				}
+				const sessionId = resolveSessionId(ctx);
+				if (!sessionId) {
+					skippedAsk += 1;
+					lastAskReason = "ask skipped (no session id)";
+					notify("mem-based-rag /ask: skipped (no session id).", "info");
+					return undefined;
+				}
+				const startedAt = Date.now();
+				let mem: MemoryHit[];
+				let code: MemoryHit[];
+				let raccoon: RaccoonClientLike;
+				try {
+					raccoon = await getClient(config.bin);
+					const searchText = await searchCall(
+						raccoon,
+						"memory_search",
+						{ projectId, sessionId, query: decision.query, limit: 5 },
+						config.timeoutMs,
+					);
+					const envelope = JSON.parse(searchText) as {
+						data?: { results?: MemoryHit[]; code?: MemoryHit[] };
+					};
+					const pruned = pruneHits(envelope.data?.results ?? [], envelope.data?.code ?? []);
+					mem = pruned.mem.slice(0, 5);
+					code = pruned.code.slice(0, 5);
+					if (mem.length === 0 && code.length === 0) {
+						skippedAsk += 1;
+						lastAskReason = "ask skipped (no-hits)";
+						notify("mem-based-rag /ask: skipped (no-hits).", "info");
+						return undefined;
+					}
+				} catch (error) {
+					skippedAsk += 1;
+					const detail = error instanceof Error ? error.message : String(error);
+					lastAskReason = `ask skipped (bank error: ${detail})`;
+					notify(`mem-based-rag /ask: skipped (bank error: ${detail}).`, "info");
+					console.error("ai-badger mem-based-rag: /ask enrichment failed fail-open —", error);
+					return undefined;
+				}
+				let block: string;
+				if (config.mode === "expanded") {
+					// Same shared-deadline fan-out as the auto path: concurrent
+					// in-flight gets, each budgeted from one expiry; per-hit failure
+					// falls back to the snippet inside the formatter.
+					const deadline = Date.now() + config.timeoutMs;
+					const remaining = (): number => Math.max(1, deadline - Date.now());
+					const fetched = await Promise.all([
+						...mem.map(async (hit) => ({
+							hit,
+							kind: "memory" as const,
+							...(await fetchFull(raccoon, "memory_get", projectId, hit, remaining())),
+						})),
+						...code.map(async (hit) => ({
+							hit,
+							kind: "code" as const,
+							...(await fetchFull(raccoon, "code_get", projectId, hit, remaining())),
+						})),
+					]);
+					block = toExpandedMemoryContext(decision.query, fetched, { snippetChars: config.snippetChars });
+				} else {
+					block = toMemoryContext(decision.query, mem, code, { snippetChars: config.snippetChars });
+				}
+				const augmented = `${block}\n\nQuestion: ${decision.query}`;
+				const childArgv = [
+					"-p",
+					"--mode",
+					"json",
+					"--no-session",
+					"--exclude-tools",
+					ASK_CHILD_EXCLUDED_TOOLS,
+					"--",
+					augmented,
+				];
+				// No --model: the child picks pi's own default so /ask never inherits
+				// or pins the parent session model into the isolated answer path.
+				const invocation = askPiInvocation(childArgv);
+				let aborted = false;
+				let rejectAbort: (error: Error) => void = () => {};
+				const abortPromise = new Promise<never>((_, reject) => {
+					rejectAbort = (error: Error) => {
+						aborted = true;
+						reject(error);
+					};
+				});
+				const myAbort = (): void => rejectAbort(new Error("ask aborted by session shutdown"));
+				askAbort = myAbort;
+				try {
+					const result = await Promise.race([
+						spawnAsk(invocation.command, invocation.args, {
+							cwd: ctx.cwd,
+							timeoutMs: ASK_CHILD_TIMEOUT_MS,
+						}),
+						abortPromise,
+					]);
+					if (askAbort === myAbort) askAbort = null;
+					if (result.exitCode !== 0) {
+						skippedAsk += 1;
+						lastAskReason = `ask failed (exit ${String(result.exitCode)})`;
+						const tail = result.stderr?.trim() ? ` ${result.stderr.trim().slice(0, 200)}` : "";
+						notify(`mem-based-rag /ask: failed (exit ${String(result.exitCode)}).${tail}`, "warning");
+						console.error("ai-badger mem-based-rag: /ask child failed —", {
+							exitCode: result.exitCode,
+							cwd: ctx.cwd,
+							stderr: result.stderr,
+						});
+						return undefined;
+					}
+					const parsed = parseAskAnswer(result.stdout);
+					if (!parsed) {
+						skippedAsk += 1;
+						lastAskReason = "ask skipped (no answer from child)";
+						notify("mem-based-rag /ask: skipped (no answer from child).", "info");
+						return undefined;
+					}
+					const answer = capAskAnswer(parsed);
+					asked += 1;
+					lastAskReason = `asked (${config.mode}, ${Date.now() - startedAt}ms)`;
+					notify(answer, "info");
+					// Runtime returns the answer for tests/callers; typed as void
+					// because RegisteredCommand.handler is Promise<void>.
+					return answer as unknown as void;
+				} catch (error) {
+					if (askAbort === myAbort) askAbort = null;
+					if (aborted) return undefined;
+					skippedAsk += 1;
+					const detail = error instanceof Error ? error.message : String(error);
+					lastAskReason = `ask failed (${detail})`;
+					notify(`mem-based-rag /ask: failed (${detail}).`, "warning");
+					return undefined;
+				}
+			} catch (error) {
+				// NEVER throw the turn — every failure path notifies and returns undefined.
+				try {
+					skippedAsk += 1;
+					const detail = error instanceof Error ? error.message : String(error);
+					lastAskReason = `ask failed (${detail})`;
+					notify(`mem-based-rag /ask: failed (${detail}).`, "warning");
+				} catch {
+					// notify itself must never throw
+				}
+				return undefined;
+			}
 		},
 	});
 
