@@ -79,6 +79,7 @@ import {
 } from "./delegation-registry.ts";
 import type { DelegationNote, DelegationProgress, SpawnFn } from "./delegation-runner.ts";
 import { registerDelegationStatus } from "./delegation-status.ts";
+import { registerDelegationSkipGuard } from "./delegation-skip-guard.ts";
 import { DelegationResultCache } from "./result-cache.ts";
 import { registerDelegationQueue, type DelegationQueueOpts } from "./delegation-queue.ts";
 import { type AgentToolUpdateCallback, type ExtensionAPI, parseFrontmatter } from "@earendil-works/pi-coding-agent";
@@ -982,6 +983,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   // status surface consults the log dir through the same reconstruction session_start uses,
   // so an empty registry still surfaces stale runs (the net that survives a dead runner).
   const statusApi = registerDelegationStatus(pi, registry, { staleRuns: () => reconstructFromLogDir(logDir, now(), { prune: false }), resultCache });
+  registerDelegationSkipGuard(pi);
 
   // Plan v2 R4: the `queue` tool (delegation-queue.ts) rides the SAME registry instance. Its
   // opts extract everything it shares with the delegate tool — the persona scan, the

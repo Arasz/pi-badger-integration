@@ -44,14 +44,21 @@ import {
 	ACK_PREFIX,
 	buildAckContent,
 	buildDirectStartQuestion,
+	buildReplyTargets,
 	composeDeliveryNotice,
 	composeDirectStartNotice,
 	DEFAULT_LIST_DEPTH,
 	filterDirect,
+	formatDropLine,
+	formatIdentityHeader,
 	formatList,
 	isAck,
+	isValidBusId,
 	normalizeSendTargets,
+	selfSendWarning,
 	type BusMessage,
+	type StartupDropStats,
+	unknownTargetWarning,
 } from "./message-bus-core.ts";
 
 /** The message-bus card's custom message type. */
@@ -60,11 +67,15 @@ export const MESSAGE_BUS_CUSTOM_TYPE = "message-bus-event";
 /** User-only startup summary entry (appendEntry — never enters LLM context). */
 export const MESSAGE_BUS_START_ENTRY_TYPE = "message-bus-start";
 
-/** Data stored on the user-only startup summary card. */
+/** Data stored on the user-only startup summary card. dropped* are P4:
+ * present when the store reported silently-consumed counts, absent for
+ * old stores (unknown, never zero). */
 export interface MessageBusStartCardData {
 	text: string;
 	count: number;
 	ids: number[];
+	droppedDirects?: number;
+	droppedBroadcasts?: number;
 }
 
 /** The LLM-facing tool name. */
@@ -105,9 +116,16 @@ export interface BusStore {
 	listForSession(sessionId: string, projectId: string | null): BusMessage[];
 	deliverForSession(sessionId: string, projectId: string | null): { messages: BusMessage[]; cursor: number };
 	/** Startup read: direct-only batch, cursor still lands past MAX(id) so stale
-	 * broadcasts are consumed silently and never re-delivered on turn_start. */
-	deliverDirectForSession(sessionId: string, projectId: string | null): { messages: BusMessage[]; cursor: number };
+	 * broadcasts are consumed silently and never re-delivered on turn_start.
+	 * dropped* (P4) count the swept-past mail when the store knows them —
+	 * absent on old stores (unknown, never zero). */
+	deliverDirectForSession(sessionId: string, projectId: string | null): { messages: BusMessage[]; cursor: number; droppedDirects?: number; droppedBroadcasts?: number };
 	getCursor(sessionId: string): number;
+	/** Identity registry (P3, OPTIONAL with fallback): extension-owned
+	 * `bus_identities` rows written best-effort at session_start. Absent on
+	 * old fakes — the wiring skips unknown-target warnings, still sends. */
+	recordIdentity?(args: { sessionId: string; projectId: string | null }): void;
+	hasIdentity?(sessionId: string): boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +190,11 @@ const BUS_DDL = [
 	`CREATE TABLE IF NOT EXISTS cursors (
 		session_id TEXT PRIMARY KEY,
 		cursor_id INTEGER NOT NULL,
+		ts TEXT NOT NULL
+	)`,
+	`CREATE TABLE IF NOT EXISTS bus_identities (
+		session_id TEXT PRIMARY KEY,
+		project_id TEXT,
 		ts TEXT NOT NULL
 	)`,
 ];
@@ -304,6 +327,21 @@ export function createSqliteStore(dbPath: string, now: () => number = Date.now):
 				return Number(row?.cursor_id ?? 0);
 			});
 		},
+		recordIdentity(args) {
+			withDb((db) => {
+				db.prepare("INSERT INTO bus_identities(session_id, project_id, ts) VALUES (?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET project_id = excluded.project_id, ts = excluded.ts").run(
+					args.sessionId,
+					args.projectId,
+					new Date(now()).toISOString(),
+				);
+			});
+		},
+		hasIdentity(sessionId) {
+			return withDb((db) => {
+				const row = db.prepare("SELECT session_id FROM bus_identities WHERE session_id = ?").get(sessionId) as { session_id?: unknown } | null;
+				return row !== null && row !== undefined;
+			});
+		},
 		deliverForSession(sessionId, projectId) {
 			return withDb((db) => {
 				const cursorRow = db.prepare("SELECT cursor_id FROM cursors WHERE session_id = ?").get(sessionId) as { cursor_id?: unknown } | null | undefined;
@@ -328,21 +366,40 @@ export function createSqliteStore(dbPath: string, now: () => number = Date.now):
 				return { messages, cursor: nextCursor };
 			});
 		},
-		deliverDirectForSession(sessionId, _projectId) {
+		deliverDirectForSession(sessionId, projectId) {
 			return withDb((db) => {
 				const cursorRow = db.prepare("SELECT cursor_id FROM cursors WHERE session_id = ?").get(sessionId) as { cursor_id?: unknown } | null | undefined;
 				let messages: BusMessage[];
 				let nextCursor: number;
+				let droppedDirects: number;
+				let droppedBroadcasts: number;
+				// P4 swept-past counters: directs to me above the old cursor this
+				// batch does NOT deliver (older-than-window + over-cap) +
+				// broadcasts addressed to me above the old cursor (never
+				// delivered on start — the cursor still lands past MAX).
+				const countDirects = (afterId: number): number => {
+					const row = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE target_session = ? AND id > ? AND sender_session <> ?").get(sessionId, afterId, sessionId) as { n?: unknown };
+					return Number(row?.n ?? 0);
+				};
+				const countBroadcasts = (afterId: number): number => {
+					if (!projectId) return 0; // project-less sessions are never delivered broadcasts (readAddressed parity)
+					const row = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE target_session IS NULL AND (target_project = ? OR target_project IS NULL) AND id > ? AND sender_session <> ?").get(projectId, afterId, sessionId) as { n?: unknown };
+					return Number(row?.n ?? 0);
+				};
 				if (cursorRow === null || cursorRow === undefined) {
 					const cutoff = new Date(now() - FIRST_READ_WINDOW_MS).toISOString();
 					const rows = readDirect(db, sessionId, 0, cutoff);
 					messages = rows.slice(0, FIRST_READ_CAP).map(rowToMessage);
+					droppedDirects = countDirects(0) - messages.length;
+					droppedBroadcasts = countBroadcasts(0);
 					const maxRow = db.prepare("SELECT COALESCE(MAX(id), 0) AS max_id FROM messages").get() as { max_id?: unknown };
 					nextCursor = Number(maxRow?.max_id ?? 0);
 				} else {
 					const cursor = Number(cursorRow.cursor_id ?? 0);
 					const rows = readDirect(db, sessionId, cursor, null);
 					messages = rows.map(rowToMessage);
+					droppedDirects = countDirects(cursor) - messages.length;
+					droppedBroadcasts = countBroadcasts(cursor);
 					if (messages.length > 0) {
 						const maxRow = db.prepare("SELECT COALESCE(MAX(id), 0) AS max_id FROM messages").get() as { max_id?: unknown };
 						nextCursor = Number(maxRow?.max_id ?? 0);
@@ -356,7 +413,7 @@ export function createSqliteStore(dbPath: string, now: () => number = Date.now):
 					nextCursor,
 					new Date(now()).toISOString(),
 				);
-				return { messages, cursor: nextCursor };
+				return { messages, cursor: nextCursor, droppedDirects, droppedBroadcasts };
 			});
 		},
 	};
@@ -404,35 +461,48 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		return found ?? null;
 	};
 
-	/** Shared check: deliver + card when there is new mail. Returns human text. */
-	const runCheck = (ctx: ExtensionContext, triggerTurn: boolean): string => {
+	/** Shared check: deliver + card when there is new mail. Returns human text
+	 * with the identity header first (P2 co-order: header → body). */
+	const runCheck = (ctx: ExtensionContext, triggerTurn: boolean): { text: string; cursor: number } => {
 		const sessionId = resolveSid(ctx);
-		if (!sessionId) return "message-bus unavailable: no session id (sessionManager.getSessionId() answered empty)";
+		if (!sessionId) return { text: "message-bus unavailable: no session id (sessionManager.getSessionId() answered empty)", cursor: 0 };
 		let store: BusStore;
 		try {
 			store = storeFor(ctx.cwd);
 		} catch (error) {
-			return `message-bus unavailable: ${error instanceof Error ? error.message : String(error)}`;
+			return { text: `message-bus unavailable: ${error instanceof Error ? error.message : String(error)}`, cursor: 0 };
 		}
-		let delivered: BusMessage[];
+		const projectId = resolvePid(ctx);
+		const header = formatIdentityHeader(sessionId, projectId);
+		let result: { messages: BusMessage[]; cursor: number };
 		try {
-			delivered = store.deliverForSession(sessionId, resolvePid(ctx)).messages;
+			result = store.deliverForSession(sessionId, projectId);
 		} catch (error) {
 			console.error("ai-badger message-bus: delivery failed — fail-open, mail stays queued", error);
-			return `message-bus check failed (mail stays queued): ${error instanceof Error ? error.message : String(error)}`;
+			let cursor = 0;
+			try {
+				cursor = store.getCursor(sessionId);
+			} catch {
+				// cursor stays unknown — the text already says mail is queued
+			}
+			return { text: `message-bus check failed (mail stays queued): ${error instanceof Error ? error.message : String(error)}`, cursor };
 		}
-		if (delivered.length === 0) return "no new messages.";
-		const notice = composeDeliveryNotice(delivered);
-		sendCard(notice, { kind: "delivery", count: delivered.length, ids: delivered.map((m) => m.id) }, triggerTurn);
-		return notice;
+		if (result.messages.length === 0) return { text: `${header}\nno new messages.`, cursor: result.cursor };
+		const notice = `${header}\n${composeDeliveryNotice(result.messages)}`;
+		sendCard(notice, { kind: "delivery", count: result.messages.length, ids: result.messages.map((m) => m.id) }, triggerTurn);
+		return { text: notice, cursor: result.cursor };
 	};
 
 	/** Startup read: direct-only batch (broadcasts consumed silently via cursor). */
-	const deliverDirectBatch = (store: BusStore, sessionId: string, projectId: string | null): BusMessage[] => {
+	/** Startup read: direct-only batch (broadcasts consumed silently via cursor).
+	 * Returns the full batch: counts ride along when the store reports them,
+	 * absent on old stores (unknown, never zero — the caller keeps silence). */
+	const deliverDirectBatch = (store: BusStore, sessionId: string, projectId: string | null): { messages: BusMessage[]; cursor: number; droppedDirects?: number; droppedBroadcasts?: number } => {
 		if (typeof store.deliverDirectForSession === "function") {
-			return store.deliverDirectForSession(sessionId, projectId).messages;
+			return store.deliverDirectForSession(sessionId, projectId);
 		}
-		return filterDirect(store.deliverForSession(sessionId, projectId).messages);
+		const result = store.deliverForSession(sessionId, projectId);
+		return { messages: filterDirect(result.messages), cursor: result.cursor };
 	};
 
 	/**
@@ -451,18 +521,41 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		} catch (error) {
 			return `message-bus unavailable: ${error instanceof Error ? error.message : String(error)}`;
 		}
-		let directs: BusMessage[];
+		let batch: { messages: BusMessage[]; cursor: number; droppedDirects?: number; droppedBroadcasts?: number };
 		try {
-			directs = deliverDirectBatch(store, sessionId, resolvePid(ctx));
+			batch = deliverDirectBatch(store, sessionId, resolvePid(ctx));
 		} catch (error) {
 			console.error("ai-badger message-bus: startup delivery failed — fail-open, mail stays queued", error);
 			return `message-bus startup check failed (mail stays queued): ${error instanceof Error ? error.message : String(error)}`;
 		}
-		if (directs.length === 0) return "no new private messages.";
-		const notice = composeDirectStartNotice(directs);
+		const directs = batch.messages;
+		// P4: present counts or unknown (old stores) — unknown keeps today's
+		// silence, never a zero-drop claim.
+		const stats: StartupDropStats | undefined =
+			typeof batch.droppedDirects === "number" || typeof batch.droppedBroadcasts === "number"
+				? { droppedDirects: batch.droppedDirects ?? 0, droppedBroadcasts: batch.droppedBroadcasts ?? 0 }
+				: undefined;
+		const dropped = (stats?.droppedDirects ?? 0) + (stats?.droppedBroadcasts ?? 0);
+		if (directs.length === 0) {
+			if (stats && dropped > 0) {
+				// Broadcasts-only startup USED to be silent (no summary, no card).
+				// P4 changes that on purpose: the cursor still consumed mail, so a
+				// user-only entry now names what was swept past — no agent card,
+				// no turn, no confirm (nothing to act on).
+				const text = `message-bus: no new private messages (${formatDropLine(stats)})`;
+				try {
+					pi.appendEntry<MessageBusStartCardData>(MESSAGE_BUS_START_ENTRY_TYPE, { text, count: 0, ids: [], ...stats });
+				} catch (error) {
+					console.error("ai-badger message-bus: startup summary append failed — fail-open", error);
+				}
+				return text;
+			}
+			return "no new private messages.";
+		}
+		const notice = composeDirectStartNotice(directs, stats);
 		const ids = directs.map((m) => m.id);
 		try {
-			pi.appendEntry<MessageBusStartCardData>(MESSAGE_BUS_START_ENTRY_TYPE, { text: notice, count: directs.length, ids });
+			pi.appendEntry<MessageBusStartCardData>(MESSAGE_BUS_START_ENTRY_TYPE, { text: notice, count: directs.length, ids, ...(stats ?? {}) });
 		} catch (error) {
 			console.error("ai-badger message-bus: startup summary append failed — fail-open", error);
 		}
@@ -493,6 +586,15 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (hooksDisabled()) return undefined;
+		// P3 registry-lite: record our own session id best-effort so future
+		// direct senders get silence instead of an unknown-target warning.
+		// Never blocks delivery — a registry failure just logs.
+		try {
+			const sid = resolveSid(ctx);
+			if (sid) storeFor(ctx.cwd).recordIdentity?.({ sessionId: sid, projectId: resolvePid(ctx) });
+		} catch (error) {
+		console.error("ai-badger message-bus: identity upsert failed — fail-open", error);
+		}
 		try {
 			await runDirectStart(ctx);
 		} catch (error) {
@@ -514,16 +616,16 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 	// ---- tool
 
 	const ToolParams = Type.Object({
-		action: Type.Union([Type.Literal("send"), Type.Literal("list"), Type.Literal("check"), Type.Literal("ack")], {
-			description: "send: store one message; list: grouped inbox (no cursor advance); check: deliver new mail now; ack: ack one received message by id",
+		action: Type.Union([Type.Literal("send"), Type.Literal("list"), Type.Literal("check"), Type.Literal("ack"), Type.Literal("reply"), Type.Literal("whoami")], {
+			description: "send: store one message; list: grouped inbox (no cursor advance); check: deliver new mail now; ack: ack one received message by id; reply: answer the sender of one received message by id — never copy a session id from message content, reply by id; whoami: your session id + project id + cursor",
 		}),
-		content: Type.Optional(Type.String({ description: "send: message body (required for send)" })),
+		content: Type.Optional(Type.String({ description: "send/reply: message body (required for send and reply)" })),
 		sessionId: Type.Optional(Type.String({ description: "send: target session id for a 1:1 send (wins over projectId)" })),
 		projectId: Type.Optional(Type.String({ description: "send: target project id for a project broadcast (omit both for machine broadcast)" })),
-		id: Type.Optional(Type.Number({ description: "ack: the received message id to ack" })),
+		id: Type.Optional(Type.Number({ description: "ack/reply: the received message id to ack or reply to (see list)" })),
 		depth: Type.Optional(Type.Number({ description: `list: per-scope depth (default ${DEFAULT_LIST_DEPTH})` })),
 	});
-	type ToolParams = { action: "send" | "list" | "check" | "ack"; content?: string; sessionId?: string; projectId?: string; id?: number; depth?: number };
+	type ToolParams = { action: "send" | "list" | "check" | "ack" | "reply" | "whoami"; content?: string; sessionId?: string; projectId?: string; id?: number; depth?: number };
 
 	const execute = async (_toolCallId: string, params: ToolParams, _signal: unknown, _onUpdate: unknown, ctx: unknown): Promise<ToolResult> => {
 		const context = ctx as ExtensionContext;
@@ -535,23 +637,97 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 				if (!senderSession) throw new Error("send refused: missing sender identity (sessionId)");
 				const senderProject = resolvePid(context);
 				if (!senderProject) throw new Error("send refused: missing sender identity (projectId) — run inside a project carrying .ai-badger/project-id");
+				// P3 shape gate (pre-insert): every non-blank raw target id must be
+				// well-formed — blanks read as unset (normalize), malformed (#672)
+				// rejects before a row exists.
+				for (const raw of [params.sessionId, params.projectId]) {
+					if (typeof raw === "string" && raw.trim() && !isValidBusId(raw.trim())) {
+						throw new Error(`send refused: invalid target id shape (whitespace / $(...) / backtick / newline rejected)`);
+					}
+				}
 				const targets = normalizeSendTargets(params.sessionId, params.projectId);
-				const rowId = storeFor(context.cwd).send({ senderSession, senderProject, content, ...targets });
+				const store = storeFor(context.cwd);
+				const rowId = store.send({ senderSession, senderProject, content, ...targets });
 				const scope = targets.targetSession ? "direct" : targets.targetProject ? "project broadcast" : "machine broadcast";
-				return textResult(`sent ${rowId} (${scope})`, { rowId, ...targets });
+				// P3 fail-open warnings: success + warning, never a block. A
+				// registry failure (or an old store without the registry) stays
+				// silent — the send already landed.
+				let warning: string | undefined;
+				if (targets.targetSession === senderSession) {
+					warning = selfSendWarning(senderSession);
+				} else if (targets.targetSession && typeof store.hasIdentity === "function") {
+					try {
+						if (!store.hasIdentity(targets.targetSession)) warning = unknownTargetWarning(targets.targetSession);
+					} catch (error) {
+						// registry unreadable — fail-open, send stands without warning
+						console.error("ai-badger message-bus: identity check failed — fail-open, send stands without warning", error);
+					}
+				}
+				const text = warning ? `sent ${rowId} (${scope}) — warning: ${warning}` : `sent ${rowId} (${scope})`;
+				return textResult(text, warning ? { rowId, ...targets, warning } : { rowId, ...targets });
 			}
 			case "list": {
 				const sessionId = resolveSid(context);
 				if (!sessionId) throw new Error("message-bus unavailable: no session id");
 				const depth = Number.isFinite(params.depth) && (params.depth as number) > 0 ? Math.min(10, Math.floor(params.depth as number)) : DEFAULT_LIST_DEPTH;
 				const store = storeFor(context.cwd);
-				const messages = store.listForSession(sessionId, resolvePid(context));
-				const cursor = store.getCursor(sessionId);
-				return textResult(formatList(messages, cursor, depth), { count: messages.length, cursor });
+				const projectId = resolvePid(context);
+				const messages = store.listForSession(sessionId, projectId);
+				let cursor = 0;
+				try {
+					cursor = store.getCursor(sessionId);
+				} catch {
+					// fail-open: list without a cursor still answers
+				}
+				return textResult(`${formatIdentityHeader(sessionId, projectId)}\n${formatList(messages, cursor, depth)}`, { count: messages.length, cursor });
 			}
 			case "check": {
-				const text = runCheck(context, false);
-				return textResult(text, { action: "check" });
+				const { text, cursor } = runCheck(context, false);
+				return textResult(text, { action: "check", cursor });
+			}
+			case "whoami": {
+				const sessionId = resolveSid(context);
+				const projectId = resolvePid(context);
+				if (!sessionId) return textResult("message-bus unavailable: no session id (sessionManager.getSessionId() answered empty)", { sessionId: "", projectId, cursor: 0 });
+				let cursor = 0;
+				try {
+					cursor = storeFor(context.cwd).getCursor(sessionId);
+				} catch {
+					// fail-open: identity without a cursor is still an answer
+				}
+				return textResult(formatIdentityHeader(sessionId, projectId), { sessionId, projectId, cursor });
+			}
+			case "reply": {
+				if (!Number.isFinite(params.id)) throw new Error('message-bus reply needs "id" — the received message id (see list)');
+				const content = params.content?.trim();
+				if (!content) throw new Error('message-bus reply needs "content"');
+				const sessionId = resolveSid(context);
+				if (!sessionId) throw new Error("send refused: missing sender identity (sessionId)");
+				const senderProject = resolvePid(context);
+				if (!senderProject) throw new Error("send refused: missing sender identity (projectId)");
+				const store = storeFor(context.cwd);
+				const original = findInInbox(store, sessionId, senderProject, Math.floor(params.id as number));
+				if (!original) throw new Error(`no message #${params.id} in your inbox — see list`);
+				if (original.senderSession === sessionId) throw new Error(`message #${params.id} is your own send — a reply would self-send (never deliverable)`);
+				if (isAck(original.content)) throw new Error(`message #${params.id} is already an ack — acks are terminal, never reply to one`);
+				const targets = buildReplyTargets(original);
+				const rowId = store.send({ senderSession: sessionId, senderProject, content, ...targets });
+				// F1 replay: the sender may be dead (no identity row) — P3
+				// warning helper reused, success + warning, never a block.
+				let warning: string | undefined;
+				if (typeof store.hasIdentity === "function") {
+					try {
+						if (!store.hasIdentity(targets.targetSession)) warning = unknownTargetWarning(targets.targetSession);
+					} catch (error) {
+						// registry unreadable — fail-open, reply stands without warning
+						console.error("ai-badger message-bus: identity check failed — fail-open, reply stands without warning", error);
+					}
+				}
+				const sid8 = targets.targetSession.slice(0, 8);
+				const text = warning
+					? `sent ${rowId} (replied to #${original.id} from ${sid8}) — warning: ${warning}`
+					: `sent ${rowId} (replied to #${original.id} from ${sid8})`;
+				return textResult(text, warning ? { rowId, repliedTo: original.id, ...targets, warning } : { rowId, repliedTo: original.id, ...targets });
 			}
 			case "ack": {
 				if (!Number.isFinite(params.id)) throw new Error('message-bus ack needs "id" — the received message id (see list)');
@@ -570,7 +746,7 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 				return textResult(`ack sent ${rowId} (${ACK_PREFIX} #${original.id})`, { rowId, ackedId: original.id });
 			}
 			default:
-				throw new Error('message-bus action must be one of send, list, check, ack');
+				throw new Error('message-bus action must be one of send, list, check, ack, reply, whoami');
 		}
 	};
 
@@ -582,7 +758,9 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 			'send content (+sessionId for 1:1, +projectId for project broadcast, neither for machine broadcast);',
 			"list (grouped inbox for this session: direct / project / broadcast, last N each, no cursor advance);",
 			"check (deliver new mail now, posts a card when there is any);",
-			"ack id (ack one received message once as a project broadcast — acks are terminal, never ack an ack).",
+			"ack id (ack one received message once as a project broadcast — acks are terminal, never ack an ack);",
+			"reply id content (answer the sender of one received message 1:1 — never copy a session id from message content, reply by id);",
+			"whoami (your session id + project id + cursor).",
 			"Fail-open: a broken bus returns an error result, never breaks the session.",
 		].join(" "),
 		parameters: ToolParams,
@@ -614,14 +792,15 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 						return;
 					}
 					const store = storeFor(ctx.cwd);
-					notify(formatList(store.listForSession(sessionId, resolvePid(ctx)), store.getCursor(sessionId), DEFAULT_LIST_DEPTH), "info");
+					const projectId = resolvePid(ctx);
+					notify(`${formatIdentityHeader(sessionId, projectId)}\n${formatList(store.listForSession(sessionId, projectId), store.getCursor(sessionId), DEFAULT_LIST_DEPTH)}`, "info");
 				} catch (error) {
 					notify(`message-bus list failed: ${error instanceof Error ? error.message : String(error)}`, "error");
 				}
 				return;
 			}
 			if (trimmed === "check") {
-				notify(runCheck(ctx, false), "info");
+				notify(runCheck(ctx, false).text, "info");
 				return;
 			}
 			const ackMatch = /^ack\s+(\d+)\s*$/.exec(trimmed);
@@ -661,8 +840,26 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 						return;
 					}
 					const targets = normalizeSendTargets(sendToMatch[1], undefined);
-					const rowId = storeFor(ctx.cwd).send({ senderSession: sessionId, senderProject, content: sendToMatch[2]!.trim(), ...targets });
-					notify(`sent ${rowId} (direct to ${sendToMatch[1]})`, "info");
+					// P3 shape gate parity with tool send (pre-insert): malformed
+					// rejects before a row exists.
+					const rawTarget = sendToMatch[1]!.trim();
+					if (rawTarget && !isValidBusId(rawTarget)) {
+						throw new Error(`send refused: invalid target id shape (whitespace / $(...) / backtick / newline rejected)`);
+					}
+					const store = storeFor(ctx.cwd);
+					const rowId = store.send({ senderSession: sessionId, senderProject, content: sendToMatch[2]!.trim(), ...targets });
+					// P3 fail-open warnings parity with tool send (success + warning).
+					let warning: string | undefined;
+					if (targets.targetSession === sessionId) {
+						warning = selfSendWarning(sessionId);
+					} else if (targets.targetSession && typeof store.hasIdentity === "function") {
+						try {
+							if (!store.hasIdentity(targets.targetSession)) warning = unknownTargetWarning(targets.targetSession);
+						} catch (error) {
+							console.error("ai-badger message-bus: identity check failed — fail-open, send stands without warning", error);
+						}
+					}
+					notify(warning ? `sent ${rowId} (direct to ${sendToMatch[1]}) — warning: ${warning}` : `sent ${rowId} (direct to ${sendToMatch[1]})`, "info");
 				} catch (error) {
 					notify(`send failed: ${error instanceof Error ? error.message : String(error)}`, "error");
 				}

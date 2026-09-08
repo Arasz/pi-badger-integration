@@ -65,6 +65,46 @@ export function normalizeSendTargets(
 	return { targetSession: null, targetProject: project };
 }
 
+/** Validate one bus id SHAPE (after normalizeSendTargets — blanks already unset).
+ * Accepts uuids and short ids; rejects anything carrying whitespace, `$(`,
+ * backticks or newlines (#672 stored a literal `$(cat …` substitution verbatim).
+ * Shape only — deliverability (unknown-but-well-formed) is a wiring warning. */
+export function isValidBusId(id: string): boolean {
+	if (!id) return false;
+	if (/[\s`]/.test(id)) return false;
+	if (id.includes("$(")) return false;
+	return true;
+}
+
+/** Warning for a well-formed direct target with no identity row (P3 fail-open:
+ * success + warning, never a block — the target may live on another machine
+ * or simply predate the registry). Reply reuses this helper (F1 replay). */
+export function unknownTargetWarning(targetSession: string): string {
+	return `target ${targetSession} unknown — never seen on this machine; prefer reply by id`;
+}
+
+/** Warning for a direct send to the sender's own session id: the store's
+ * sender-exclusion filter makes self-sends silent no-ops (F4 #698). */
+export function selfSendWarning(sessionId: string): string {
+	return `self-send to ${sessionId} is never deliverable (sender-exclusion filter)`;
+}
+
+/** Wire identity anchor (P2): every list/check/whoami output opens with this
+ * line so the agent's own id is on the wire, never just in prose (F2).
+ * Truncated to 8 chars — full ids never echo (anti-tautology pin). Lives in
+ * the wiring OUTSIDE formatList (core list snapshots frozen). */
+export function formatIdentityHeader(sessionId: string, projectId: string | null): string {
+	const pid = projectId ? projectId.slice(0, 8) : "(none)";
+	return `you are ${sessionId.slice(0, 8)} in project ${pid}`;
+}
+
+/** Reply targets: the ORIGINAL SENDER 1:1 (session-wins per D3 —
+ * targetProject NULL even when the original was a broadcast). Never parsed
+ * out of content (F2: ids in prose are untrusted, incl. stale bindings). */
+export function buildReplyTargets(message: Pick<BusMessage, "senderSession">): { targetSession: string; targetProject: null } {
+	return { targetSession: message.senderSession, targetProject: null };
+}
+
 /** True when the content is already an ack (terminal — never reply to it). */
 export function isAck(content: string): boolean {
 	return content.trimStart().toLowerCase().startsWith(ACK_PREFIX);
@@ -72,16 +112,20 @@ export function isAck(content: string): boolean {
 
 /**
  * Build the ack body for one received message, or undefined when the message
- * is itself an ack (the no-reply-to-ack rule). The ack echoes the original
- * content verbatim up to the cap — acks confirm receipt, disagreement travels
- * as review-feedback (a separate send, itself acked once).
+ * is itself an ack (the no-reply-to-ack rule). The ack is a metadata-only
+ * stub — id plus terminal marker, zero body bytes. F7 (owner addendum
+ * 9cc29df): echoing the original text let sibling 01a08098 read ack #701's
+ * echoed second-person imperative as a live request (#703). Any body-derived
+ * excerpt, however short, can reopen that hazard — request originals
+ * routinely OPEN with the imperative — so the stub carries no excerpt at
+ * all (this deliberately drops the owner's parenthetical title prefix:
+ * recognizability comes from the `ack:` prefix + `#id` + terminal marker,
+ * never from quoted body). Disagreement travels as review-feedback (a
+ * separate send, itself acked once).
  */
-export function buildAckContent(message: Pick<BusMessage, "content">): string | undefined {
+export function buildAckContent(message: Pick<BusMessage, "id" | "content">): string | undefined {
 	if (isAck(message.content)) return undefined;
-	const body = message.content.length > ACK_CONTENT_CAP_CHARS - ACK_PREFIX.length - 1
-		? `${message.content.slice(0, ACK_CONTENT_CAP_CHARS - ACK_PREFIX.length - 2)}…`
-		: message.content;
-	return `${ACK_PREFIX} ${body}`;
+	return `${ACK_PREFIX} #${message.id} — terminal, no reply expected`;
 }
 
 /** Last-N per scope, oldest-first within each group (stable reading order). */
@@ -154,18 +198,35 @@ export function filterDirect(messages: BusMessage[]): BusMessage[] {
 	return messages.filter((m) => scopeOf(m) === "direct");
 }
 
+/** Silently-consumed counts for one startup read (P4): mail the cursor
+ * swept past without delivering — older-than-window / over-cap directs +
+ * broadcasts skipped on start. Absent stats mean "unknown" (old stores),
+ * never zero: only a present {0,0} renders the zero-drop text. */
+export interface StartupDropStats {
+	droppedDirects: number;
+	droppedBroadcasts: number;
+}
+
+/** The exact-count oracle line: `n older directs and m broadcasts …`. */
+export function formatDropLine(stats: StartupDropStats): string {
+	return `${stats.droppedDirects} older directs and ${stats.droppedBroadcasts} broadcasts were marked read without delivery (30-min window / startup gate)`;
+}
+
 /**
  * Startup summary for newly delivered DIRECT mail (the user-only card text).
  * Broadcasts are consumed silently on start, so they never appear here.
  * Empty batch → "" (the caller appends nothing).
+ * stats is backward-compat: absent (or both zero) renders today's text
+ * byte-identical; otherwise the drop line lands between rows and tail.
  */
-export function composeDirectStartNotice(messages: BusMessage[]): string {
+export function composeDirectStartNotice(messages: BusMessage[], stats?: StartupDropStats): string {
 	const directs = filterDirect(messages);
 	if (directs.length === 0) return "";
 	const head = `message-bus: ${directs.length} private message${directs.length === 1 ? "" : "s"} (broadcasts skipped on startup)`;
 	const rows = directs.slice(0, 10).map((m) => `#${m.id} [direct] ${excerpt(m.content)}`);
 	const tail = directs.length > 10 ? `…and ${directs.length - 10} more (see /messages)` : "see /messages for the grouped list";
-	return [head, ...rows, tail].join("\n");
+	const dropped = (stats?.droppedDirects ?? 0) + (stats?.droppedBroadcasts ?? 0) > 0 ? [formatDropLine(stats!)] : [];
+	return [head, ...rows, ...dropped, tail].join("\n");
 }
 
 /**
