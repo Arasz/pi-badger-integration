@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFakePi, type FakePiSentMessage } from "../helpers/fake-pi.ts";
 import { fire } from "../router-fallback/helpers.ts";
 import makeExtension, {
 	MESSAGE_BUS_CUSTOM_TYPE,
+	MESSAGE_BUS_START_ENTRY_TYPE,
 	createSqliteStore,
 	type BusStore,
 } from "../../extensions/message-bus/index.ts";
@@ -72,7 +73,7 @@ interface TrackingStore extends BusStore {
 }
 
 /** Fake store with the peek seam + a cursor-write spy on the shared order log. */
-function trackingStore(order: string[], inbox: BusMessage[]): TrackingStore {
+function trackingStore(order: string[], inbox: BusMessage[], drops: { directs: number; broadcasts: number } = { directs: 0, broadcasts: 0 }): TrackingStore {
 	let cursor = 0;
 	const api: TrackingStore = {
 		get cursor() {
@@ -103,14 +104,14 @@ function trackingStore(order: string[], inbox: BusMessage[]): TrackingStore {
 		peekDirectForSession() {
 			const fresh = inbox.filter((m) => m.id > cursor && m.targetSession !== null);
 			const maxId = inbox.length > 0 ? Math.max(...inbox.map((m) => m.id)) : cursor;
-			return { messages: fresh, cursor: Math.max(cursor, maxId), droppedDirects: 0, droppedBroadcasts: 0 };
+			return { messages: fresh, cursor: Math.max(cursor, maxId), droppedDirects: drops.directs, droppedBroadcasts: drops.broadcasts };
 		},
 		deliverDirectForSession() {
 			const fresh = inbox.filter((m) => m.id > cursor && m.targetSession !== null);
 			const maxId = inbox.length > 0 ? Math.max(...inbox.map((m) => m.id)) : cursor;
 			cursor = Math.max(cursor, maxId);
 			order.push("cursor-write");
-			return { messages: fresh, cursor, droppedDirects: 0, droppedBroadcasts: 0 };
+			return { messages: fresh, cursor, droppedDirects: drops.directs, droppedBroadcasts: drops.broadcasts };
 		},
 	};
 	return api;
@@ -170,6 +171,7 @@ describe("A1 hook-visibility (agent-visible before the cursor passes it)", () =>
 		const delivered = store.deliverForSession("s-me", "p1");
 		expect(delivered.messages.map((m) => m.id)).toEqual(peeked.messages.map((m) => m.id));
 		expect(store.getCursor("s-me")).toBeGreaterThan(0);
+		rmSync(dir, { recursive: true, force: true });
 	});
 
 	test("startup reject holds the cursor so the next start redelivers", async () => {
@@ -206,5 +208,78 @@ describe("A1 hook-visibility (agent-visible before the cursor passes it)", () =>
 		await fire(pi, "turn_start", {}, ctx());
 		expect(queued.length).toBe(1);
 		expect(order).toEqual(["cursor-write", "card-accepted"]);
+	});
+
+	test("startup confirm-yes settles the cursor so the next start stays silent", async () => {
+		const { pi, order, queued, flush } = deferredPi();
+		const store = trackingStore(order, [msg({ id: 5, content: "private one" })]);
+		makeExtension(pi as never, { store, projectId: () => "p1" });
+		const confirmCtx = { ...ctx(), ui: { notify: () => {}, confirm: async () => true } };
+		await fire(pi, "session_start", {}, confirmCtx);
+		expect(queued.length).toBe(1);
+		expect(order).toEqual(["card-accepted", "cursor-write"]);
+		expect(store.cursor).toBe(5);
+		flush();
+		expect(pi.sent.length).toBe(1);
+		await fire(pi, "session_start", {}, confirmCtx);
+		expect(queued.length).toBe(0); // nothing new posted
+		expect(pi.sent.length).toBe(1);
+		expect(store.cursor).toBe(5);
+	});
+
+	test("startup confirm-no advances the cursor with no agent card", async () => {
+		const { pi, order, queued } = deferredPi();
+		const store = trackingStore(order, [msg({ id: 5, content: "private one" })]);
+		makeExtension(pi as never, { store, projectId: () => "p1" });
+		const confirmCtx = { ...ctx(), ui: { notify: () => {}, confirm: async () => false } };
+		await fire(pi, "session_start", {}, confirmCtx);
+		expect(queued.length).toBe(0);
+		expect(pi.sent.length).toBe(0);
+		expect(store.cursor).toBe(5); // marked read per contract
+		await fire(pi, "session_start", {}, confirmCtx);
+		expect(queued.length).toBe(0);
+		expect(pi.sent.length).toBe(0);
+		expect(store.cursor).toBe(5);
+	});
+
+	test("turn_start with empty preview posts no card", async () => {
+		const { pi, order, queued } = deferredPi();
+		const store = trackingStore(order, []);
+		makeExtension(pi as never, { store, projectId: () => "p1" });
+		await fire(pi, "turn_start", {}, ctx());
+		expect(queued.length).toBe(0);
+		expect(pi.sent.length).toBe(0);
+		expect(order).not.toContain("card-accepted");
+	});
+
+	test("broadcasts-only startup settles the cursor past swept mail", async () => {
+		const { pi, order, queued } = deferredPi();
+		const store = trackingStore(order, [msg({ id: 6, targetSession: null, targetProject: null, content: "machine noise" })], { directs: 0, broadcasts: 1 });
+		makeExtension(pi as never, { store, projectId: () => "p1" });
+		await fire(pi, "session_start", {}, ctx());
+		expect(queued.length).toBe(0); // user-only entry, never an agent card
+		expect(pi.sent.length).toBe(0);
+		expect(pi.entries.filter((e) => e.customType === MESSAGE_BUS_START_ENTRY_TYPE).length).toBe(1);
+		expect(store.cursor).toBe(6); // swept past — second start stays silent
+		await fire(pi, "session_start", {}, ctx());
+		expect(queued.length).toBe(0);
+		expect(pi.sent.length).toBe(0);
+		expect(store.cursor).toBe(6);
+	});
+
+	test("empty startup settles the cursor without a card", async () => {
+		const { pi, order, queued } = deferredPi();
+		// Foreign mail only: the real store filters directs by session, so the
+		// peek is empty for us while MAX(id) still advances past it.
+		const store = trackingStore(order, [msg({ id: 9, targetSession: null, targetProject: "p-other" })]);
+		makeExtension(pi as never, { store, projectId: () => "p1" });
+		await fire(pi, "session_start", {}, ctx());
+		expect(queued.length).toBe(0);
+		expect(pi.sent.length).toBe(0);
+		expect(store.cursor).toBe(9);
+		await fire(pi, "session_start", {}, ctx());
+		expect(queued.length).toBe(0);
+		expect(pi.sent.length).toBe(0);
+		expect(store.cursor).toBe(9);
 	});
 });
