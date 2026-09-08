@@ -503,7 +503,7 @@ describe("(5) /rag status and mode off", () => {
 		expect(idle).toContain("child: idle");
 		expect(idle).toContain("≥6 unique words");
 		expect(idle).toContain("≥20 chars");
-		expect(idle).toContain("timeout 8000ms");
+		expect(idle).toContain("timeout 20000ms");
 
 		const ctx = makeCtx(cwd, session);
 		await fireInput(pi, P1, ctx as never);
@@ -547,7 +547,7 @@ describe("(5) /rag status and mode off", () => {
 // ------------------------------------------------------------------ (6) readConfig defaults/clamping/per-call re-read
 
 describe("(6) readConfig defaults, clamping, per-call re-read", () => {
-	test("defaults are 6 words / 20 chars / 8000ms timeout / 300 snippet chars", async () => {
+	test("defaults are 6 words / 20 chars / 20000ms timeout / 300 snippet chars", async () => {
 		clearRagEnv();
 		process.env["AI_BADGER_PROJECT_ID"] = "proj-defaults";
 		const { pi } = install({
@@ -557,7 +557,7 @@ describe("(6) readConfig defaults, clamping, per-call re-read", () => {
 		const status = await ragStatus(pi, "/tmp/wiring-defaults");
 		expect(status).toContain("≥6 unique words");
 		expect(status).toContain("≥20 chars");
-		expect(status).toContain("timeout 8000ms");
+		expect(status).toContain("timeout 20000ms");
 
 		// Snippet default 300: a 500-char snippet truncates to 300 + ellipsis.
 		const ctx = makeCtx("/tmp/wiring-defaults", "sess-defaults");
@@ -808,6 +808,44 @@ describe("review gate: session reset, isolation, renderer fallback, shared deadl
 		expect(after).toBeUndefined();
 		expect(calls).toHaveLength(1); // only the pre-reset search ran
 		expect(await ragStatus(pi, "/tmp/wiring-reset", "sess-reset")).toContain("empty");
+	});
+
+	test("session_start pre-warms the client when enabled", async () => {
+		clearRagEnv();
+		process.env["AI_BADGER_PROJECT_ID"] = "proj-warm";
+		const pi = createFakePi();
+		const calls: ToolCall[] = [];
+		const fake = makeFakeRaccoon(calls, {});
+		let created = 0;
+		(factory as (pi: unknown, deps: unknown) => void)(pi as never, {
+			createClient: () => {
+				created++;
+				return fake;
+			},
+		});
+		const ctx = makeCtx("/tmp/wiring-warm", "sess-warm");
+		await fireSession(pi, "session_start", ctx as never);
+		expect(created).toBe(1);
+		expect(calls).toHaveLength(0); // warm-up handshakes, never searches
+		expect(await ragStatus(pi, "/tmp/wiring-warm", "sess-warm")).toContain("child: alive");
+	});
+
+	test("session_start does not warm when the extension is disabled", async () => {
+		clearRagEnv();
+		process.env["AI_BADGER_PROJECT_ID"] = "proj-warmoff";
+		process.env["PI_BADGER_MEM_RAG"] = "0";
+		const pi = createFakePi();
+		const fake = makeFakeRaccoon([], {});
+		let created = 0;
+		(factory as (pi: unknown, deps: unknown) => void)(pi as never, {
+			createClient: () => {
+				created++;
+				return fake;
+			},
+		});
+		const ctx = makeCtx("/tmp/wiring-warmoff", "sess-warmoff");
+		await fireSession(pi, "session_start", ctx as never);
+		expect(created).toBe(0);
 	});
 
 	test("session_shutdown zeroes counters too", async () => {

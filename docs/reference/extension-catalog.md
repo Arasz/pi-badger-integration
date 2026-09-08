@@ -22,7 +22,7 @@ instructions. Modes:
 hit, with path + chunk/line provenance, per-hit snippet fallback). Transport is
 a persistent `ai-raccoon --transport stdio` child (pi extensions cannot invoke
 MCP tools): spawn+init ~0.3 s amortized, first search ~4.5 s model warm-up,
-steady ~0.4–0.5 s, every call timeout-bounded (default 8 s) and fail-open — a
+steady ~0.4–0.5 s, every call timeout-bounded (default 20 s) and fail-open — a
 slow or dead bank skips enrichment, never the turn. Agent memory is untouched:
 same server, separate call site.
 
@@ -30,7 +30,7 @@ Config (env defaults, read per call; `/rag` for session scope):
 `PI_BADGER_MEM_RAG=0` disables, `PI_BADGER_MEM_RAG_MODE`
 (default|expanded), `PI_BADGER_MEM_RAG_MIN_WORDS` (default 6),
 `PI_BADGER_MEM_RAG_MIN_CHARS` (default 20),
-`PI_BADGER_MEM_RAG_TIMEOUT_MS` (default 8000),
+`PI_BADGER_MEM_RAG_TIMEOUT_MS` (default 20000),
 `PI_BADGER_MEM_RAG_SNIPPET_CHARS` (default 300). `/rag status`
 reports enriched/skipped counts and the last reason; `/rag mode
 default|expanded|off` overrides for the session.

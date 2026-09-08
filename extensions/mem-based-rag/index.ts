@@ -77,7 +77,7 @@ function readConfig(sessionMode: PromptContextMode | "off" | undefined): PromptC
 		mode: sessionMode === "default" || sessionMode === "expanded" ? sessionMode : baseMode,
 		minWords: numEnv(MEM_RAG_MIN_WORDS_ENV, 6, 1, 100),
 		minChars: numEnv(MEM_RAG_MIN_CHARS_ENV, 20, 0, 10000),
-		timeoutMs: numEnv(MEM_RAG_TIMEOUT_ENV, 8000, 500, 60000),
+		timeoutMs: numEnv(MEM_RAG_TIMEOUT_ENV, 20000, 500, 60000),
 		snippetChars: numEnv(MEM_RAG_SNIPPET_ENV, 300, 50, 2000),
 		bin: process.env[MEM_RAG_BIN_ENV]?.trim() || join(homedir(), ".dotnet", "tools", "ai-raccoon"),
 	};
@@ -606,8 +606,27 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 
 	// Factory-closure state (queues, counters, mode override, client) survives
 	// new/resume/reload in-process — reset it on both session boundaries.
+	// The reset on start is followed by an eager warm-up: a cold stdio child
+	// pays spawn+init plus model warm-up on its first search (~14s measured
+	// 2026-09-08, over the default timeout), so handshaking now moves
+	// spawn+init off the first turn's critical path. Fire-and-forget and
+	// fail-open — session start must never throw because of RAG warm-up, and
+	// the turn-time path reuses the in-flight handshake or retries lazily.
+	const warmClient = (): void => {
+		try {
+			const config = readConfig(sessionMode);
+			if (!config.enabled) return;
+			void getClient(config.bin).catch(() => {
+				// fail-open: the turn-time path retries lazily
+			});
+		} catch {
+			// fail-open: session start must never throw because of RAG warm-up
+		}
+	};
+
 	pi.on("session_start", () => {
 		resetSessionState();
+		warmClient();
 	});
 
 	pi.on("session_shutdown", () => {
