@@ -558,7 +558,10 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 			return { text: notice, cursor };
 		}
 		// Card accepted: settle the cursor past it (re-read discarded — the
-			// preview above is what the agent was shown).
+			// preview above is what the agent was shown). Micro-race note: a
+			// cross-process send landing between peek and settle advances past
+			// unseen mail (silent skip); the window is synchronous microseconds —
+			// targeted cursor-write was rejected as the bigger shape.
 		try {
 			const advanced = store.deliverForSession(sessionId, projectId);
 			return { text: notice, cursor: advanced.cursor };

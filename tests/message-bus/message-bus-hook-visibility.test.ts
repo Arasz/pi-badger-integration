@@ -171,4 +171,40 @@ describe("A1 hook-visibility (agent-visible before the cursor passes it)", () =>
 		expect(delivered.messages.map((m) => m.id)).toEqual(peeked.messages.map((m) => m.id));
 		expect(store.getCursor("s-me")).toBeGreaterThan(0);
 	});
+
+	test("startup reject holds the cursor so the next start redelivers", async () => {
+		const { pi, order, queued, setRejectCards } = deferredPi();
+		const store = trackingStore(order, [msg({ id: 5, content: "private one" })]);
+		makeExtension(pi as never, { store, projectId: () => "p1" });
+		setRejectCards(true);
+		await fire(pi, "session_start", {}, ctx()); // headless ctx (no confirm surface); fail-open: must not throw
+		expect(queued.length).toBe(0);
+		expect(order).toEqual([]); // cursor held — mail stays queued
+		setRejectCards(false);
+		await fire(pi, "session_start", {}, ctx());
+		expect(queued.length).toBe(1);
+		expect(order).toEqual(["card-accepted", "cursor-write"]);
+	});
+
+	test("old store without peek keeps deliver-then-post order", async () => {
+		const { pi, order, queued } = deferredPi();
+		const inbox = [msg({ id: 5, content: "private one" })];
+		let cursor = 0;
+		const oldStore = {
+			send: () => 100,
+			getMessage: (id: number) => inbox.find((m) => m.id === id) ?? null,
+			listForSession: () => [...inbox],
+			getCursor: () => cursor,
+			deliverForSession: () => {
+				const fresh = inbox.filter((m) => m.id > cursor);
+				cursor = fresh.length > 0 ? fresh[fresh.length - 1]!.id : cursor;
+				order.push("cursor-write");
+				return { messages: fresh, cursor };
+			},
+		};
+		makeExtension(pi as never, { store: oldStore as unknown as BusStore, projectId: () => "p1" });
+		await fire(pi, "turn_start", {}, ctx());
+		expect(queued.length).toBe(1);
+		expect(order).toEqual(["cursor-write", "card-accepted"]);
+	});
 });
