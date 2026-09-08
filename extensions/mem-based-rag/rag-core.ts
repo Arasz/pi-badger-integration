@@ -25,6 +25,31 @@ const BARE_SKILL_RE = /^\/skill:[^\s:]+\s*$/i;
 /** Skill-call prefix to strip when a skill call carries extension text. */
 const SKILL_PREFIX_RE = /^\/skill:[^\s:]+\s+/i;
 
+/**
+ * True iff the trimmed raw carries a `/skill:<id>` invocation prefix, bare or
+ * with body (SKILL_PREFIX_RE or BARE_SKILL_RE). PKG-1 wiring gate keys on
+ * this prefix-presence — never on body-presence — so a bare call falls
+ * through to shouldEnrich (`bare-skill-call`) instead of misreporting as
+ * non-skill. Case-insensitive like BARE_SKILL_RE.
+ */
+export function hasSkillPrefix(raw: string): boolean {
+	const text = raw.trim();
+	return SKILL_PREFIX_RE.test(text) || BARE_SKILL_RE.test(text);
+}
+
+/**
+ * True iff the trimmed raw is a skill call WITH a non-whitespace body after
+ * the `/skill:<id>` prefix. Bare calls and whitespace-only bodies are false
+ * (their trimmed form is the bare shape, which shouldEnrich reports as
+ * `bare-skill-call`, never enrich). Documented helper for the gate contract;
+ * the wiring itself gates on hasSkillPrefix (see above).
+ */
+export function isSkillCall(raw: string): boolean {
+	const text = raw.trim();
+	if (!SKILL_PREFIX_RE.test(text)) return false;
+	return /\S/.test(text.replace(SKILL_PREFIX_RE, ""));
+}
+
 /** Exact control words that never need context, whatever their length. */
 const CONTROL_WORDS = new Set([
 	"stop",

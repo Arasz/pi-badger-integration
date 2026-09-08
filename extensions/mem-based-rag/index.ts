@@ -25,6 +25,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { Box, Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
+	hasSkillPrefix,
 	hitDisplayPath,
 	pruneHits,
 	shouldEnrich,
@@ -419,6 +420,19 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 		// whitespace-only capture carries no query).
 		const raw = queued !== undefined && queued.trim() ? queued : String(event.prompt ?? "");
 		const decision = shouldEnrich(raw, { minChars: config.minChars, minWords: config.minWords });
+		// PKG-1 skill-precondition gate: auto-enrich is skill-only. shouldEnrich
+		// stays the single filter (bare-skill-call > control-word/command > length,
+		// drain-first preserved above), so already-skipped turns keep their specific
+		// reason and bare calls — which never enrich — still report bare-skill-call.
+		// The gate only converts an otherwise-enrichable non-skill turn into a
+		// non-skill skip (zero searches). Prefix-presence (hasSkillPrefix), not
+		// body-presence (isSkillCall), drives the skip so a bare call is never
+		// misreported as non-skill.
+		if (decision.enrich && !hasSkillPrefix(raw)) {
+			skipped += 1;
+			lastReason = "skipped (non-skill-call)";
+			return undefined;
+		}
 		if (!decision.enrich) {
 			skipped += 1;
 			lastReason = `skipped (${decision.reason})`;
@@ -549,7 +563,8 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 				notify(
 					`mem-based-rag: ${config.enabled ? `on (${config.mode})` : "off"} — enriched ${enriched}, skipped ${skipped}, last: ${lastReason}. ` +
 						`Project: ${project}, child: ${isChildAlive(client) ? "alive" : "idle"}. ` +
-						`Floors: ≥${config.minWords} unique words (≥3 chars ex-noise), ≥${config.minChars} chars, timeout ${config.timeoutMs}ms.`,
+						`Floors: ≥${config.minWords} unique words (≥3 chars ex-noise), ≥${config.minChars} chars, timeout ${config.timeoutMs}ms. ` +
+						`Auto-enrich: skill calls only (/skill:<id> <text>); all other turns skip.`,
 					"info",
 				);
 				return;

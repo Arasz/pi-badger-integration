@@ -27,6 +27,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFakePi, type FakePi } from "../helpers/fake-pi.ts";
 import factory, { MEM_RAG_CUSTOM_TYPE } from "../../extensions/mem-based-rag/index.ts";
+import { shouldEnrich } from "../../extensions/mem-based-rag/rag-core.ts";
 
 // ------------------------------------------------------------------ env + tmp hygiene
 
@@ -213,12 +214,19 @@ const P1 = "explain how delegation timeout interacts with slow CI runners tomorr
 const P2 = "describe prompt context injection filtering before agent start handling quickly today";
 // 6-word jsaa probe (uniqueLongWords == 6 at default minWords 6).
 const JSAA_PROBE = "prompt context injection extension before_agent_start filter";
+const SKILL_P1 = `/skill:task ${P1}`;
+const SKILL_P2 = `/skill:review ${P2}`;
+const SKILL_JSAA = `/skill:task ${JSAA_PROBE}`;
 
 const MEM_HITS = [
 	{ hash: "m1", ranking: 1, path: "shared/a.md", snippet: "first memory snippet about delegation" },
 	{ hash: "m2", ranking: 0.9, path: "shared/b.md", snippet: "second memory snippet about timeouts" },
 ];
 const CODE_HITS = [{ hash: "c1", ranking: 1, path: "src/a.ts", snippet: "some code snippet", lineStart: 10, lineEnd: 20 }];
+
+// PKG-1 skill-only auto-enrich: otherwise-enrichable turns must arrive as skill
+// calls, so every enrich-path input below is skill-prefixed (query assertions
+// still compare against the stripped P1/P2/JSAA bodies).
 
 // ------------------------------------------------------------------ (1) capture→filter→inject FIFO shape
 
@@ -229,8 +237,8 @@ describe("(1) capture→filter→inject shape", () => {
 		const { pi, calls } = install({ results: MEM_HITS, code: CODE_HITS });
 		const ctx = makeCtx("/tmp/wiring-fifo", "sess-fifo");
 
-		await fireInput(pi, P1, ctx as never);
-		await fireInput(pi, P2, ctx as never);
+		await fireInput(pi, SKILL_P1, ctx as never);
+		await fireInput(pi, SKILL_P2, ctx as never);
 		const r1 = await fireBefore(pi, "", ctx as never);
 		const r2 = await fireBefore(pi, "", ctx as never);
 
@@ -265,7 +273,7 @@ describe("(1) capture→filter→inject shape", () => {
 		const ctx = makeCtx("/tmp/wiring-raw", "sess-raw");
 
 		// Capture contract: input sees pre-expansion text; before_agent_start must use it.
-		await fireInput(pi, P1, ctx as never);
+		await fireInput(pi, SKILL_P1, ctx as never);
 		const r = await fireBefore(pi, P2, ctx as never);
 		expect((calls[0]!.args as Record<string, unknown>)["query"]).toBe(P1);
 		expect(r?.message?.customType).toBe("mem-based-rag");
@@ -291,7 +299,7 @@ describe("(2) both modes card", () => {
 		const { pi } = install({ results: MEM_HITS, code: CODE_HITS });
 		const ctx = makeCtx("/tmp/wiring-default", "sess-default");
 
-		await fireInput(pi, P1, ctx as never);
+		await fireInput(pi, SKILL_P1, ctx as never);
 		const r = await fireBefore(pi, "", ctx as never);
 		expect(r?.message?.display).toBe(true);
 		expect(typeof r?.message?.content).toBe("string");
@@ -319,7 +327,7 @@ describe("(2) both modes card", () => {
 		});
 		const ctx = makeCtx("/tmp/wiring-expanded", "sess-expanded");
 
-		await fireInput(pi, P1, ctx as never);
+		await fireInput(pi, SKILL_P1, ctx as never);
 		const r = await fireBefore(pi, "", ctx as never);
 		expect(r?.message?.display).toBe(true);
 		expect(r?.message?.details?.mode).toBe("expanded");
@@ -375,7 +383,7 @@ describe("(3) skips incl no-hits", () => {
 		process.env["AI_BADGER_PROJECT_ID"] = "proj-nohits";
 		const { pi, calls } = install({ results: [], code: [] });
 		const ctx = makeCtx("/tmp/wiring-nohits", "sess-nohits");
-		const r = await fireBefore(pi, P1, ctx as never);
+		const r = await fireBefore(pi, SKILL_P1, ctx as never);
 		expect(r).toBeUndefined();
 		// Filter passed (search ran) but hits were empty.
 		expect(calls.map((c) => c.tool)).toContain("memory_search");
@@ -397,7 +405,7 @@ describe("(4) fail-open", () => {
 		let result: unknown;
 		let threw = false;
 		try {
-			result = await fireBefore(pi, P1, ctx as never);
+			result = await fireBefore(pi, SKILL_P1, ctx as never);
 		} catch {
 			threw = true;
 		}
@@ -417,7 +425,7 @@ describe("(4) fail-open", () => {
 		let result: unknown;
 		let threw = false;
 		try {
-			result = await fireBefore(pi, P1, ctx as never);
+			result = await fireBefore(pi, SKILL_P1, ctx as never);
 		} catch {
 			threw = true;
 		}
@@ -437,7 +445,7 @@ describe("(4) fail-open", () => {
 		let result: unknown;
 		let threw = false;
 		try {
-			result = await fireBefore(pi, P1, ctx as never);
+			result = await fireBefore(pi, SKILL_P1, ctx as never);
 		} catch {
 			threw = true;
 		}
@@ -456,7 +464,7 @@ describe("(4) fail-open", () => {
 		let result: unknown;
 		let threw = false;
 		try {
-			result = await fireBefore(pi, P1, ctx as never);
+			result = await fireBefore(pi, SKILL_P1, ctx as never);
 		} catch {
 			threw = true;
 		}
@@ -506,7 +514,7 @@ describe("(5) /rag status and mode off", () => {
 		expect(idle).toContain("timeout 20000ms");
 
 		const ctx = makeCtx(cwd, session);
-		await fireInput(pi, P1, ctx as never);
+		await fireInput(pi, SKILL_P1, ctx as never);
 		const enriched = await fireBefore(pi, "", ctx as never);
 		expect(enriched?.message).toBeDefined();
 		await fireBefore(pi, "stop", ctx as never);
@@ -532,13 +540,13 @@ describe("(5) /rag status and mode off", () => {
 		expect(offStatus).toContain("off");
 
 		const ctx = makeCtx(cwd, session);
-		await fireInput(pi, P1, ctx as never);
+		await fireInput(pi, SKILL_P1, ctx as never);
 		const skipped = await fireBefore(pi, "", ctx as never);
 		expect(skipped).toBeUndefined();
 		expect(calls).toHaveLength(0);
 
 		await ragMode(pi, "mode default", cwd, session);
-		await fireInput(pi, P1, ctx as never);
+		await fireInput(pi, SKILL_P1, ctx as never);
 		const enriched = await fireBefore(pi, "", ctx as never);
 		expect(enriched?.message?.customType).toBe("mem-based-rag");
 	});
@@ -561,7 +569,7 @@ describe("(6) readConfig defaults, clamping, per-call re-read", () => {
 
 		// Snippet default 300: a 500-char snippet truncates to 300 + ellipsis.
 		const ctx = makeCtx("/tmp/wiring-defaults", "sess-defaults");
-		await fireInput(pi, P1, ctx as never);
+		await fireInput(pi, SKILL_P1, ctx as never);
 		const r = await fireBefore(pi, "", ctx as never);
 		const line = String(r?.message?.content ?? "").split("\n").find((l) => l.startsWith("[m1]")) ?? "";
 		const snippet = (line.split(" :: ")[1] ?? "").trim();
@@ -590,7 +598,7 @@ describe("(6) readConfig defaults, clamping, per-call re-read", () => {
 			code: [],
 		});
 		const floorCtx = makeCtx("/tmp/wiring-clamp", "sess-snip-floor");
-		await fireInput(floorPi.pi, P1, floorCtx as never);
+		await fireInput(floorPi.pi, SKILL_P1, floorCtx as never);
 		const floorRes = await fireBefore(floorPi.pi, "", floorCtx as never);
 		const floorLine =
 			String(floorRes?.message?.content ?? "").split("\n").find((l) => l.startsWith("[m1]")) ?? "";
@@ -603,7 +611,7 @@ describe("(6) readConfig defaults, clamping, per-call re-read", () => {
 			code: [],
 		});
 		const ceilCtx = makeCtx("/tmp/wiring-clamp", "sess-snip-ceil");
-		await fireInput(ceilPi.pi, P1, ceilCtx as never);
+		await fireInput(ceilPi.pi, SKILL_P1, ceilCtx as never);
 		const ceilRes = await fireBefore(ceilPi.pi, "", ceilCtx as never);
 		const ceilLine =
 			String(ceilRes?.message?.content ?? "").split("\n").find((l) => l.startsWith("[m1]")) ?? "";
@@ -622,12 +630,12 @@ describe("(6) readConfig defaults, clamping, per-call re-read", () => {
 		// Behaviour follows: JSAA 6-word probe enriched at 6, thin at re-read 10.
 		delete process.env["PI_BADGER_MEM_RAG_MIN_WORDS"];
 		const ctx = makeCtx("/tmp/wiring-reread", "sess-reread");
-		await fireInput(pi, JSAA_PROBE, ctx as never);
+		await fireInput(pi, SKILL_JSAA, ctx as never);
 		const enriched = await fireBefore(pi, "", ctx as never);
 		expect(enriched?.message).toBeDefined();
 
 		process.env["PI_BADGER_MEM_RAG_MIN_WORDS"] = "10";
-		await fireInput(pi, JSAA_PROBE, ctx as never);
+		await fireInput(pi, SKILL_JSAA, ctx as never);
 		const thin = await fireBefore(pi, "", ctx as never);
 		expect(thin).toBeUndefined();
 	});
@@ -645,7 +653,7 @@ describe("(7) resolveProjectId", () => {
 
 		const { pi, calls } = install({ results: MEM_HITS, code: CODE_HITS });
 		const ctx = makeCtx(root, "sess-wins");
-		await fireInput(pi, P1, ctx as never);
+		await fireInput(pi, SKILL_P1, ctx as never);
 		const r = await fireBefore(pi, "", ctx as never);
 		expect(r?.message).toBeDefined();
 		expect((calls[0]!.args as Record<string, unknown>)["projectId"]).toBe("env-wins");
@@ -663,7 +671,7 @@ describe("(7) resolveProjectId", () => {
 
 		const { pi, calls } = install({ results: MEM_HITS, code: CODE_HITS });
 		const ctx = makeCtx(work, "sess-walk");
-		await fireInput(pi, P1, ctx as never);
+		await fireInput(pi, SKILL_P1, ctx as never);
 		const r = await fireBefore(pi, "", ctx as never);
 		expect(r?.message).toBeDefined();
 		expect((calls[0]!.args as Record<string, unknown>)["projectId"]).toBe("parent-id");
@@ -674,7 +682,7 @@ describe("(7) resolveProjectId", () => {
 		const empty = mkTmp("wiring-proj-missing-");
 		const { pi, calls } = install({ results: MEM_HITS, code: CODE_HITS });
 		const ctx = makeCtx(empty, "sess-missing");
-		const r = await fireBefore(pi, P1, ctx as never);
+		const r = await fireBefore(pi, SKILL_P1, ctx as never);
 		expect(r).toBeUndefined();
 		expect(calls).toHaveLength(0);
 		const status = await ragStatus(pi, empty, "sess-missing");
@@ -695,7 +703,7 @@ describe("(8) truncation, STOP, multi-word command, f:-marker, jsaa boundary", (
 			code: [],
 		});
 		const snipCtx = makeCtx("/tmp/wiring-trunc", "sess-snip");
-		await fireInput(snip.pi, P1, snipCtx as never);
+		await fireInput(snip.pi, SKILL_P1, snipCtx as never);
 		const snipRes = await fireBefore(snip.pi, "", snipCtx as never);
 		const snipLine =
 			String(snipRes?.message?.content ?? "").split("\n").find((l) => l.startsWith("[m1]")) ?? "";
@@ -710,7 +718,7 @@ describe("(8) truncation, STOP, multi-word command, f:-marker, jsaa boundary", (
 			values: { m1: { value: "y".repeat(2000), path: "shared/a.md" } },
 		});
 		const valCtx = makeCtx("/tmp/wiring-trunc", "sess-val");
-		await fireInput(val.pi, P1, valCtx as never);
+		await fireInput(val.pi, SKILL_P1, valCtx as never);
 		const valRes = await fireBefore(val.pi, "", valCtx as never);
 		const valLine =
 			String(valRes?.message?.content ?? "").split("\n").find((l) => l.startsWith("[m1]")) ?? "";
@@ -731,7 +739,7 @@ describe("(8) truncation, STOP, multi-word command, f:-marker, jsaa boundary", (
 		const longCtx = makeCtx("/tmp/wiring-stop", "sess-stop-long");
 		const r = await fireBefore(
 			pi,
-			"STOP now please continue the deployment because runners are slow and flaky today",
+			"/skill:task STOP now please continue the deployment because runners are slow and flaky today",
 			longCtx as never,
 		);
 		expect(r?.message?.customType).toBe("mem-based-rag");
@@ -752,7 +760,7 @@ describe("(8) truncation, STOP, multi-word command, f:-marker, jsaa boundary", (
 		clearRagEnv();
 		process.env["AI_BADGER_PROJECT_ID"] = "proj-fmarker";
 		const { pi, calls } = install({ results: MEM_HITS, code: CODE_HITS });
-		const prompt = "f: please explain how the delegation timeout interacts with slow CI runners tomorrow morning";
+		const prompt = "/skill:task f: please explain how the delegation timeout interacts with slow CI runners tomorrow morning";
 		const ctx = makeCtx("/tmp/wiring-fmarker", "sess-fmarker");
 		const r = await fireBefore(pi, prompt, ctx as never);
 		expect(r?.message).toBeDefined();
@@ -764,14 +772,14 @@ describe("(8) truncation, STOP, multi-word command, f:-marker, jsaa boundary", (
 		process.env["AI_BADGER_PROJECT_ID"] = "proj-jsaa";
 		const atDefault = install({ results: MEM_HITS, code: CODE_HITS });
 		const ctxDefault = makeCtx("/tmp/wiring-jsaa", "sess-jsaa-6");
-		const enriched = await fireBefore(atDefault.pi, JSAA_PROBE, ctxDefault as never);
+		const enriched = await fireBefore(atDefault.pi, SKILL_JSAA, ctxDefault as never);
 		expect(enriched?.message?.customType).toBe("mem-based-rag");
 		expect(enriched?.message?.details?.uniqueWords).toBe(6);
 
 		process.env["PI_BADGER_MEM_RAG_MIN_WORDS"] = "7";
 		const atSeven = install({ results: MEM_HITS, code: CODE_HITS });
 		const ctxSeven = makeCtx("/tmp/wiring-jsaa", "sess-jsaa-7");
-		const thin = await fireBefore(atSeven.pi, JSAA_PROBE, ctxSeven as never);
+		const thin = await fireBefore(atSeven.pi, SKILL_JSAA, ctxSeven as never);
 		expect(thin).toBeUndefined();
 		expect(atSeven.calls).toHaveLength(0);
 		expect(await ragStatus(atSeven.pi, "/tmp/wiring-jsaa", "sess-jsaa-7")).toContain("too-thin");
@@ -793,13 +801,13 @@ describe("review gate: session reset, isolation, renderer fallback, shared deadl
 		const { pi, calls } = install({ results: MEM_HITS, code: CODE_HITS });
 		const ctx = makeCtx("/tmp/wiring-reset", "sess-reset");
 
-		await fireInput(pi, P1, ctx as never);
+		await fireInput(pi, SKILL_P1, ctx as never);
 		const r1 = await fireBefore(pi, "", ctx as never);
 		expect(r1?.message).toBeDefined();
 		expect(await ragStatus(pi, "/tmp/wiring-reset", "sess-reset")).toContain("enriched 1");
 
 		// Queue one more raw, then reset before its turn: it must not leak through.
-		await fireInput(pi, P2, ctx as never);
+		await fireInput(pi, SKILL_P2, ctx as never);
 		await fireSession(pi, "session_start", ctx as never);
 		expect(await ragStatus(pi, "/tmp/wiring-reset", "sess-reset")).toContain("enriched 0");
 		expect(await ragStatus(pi, "/tmp/wiring-reset", "sess-reset")).toContain("skipped 0");
@@ -853,7 +861,7 @@ describe("review gate: session reset, isolation, renderer fallback, shared deadl
 		process.env["AI_BADGER_PROJECT_ID"] = "proj-shutdown";
 		const { pi } = install({ results: MEM_HITS, code: CODE_HITS });
 		const ctx = makeCtx("/tmp/wiring-shutdown", "sess-shutdown");
-		await fireInput(pi, P1, ctx as never);
+		await fireInput(pi, SKILL_P1, ctx as never);
 		await fireBefore(pi, "", ctx as never);
 		await fireSession(pi, "session_shutdown", ctx as never);
 		expect(await ragStatus(pi, "/tmp/wiring-shutdown", "sess-shutdown")).toContain("enriched 0");
@@ -866,8 +874,8 @@ describe("review gate: session reset, isolation, renderer fallback, shared deadl
 		const ctxA = makeCtx("/tmp/wiring-xsession", "sess-A");
 		const ctxB = makeCtx("/tmp/wiring-xsession", "sess-B");
 
-		await fireInput(pi, P1, ctxA as never);
-		await fireInput(pi, P2, ctxB as never);
+		await fireInput(pi, SKILL_P1, ctxA as never);
+		await fireInput(pi, SKILL_P2, ctxB as never);
 		await fireBefore(pi, "", ctxA as never);
 		await fireBefore(pi, "", ctxB as never);
 
@@ -881,7 +889,7 @@ describe("review gate: session reset, isolation, renderer fallback, shared deadl
 		process.env["AI_BADGER_PROJECT_ID"] = "proj-render";
 		const { pi } = install({ results: MEM_HITS, code: CODE_HITS });
 		const ctx = makeCtx("/tmp/wiring-render", "sess-render");
-		await fireInput(pi, P1, ctx as never);
+		await fireInput(pi, SKILL_P1, ctx as never);
 		const r = await fireBefore(pi, "", ctx as never);
 		const renderer = pi.renderers.get(MEM_RAG_CUSTOM_TYPE) as (m: unknown, o: unknown, t: unknown) => unknown;
 		const throwing = {
@@ -913,7 +921,7 @@ describe("review gate: session reset, isolation, renderer fallback, shared deadl
 		// while tolerating CI scheduling slop on the concurrent path.
 		const { pi, calls } = install({ results: MEM_HITS, code: CODE_HITS, getDelayMs: 1500 });
 		const ctx = makeCtx("/tmp/wiring-deadline", "sess-deadline");
-		await fireInput(pi, P1, ctx as never);
+		await fireInput(pi, SKILL_P1, ctx as never);
 		const startedAt = Date.now();
 		const r = await fireBefore(pi, "", ctx as never);
 		const elapsed = Date.now() - startedAt;
@@ -940,7 +948,7 @@ describe("card UI: bullets, no prefixes, relative paths (display-only)", () => {
 		const { pi } = install({ results: ABS_MEM, code: ABS_CODE });
 		const ctx = makeCtx("/tmp/wiring-card", "sess-card");
 
-		await fireInput(pi, P1, ctx as never);
+		await fireInput(pi, SKILL_P1, ctx as never);
 		const r = await fireBefore(pi, "", ctx as never);
 		const content = String(r?.message?.content ?? "");
 
@@ -970,11 +978,119 @@ describe("card UI: bullets, no prefixes, relative paths (display-only)", () => {
 		const { pi } = install({ results: ABS_MEM, code: ABS_CODE });
 		const ctx = makeCtx("/tmp/wiring-card", "sess-card-legacy");
 
-		await fireInput(pi, P1, ctx as never);
+		await fireInput(pi, SKILL_P1, ctx as never);
 		const r = await fireBefore(pi, "", ctx as never);
 		const legacy = { content: r.message.content }; // pre-upgrade shape: no details
 		const text = renderedText(renderMessage(pi, legacy));
 		expect(text).toContain("• /tmp/wiring-card/docs/a.md (rank 1)");
 		expect(text).not.toContain("[m1]");
+	});
+});
+
+// ------------------------------------------------------------------ PKG-1 skill-precondition gate
+
+describe("PKG-1 skill-precondition gate (skill-only auto-enrich)", () => {
+	const SKILL_LONG = `/skill:task ${P1}`;
+	const IDEA =
+		"IDEA: using ai-raccoon as a RAG we want prompt augmentation with filtering implemented as extension";
+
+	test("(1) skill call with long body enriches once with prefix-stripped query", async () => {
+		clearRagEnv();
+		process.env["AI_BADGER_PROJECT_ID"] = "proj-pkg1-1";
+		const { pi, calls } = install({ results: MEM_HITS, code: CODE_HITS });
+		const ctx = makeCtx("/tmp/wiring-pkg1-1", "sess-pkg1-1");
+		await fireInput(pi, SKILL_LONG, ctx as never);
+		const r = await fireBefore(pi, "", ctx as never);
+		expect(r?.message?.customType).toBe("mem-based-rag");
+		const searches = calls.filter((c) => c.tool === "memory_search");
+		expect(searches).toHaveLength(1);
+		expect((searches[0]!.args as Record<string, unknown>)["query"]).toBe(P1);
+		expect(await ragStatus(pi, "/tmp/wiring-pkg1-1", "sess-pkg1-1")).toContain("enriched 1");
+	});
+
+	test("(2) skill call with thin body skips as too-short without searching", async () => {
+		clearRagEnv();
+		process.env["AI_BADGER_PROJECT_ID"] = "proj-pkg1-2";
+		const { pi, calls } = install({ results: MEM_HITS, code: CODE_HITS });
+		const ctx = makeCtx("/tmp/wiring-pkg1-2", "sess-pkg1-2");
+		const r = await fireBefore(pi, "/skill:x hi there", ctx as never);
+		expect(r).toBeUndefined();
+		expect(calls).toHaveLength(0);
+		const status = await ragStatus(pi, "/tmp/wiring-pkg1-2", "sess-pkg1-2");
+		expect(status).toContain("too-short");
+		expect(status).not.toContain("non-skill-call");
+	});
+
+	test("(3) bare /skill:task skips as bare-skill-call and drains the queue", async () => {
+		clearRagEnv();
+		process.env["AI_BADGER_PROJECT_ID"] = "proj-pkg1-3";
+		const { pi, calls } = install({ results: MEM_HITS, code: CODE_HITS });
+		const ctx = makeCtx("/tmp/wiring-pkg1-3", "sess-pkg1-3");
+		await fireInput(pi, "/skill:task", ctx as never);
+		expect(await fireBefore(pi, "", ctx as never)).toBeUndefined();
+		expect(calls).toHaveLength(0);
+		expect(await ragStatus(pi, "/tmp/wiring-pkg1-3", "sess-pkg1-3")).toContain("bare-skill-call");
+		// Queue drained: the next turn sees empty, not a leaked bare call.
+		expect(await fireBefore(pi, "", ctx as never)).toBeUndefined();
+		expect(calls).toHaveLength(0);
+		expect(await ragStatus(pi, "/tmp/wiring-pkg1-3", "sess-pkg1-3")).toContain("empty");
+	});
+
+	test("(4) long plain prompt that previously enriched now skips as non-skill-call with zero searches", async () => {
+		clearRagEnv();
+		process.env["AI_BADGER_PROJECT_ID"] = "proj-pkg1-4";
+		// shouldEnrich alone would enrich IDEA — the gate is what blocks it.
+		expect(shouldEnrich(IDEA).enrich).toBe(true);
+		const { pi, calls } = install({ results: MEM_HITS, code: CODE_HITS });
+		const ctx = makeCtx("/tmp/wiring-pkg1-4", "sess-pkg1-4");
+		expect(await fireBefore(pi, IDEA, ctx as never)).toBeUndefined();
+		expect(calls).toHaveLength(0);
+		const status = await ragStatus(pi, "/tmp/wiring-pkg1-4", "sess-pkg1-4");
+		expect(status).toContain("non-skill-call");
+		expect(status).toContain("enriched 0");
+	});
+
+	test("(5) /rag status, /ask and /compact skip without searching", async () => {
+		const prompts = [
+			"/rag status",
+			"/ask foo please explain delegation timeouts with slow runners tomorrow",
+			"/compact some long task with many words here today please",
+		];
+		for (const prompt of prompts) {
+			clearRagEnv();
+			process.env["AI_BADGER_PROJECT_ID"] = "proj-pkg1-5";
+			const { pi, calls } = install({ results: MEM_HITS, code: CODE_HITS });
+			const ctx = makeCtx("/tmp/wiring-pkg1-5", `sess-pkg1-5-${prompt.slice(1, 4)}`);
+			expect(await fireBefore(pi, prompt, ctx as never), prompt).toBeUndefined();
+			expect(calls, prompt).toHaveLength(0);
+			expect(await ragStatus(pi, "/tmp/wiring-pkg1-5", `sess-pkg1-5-${prompt.slice(1, 4)}`)).toContain("skipped 1");
+		}
+	});
+
+	test("(6) exact stop/continue skip as control-word", async () => {
+		for (const prompt of ["stop", "continue"]) {
+			clearRagEnv();
+			process.env["AI_BADGER_PROJECT_ID"] = "proj-pkg1-6";
+			const { pi, calls } = install({ results: MEM_HITS, code: CODE_HITS });
+			const ctx = makeCtx("/tmp/wiring-pkg1-6", `sess-pkg1-6-${prompt}`);
+			expect(await fireBefore(pi, prompt, ctx as never), prompt).toBeUndefined();
+			expect(calls, prompt).toHaveLength(0);
+			expect(await ragStatus(pi, "/tmp/wiring-pkg1-6", `sess-pkg1-6-${prompt}`)).toContain("control-word");
+		}
+	});
+
+	test("(7) skipped turn never leaks raw into the next turn", async () => {
+		clearRagEnv();
+		process.env["AI_BADGER_PROJECT_ID"] = "proj-pkg1-7";
+		const { pi, calls } = install({ results: MEM_HITS, code: CODE_HITS });
+		const ctx = makeCtx("/tmp/wiring-pkg1-7", "sess-pkg1-7");
+		await fireInput(pi, IDEA, ctx as never);
+		expect(await fireBefore(pi, "", ctx as never)).toBeUndefined();
+		expect(calls).toHaveLength(0);
+		await fireInput(pi, SKILL_LONG, ctx as never);
+		const r = await fireBefore(pi, "", ctx as never);
+		expect(r?.message?.customType).toBe("mem-based-rag");
+		expect(calls).toHaveLength(1);
+		expect((calls[0]!.args as Record<string, unknown>)["query"]).toBe(P1);
 	});
 });

@@ -7,7 +7,9 @@
 import { describe, expect, test } from "bun:test";
 import {
 	extractQuery,
+	hasSkillPrefix,
 	hitDisplayPath,
+	isSkillCall,
 	pruneHits,
 	shouldEnrich,
 	toCardLines,
@@ -418,5 +420,68 @@ describe("card display helpers (display-only, LLM block untouched)", () => {
 		expect(lines).toHaveLength(2);
 		expect(lines.every((l) => l.tone === "plain")).toBe(true);
 		expect(toCardLines("")).toEqual([{ tone: "plain", text: "" }]);
+	});
+});
+
+describe("PKG-1 skill-precondition helpers (hasSkillPrefix / isSkillCall)", () => {
+	test("hasSkillPrefix is true for bare and body-carrying calls, case-insensitive", () => {
+		for (const raw of [
+			"/skill:task do things",
+			"/skill:task",
+			"/skill:task   ",
+			"/skill:team.task dotted body",
+			"/SKILL:Task Upper Body",
+			"/skill:x hi there",
+		]) {
+			expect(hasSkillPrefix(raw), JSON.stringify(raw)).toBe(true);
+		}
+	});
+
+	test("hasSkillPrefix is false for non-skill turns", () => {
+		for (const raw of [
+			"plain prompt",
+			"/rag status",
+			"/ask foo",
+			"stop",
+			"",
+			"   ",
+			"skill:task body",
+			"/skill:task:extra colon id",
+		]) {
+			expect(hasSkillPrefix(raw), JSON.stringify(raw)).toBe(false);
+		}
+	});
+
+	test("isSkillCall needs a non-whitespace body after the prefix", () => {
+		for (const raw of [
+			"/skill:task some body here",
+			"/skill:team.task dotted body here",
+			"/SKILL:Task Upper Body Here",
+		]) {
+			expect(isSkillCall(raw), JSON.stringify(raw)).toBe(true);
+		}
+		for (const raw of [
+			"/skill:task",
+			"/skill:task   ",
+			"plain prompt",
+			"/rag status",
+			"",
+			"   ",
+		]) {
+			expect(isSkillCall(raw), JSON.stringify(raw)).toBe(false);
+		}
+	});
+
+	test("whitespace-only body is prefix-bearing but not a call: shouldEnrich reports bare-skill-call", () => {
+		// MUST-1: the wiring gate keys on prefix-presence (hasSkillPrefix), never
+		// body-presence (isSkillCall), so a bare call is never misreported as non-skill.
+		expect(hasSkillPrefix("/skill:task   ")).toBe(true);
+		expect(isSkillCall("/skill:task   ")).toBe(false);
+		expect(shouldEnrich("/skill:task   ")).toEqual(
+			expect.objectContaining({ enrich: false, reason: "bare-skill-call" }),
+		);
+		expect(shouldEnrich("/SKILL:TASK")).toEqual(
+			expect.objectContaining({ enrich: false, reason: "bare-skill-call" }),
+		);
 	});
 });
