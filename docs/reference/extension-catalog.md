@@ -131,8 +131,7 @@ stdout (capped at 1 KB) becomes the fire value, with empty output meaning true. 
 idle. Any other exit, signal death, timeout kill after 5 s or spawn failure delivers an
 `error` card and disarms. JS monitors evaluate synchronously inside the transition dispatch
 while bash monitors evaluate concurrently on one frozen per-drain snapshot, so a slow script
-never delays a JS card. Registering or draining a bash monitor can block up to 5 s per
-evaluation. Expiry, cancel and shutdown kill in-flight bash children and their late
+never delays a JS card. Registering a bash monitor awaits its immediate evaluation (compile gate plus up to one evaluation budget, defaults ~2s + 5s); transition drains never block — bash evaluates concurrently on one frozen snapshot while JS cards send synchronously. Expiry, cancel and shutdown kill in-flight bash children and their late
 completions are suppressed, never delivered. On Windows bash must be on PATH (Git Bash or WSL). A monitor with no `timeoutMs` expires after 10 minutes
 (max 60): the expiry delivers an `expired` card and removes it. A throwing predicate
 delivers an `error` card once and is never retried. Outside the TUI every `monitor`

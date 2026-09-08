@@ -317,6 +317,12 @@ function monitorTool(pi: FakePi): Execute {
 	return tool.execute as unknown as Execute;
 }
 
+function waitTool(pi: FakePi): Execute {
+	const tool = pi.tools.get("wait");
+	if (!tool) throw new Error("the monitor extension did not register a `wait` tool");
+	return tool.execute as unknown as Execute;
+}
+
 function makeCtx(mode = "tui"): unknown {
 	return {
 		ui: { notify: (message: string, type?: string) => bashNotifications.push({ message, type }), setWidget: () => {}, setStatus: () => {} },
@@ -556,6 +562,83 @@ describe("expiry and shutdown lifecycle for bash children", () => {
 		const cards = sentMonitorEvents(pi);
 		expect(cards).toHaveLength(1); // the expired card only — the late completion is suppressed
 		expect(cards[0]!.message.details).toMatchObject({ kind: "expired", monitorId: "m-1" });
+		expect(bashInFlightCount()).toBe(0);
+		expect(bashPendingTimerCount()).toBe(0);
+		expect(scheduler.timers.size).toBe(0);
+	});
+});
+
+// ------------------------------------------------------------------ review fixes (SHOULD-1/2/3, MUST-2)
+
+describe("MUST-2: the wait-timer monitor is always JS — never a bash child", () => {
+	test("an idle-fleet wait arms a [js] wait-timer with zero bash children throughout", async () => {
+		const { pi, scheduler } = makeBashHarness();
+		expect(bashInFlightCount()).toBe(0);
+		const pending = waitTool(pi)("tc-wait", {}, undefined, undefined, makeCtx());
+		await pause(50); // let the W-A7 microtask arm the timer monitor
+		expect(bashInFlightCount()).toBe(0);
+		const listed = await monitorTool(pi)("tc-list", { action: "list" }, undefined, undefined, makeCtx());
+		expect(listed.content[0]!.text).toMatch(/wait-timer/);
+		expect(listed.content[0]!.text).toContain("[js]");
+		expect(listed.content[0]!.text).not.toContain("[bash]");
+		expect(bashInFlightCount()).toBe(0);
+		// Cleanup: fire the wait's own timeout (armed first); the timer monitor disarms silently.
+		scheduler.fire([...scheduler.timers.keys()][0]!);
+		const result = await pending;
+		expect(result.details.observed).toBe("timeout");
+		expect(bashInFlightCount()).toBe(0);
+		expect(sentMonitorEvents(pi)).toHaveLength(0);
+	});
+});
+
+describe("SHOULD-1: idle completion re-drains once against the fresh snapshot", () => {
+	test("a firing transition landing mid-flight still fires with no further transitions", async () => {
+		const { pi } = makeBashHarness();
+		// Slow predicate: 0.3 s per evaluation, then grep the stdin snapshot for a completion.
+		await bashRegister(pi, { predicate: "sleep 0.3; grep -q completed", predicateKind: "bash", name: "coalesce" });
+		pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running"));
+		expect(bashInFlightCount()).toBe(1); // first drain parked in-flight
+		pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "completed")); // lands mid-flight — coalesced, not lost
+		await pause(1200); // first idle (0.3 s) + re-drain fire (0.3 s) + overhead
+		const cards = sentMonitorEvents(pi);
+		expect(cards).toHaveLength(1); // eventual fire with NO further transitions
+		expect(cards[0]!.message.details).toMatchObject({ kind: "fired", monitorId: "m-1" });
+		expect(bashInFlightCount()).toBe(0);
+		expect(bashPendingTimerCount()).toBe(0);
+	});
+});
+
+describe("SHOULD-2: wiring timeout seams", () => {
+	test("a 50 ms budget times out the immediate eval — error receipt + one timed-out card, nothing leaked", async () => {
+		const { pi } = makeBashHarness({ bashTimeoutMs: 50, bashGraceMs: 50 });
+		const receipt = await bashRegister(pi, { predicate: "sleep 30; exit 0", predicateKind: "bash" });
+		expect(receipt.details.state).toBe("error");
+		expect(String(receipt.details.reason)).toMatch(/timed out/);
+		const cards = sentMonitorEvents(pi);
+		expect(cards).toHaveLength(1);
+		expect(cards[0]!.message.details).toMatchObject({ kind: "error" });
+		expect(String((cards[0]!.message.details as Record<string, unknown>).reason)).toMatch(/timed out/);
+		expect(bashInFlightCount()).toBe(0);
+		expect(bashPendingTimerCount()).toBe(0);
+	});
+});
+
+describe("SHOULD-3: cancel during flight", () => {
+	test("cancel mid-flight kills the parked child: cancel receipt, no cards after, nothing in flight", async () => {
+		const { pi, scheduler } = makeBashHarness();
+		await bashRegister(pi, { predicate: PARKED_PREDICATE, predicateKind: "bash", name: "parked", timeoutMs: 60_000 });
+		pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "completed"));
+		expect(bashInFlightCount()).toBe(1); // the sleeper is parked in-flight, synchronously
+		const receipt = await monitorTool(pi)(
+			"tc-cancel",
+			{ action: "cancel", id: "m-1" },
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+		expect(receipt.content[0]!.text).toMatch(/cancelled/);
+		await pause(300); // let the SIGTERM→SIGKILL escalation and the suppressed completion land
+		expect(sentMonitorEvents(pi)).toHaveLength(0); // cancel is silent — no fire, no error, no expiry
 		expect(bashInFlightCount()).toBe(0);
 		expect(bashPendingTimerCount()).toBe(0);
 		expect(scheduler.timers.size).toBe(0);

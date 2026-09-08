@@ -389,7 +389,7 @@ export function startBashPredicate(predicate: string, snapshotJson: string, opts
 			return {
 				kind: "error",
 				reason: withStderr(
-					`bash predicate died on signal ${result.signal} — killed externally (monitor expiry, shutdown, cancel or abort).`,
+					`bash predicate died on signal ${result.signal} (external kill — expiry/shutdown/cancel/abort — or the script killed itself).`,
 					result.stderr,
 				),
 			};

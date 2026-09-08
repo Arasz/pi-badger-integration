@@ -135,6 +135,10 @@ interface ArmedMonitor {
 	epoch: number;
 	/** True while a bash child for this monitor is in flight — concurrent drains skip it. */
 	evaluating: boolean;
+	/** SHOULD-1: a transition arrived while `evaluating` — the skipped drain must re-run once
+	 * against the fresh snapshot after the in-flight child settles idle (coalesced, still one
+	 * child at a time). Set in evaluateArmedMonitors, cleared on re-drain. */
+	needsRedrain: boolean;
 	interrupt: boolean;
 	armedAt: number;
 	timeoutMs: number;
@@ -320,6 +324,12 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 	 * await the mapped outcome, then fire/error/idle — or suppress when the epoch moved.
 	 * `signal` (registration only) kills the child on turn abort. Never rejects: the helper's
 	 * `done` never rejects and every line below is non-throwing by construction.
+	 *
+	 * SHOULD-1: an idle completion with `needsRedrain` set (a transition landed mid-flight and
+	 * was skipped) re-drains this monitor ONCE against the fresh currentSnapshot() — still one
+	 * child at a time (evaluating is false here, true again inside the recursive settle). The
+	 * recursion terminates: the flag clears before re-draining, so a quiescent fleet settles
+	 * idle with no further spawn.
 	 */
 	const settleBashEvaluation = async (
 		record: ArmedMonitor,
@@ -348,6 +358,18 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			errorMonitor(record, outcome.reason);
 			return { settlement: "error", reason: outcome.reason };
 		}
+		if (record.needsRedrain) {
+			record.needsRedrain = false;
+			if (armed.get(record.id) === record) {
+				const fresh = currentSnapshot();
+				const reserialized = serializeBashSnapshot(fresh);
+				if (reserialized.kind === "error") {
+					errorMonitor(record, reserialized.reason);
+					return { settlement: "error", reason: reserialized.reason };
+				}
+				return settleBashEvaluation(record, reserialized.json, fresh);
+			}
+		}
 		return { settlement: "idle" }; // stays armed — the next transition drains again
 	};
 
@@ -356,7 +378,9 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 	 * FIRST and synchronously (M2: fire/error cards send in the same tick — JS latency never
 	 * waits for a bash child); bash follows concurrently on ONE snapshot stringified once.
 	 * The bash tail is fire-and-forget from the transition dispatch — every handle settles
-	 * through settleBashEvaluation, whose promise never rejects.
+	 * through settleBashEvaluation, whose promise never rejects. SHOULD-1: a bash monitor
+	 * already evaluating skips this drain but marks needsRedrain, so its idle completion
+	 * re-drains once against the fresh snapshot (coalesced, still one child at a time).
 	 */
 	const evaluateArmedMonitors = (): void => {
 		if (armed.size === 0) return;
@@ -372,6 +396,9 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			// idle / disarmed: nothing to do — the record stays armed
 		}
 		const pending = [...armed.values()].filter((record) => record.predicateKind === "bash" && !record.evaluating);
+		for (const record of [...armed.values()]) {
+			if (record.predicateKind === "bash" && record.evaluating) record.needsRedrain = true;
+		}
 		if (pending.length === 0) return;
 		const serialized = serializeBashSnapshot(snapshot);
 		if (serialized.kind === "error") {
@@ -459,6 +486,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			predicateKind: "js", // the wait-timer monitor is always JS — never a bash child
 			epoch: 0,
 			evaluating: false,
+			needsRedrain: false,
 			interrupt: false,
 			armedAt: nowMs,
 			timeoutMs,
@@ -704,7 +732,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 	};
 
 	async function execute(_toolCallId: string, params: MonitorParams, _signal: unknown, _onUpdate: unknown, ctx: unknown): Promise<ToolResult> {
-			switch (params.action) {
+		switch (params.action) {
 			case "register":
 				return registerMonitor(params, ctx, asAbortSignal(_signal));
 			case "list":
@@ -769,6 +797,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			predicateKind,
 			epoch: 0,
 			evaluating: false,
+			needsRedrain: false,
 			interrupt: params.interrupt === true,
 			armedAt: nowMs,
 			timeoutMs,
