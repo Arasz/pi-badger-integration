@@ -264,9 +264,11 @@ export interface MonitorRecord {
 
 export type MonitorEventKind = "fired" | "expired" | "error";
 
-/** The structured payload carried next to the content on the monitor-event wire. */
+/** The structured payload carried next to the content on the monitor-event wire. The fired
+ * variant's `value` is present only for bash monitors (stdout head-capped at 1 KB, or true)
+ * — JS fires carry no value so their cards render byte-identically to before (M8). */
 export type MonitorEventDetails =
-	| { readonly kind: "fired"; readonly monitor: string; readonly snapshot: MonitorSnapshot }
+	| { readonly kind: "fired"; readonly monitor: string; readonly snapshot: MonitorSnapshot; readonly value?: unknown }
 	| { readonly kind: "expired"; readonly monitor: string; readonly lifetimeMs: number }
 	| { readonly kind: "error"; readonly monitor: string; readonly reason: string };
 
@@ -301,6 +303,22 @@ function capTail(text: string, used: number, budget: number): string {
 	return head + text.slice(text.length - tailLength);
 }
 
+/** Head-cap on a fire value (≤ 1 KB, S1): command output reads top-down — the head names the
+ * result — unlike the snapshot digest, which tail-caps because the answer lives at the end. */
+function renderFireValue(value: unknown): string {
+	const text = typeof value === "string" ? value : safeFireValueStringify(value);
+	return text.length > 1024 ? text.slice(0, 1024) : text;
+}
+
+function safeFireValueStringify(value: unknown): string {
+	try {
+		const json = JSON.stringify(value);
+		return typeof json === "string" ? json : String(value);
+	} catch {
+		return String(value);
+	}
+}
+
 /** Humanize a monitor lifetime (≤ 60 min by construction): "45s", "1m 30s", "10m". */
 /** Humanize a monitor lifetime for cards and receipts: "45s", "1m30s", "10m". */
 export function formatMonitorLifetime(ms: number): string {
@@ -320,7 +338,7 @@ export function formatMonitorLifetime(ms: number): string {
 export function composeMonitorEvent(
 	kind: "fired",
 	record: MonitorRecord,
-	detail: { readonly snapshot: MonitorSnapshot },
+	detail: { readonly snapshot: MonitorSnapshot; readonly value?: unknown },
 ): ComposedMonitorEvent;
 export function composeMonitorEvent(
 	kind: "expired",
@@ -335,7 +353,7 @@ export function composeMonitorEvent(
 export function composeMonitorEvent(
 	kind: MonitorEventKind,
 	record: MonitorRecord,
-	detail: { readonly snapshot: MonitorSnapshot } | { readonly now: number } | { readonly reason: string },
+	detail: { readonly snapshot: MonitorSnapshot; readonly value?: unknown } | { readonly now: number } | { readonly reason: string },
 ): ComposedMonitorEvent {
 	const budget = MONITOR_EVENT_CAP_CHARS;
 	let details: MonitorEventDetails;
@@ -349,9 +367,15 @@ export function composeMonitorEvent(
 			digest = "[unserializable snapshot]"; // never let one circular field kill the fire wire
 		}
 		const verdict = `Monitor "${record.name}" fired — its condition evaluated true.`;
-		const head = `${verdict}\n\nSnapshot: `;
+		// A fire VALUE (bash stdout) rides between verdict and digest; absent (every JS fire)
+		// the head — and the whole card — renders exactly as before.
+		const valueLine = detail.value === undefined ? "" : `\n\nValue: ${renderFireValue(detail.value)}`;
+		const head = `${verdict}${valueLine}\n\nSnapshot: `;
 		body = head + capTail(digest, head.length, budget);
-		details = { kind: "fired", monitor: record.name, snapshot: snap };
+		details =
+			detail.value === undefined
+				? { kind: "fired", monitor: record.name, snapshot: snap }
+				: { kind: "fired", monitor: record.name, snapshot: snap, value: detail.value };
 	} else if ("now" in detail) {
 		const lifetimeMs = Math.max(0, detail.now - record.registeredAt);
 		body = `Monitor "${record.name}" expired after ${formatMonitorLifetime(lifetimeMs)} without its condition evaluating true.`;

@@ -10,6 +10,10 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 
+import monitor from "../../extensions/monitor/index.ts";
+import { TRANSITION_CHANNEL } from "../../extensions/subagent/index.ts";
+import { createFakePi, type FakePi } from "../helpers/fake-pi.ts";
+
 import {
 	BASH_PREDICATE_MAX_CHARS,
 	BASH_PREDICATE_VALUE_MAX_CHARS,
@@ -237,5 +241,323 @@ describe("bash snapshot serialization", () => {
 		const result = serializeBashSnapshot(circular);
 		expect(result.kind).toBe("error");
 		if (result.kind === "error") expect(result.reason.length).toBeGreaterThan(0);
+	});
+});
+
+// ------------------------------------------------------------------ part 2: wiring integration
+// Harness mirrors tests/monitor/monitor-extension.test.ts (manualScheduler, FakeClock via
+// pi.clock, hermetic fake-pi); bash legs use short REAL pauses — children are OS processes.
+
+function manualScheduler() {
+	let seq = 0;
+	const timers = new Map<number, { fn: () => void; ms: number }>();
+	return {
+		setTimeout: (fn: () => void, ms: number) => {
+			const handle = ++seq;
+			timers.set(handle, { fn, ms });
+			return handle;
+		},
+		clearTimeout: (handle: unknown) => {
+			timers.delete(handle as number);
+		},
+		timers,
+		fire(handle: number) {
+			const timer = timers.get(handle);
+			if (!timer) throw new Error(`no timer ${handle} armed`);
+			timers.delete(handle);
+			timer.fn();
+		},
+	};
+}
+
+type Scheduler = ReturnType<typeof manualScheduler>;
+
+function transition(id: string, state: string) {
+	const at = 1_700_000_000_000;
+	return {
+		id,
+		agent: "architect",
+		task: "do the thing",
+		state,
+		at,
+		record: { id, agent: "architect", task: "do the thing", toolCallId: `tc-${id}`, state, startedAt: at },
+	};
+}
+
+interface Harness {
+	pi: FakePi;
+	scheduler: Scheduler;
+}
+
+const bashNotifications: Array<{ message: string; type?: string }> = [];
+
+function makeBashHarness(deps: Record<string, unknown> = {}): Harness {
+	bashNotifications.length = 0;
+	const pi = createFakePi();
+	const scheduler = manualScheduler();
+	monitor(pi as never, { now: () => pi.clock.now, scheduler, ...deps });
+	return { pi, scheduler };
+}
+
+interface ToolResult {
+	content: Array<{ type: string; text: string }>;
+	details: Record<string, unknown>;
+}
+type Execute = (
+	toolCallId: string,
+	params: Record<string, unknown>,
+	signal: AbortSignal | undefined,
+	onUpdate: undefined,
+	ctx: unknown,
+) => Promise<ToolResult>;
+
+function monitorTool(pi: FakePi): Execute {
+	const tool = pi.tools.get("monitor");
+	if (!tool) throw new Error("the monitor extension did not register a `monitor` tool");
+	return tool.execute as unknown as Execute;
+}
+
+function makeCtx(mode = "tui"): unknown {
+	return {
+		ui: { notify: (message: string, type?: string) => bashNotifications.push({ message, type }), setWidget: () => {}, setStatus: () => {} },
+		mode,
+		hasUI: mode === "tui" || mode === "rpc",
+		cwd: "/p",
+	};
+}
+
+async function bashRegister(
+	pi: FakePi,
+	params: { predicate: string; predicateKind?: string; name?: string; timeoutMs?: number },
+	opts: { mode?: string; signal?: AbortSignal } = {},
+): Promise<ToolResult> {
+	return monitorTool(pi)("tc-register", { action: "register", ...params }, opts.signal, undefined, makeCtx(opts.mode ?? "tui"));
+}
+
+function sentMonitorEvents(pi: FakePi): Array<{ message: Record<string, unknown>; options: unknown }> {
+	return pi.sent
+		.filter((s) => s.message.customType === "monitor-event")
+		.map((s) => ({ message: s.message as Record<string, unknown>, options: s.options }));
+}
+
+function shutdown(pi: FakePi): void {
+	for (const handler of pi.handlers.get("session_shutdown") ?? []) handler({}, makeCtx());
+}
+
+const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Slow-in-drain, fast-at-registration bash predicate: instant idle while no delegation has
+// completed, a 30 s sleeper once one has — lets tests park a child in-flight, then kill it.
+const PARKED_PREDICATE = `snapshot=$(cat); case "$snapshot" in *completed*) sleep 30;; *) exit 1;; esac`;
+
+// ------------------------------------------------------------------ M6: gate split
+
+describe("M6: bash skips the JS gates entirely", () => {
+	test("`if...fi` registers verbatim and fires", async () => {
+		const { pi } = makeBashHarness();
+		const predicate = `if true; then exit 0; else exit 1; fi`;
+		const receipt = await bashRegister(pi, { predicate, predicateKind: "bash", name: "branchy" });
+		expect(receipt.details.state).toBe("fired");
+		expect(receipt.details.predicate).toBe(predicate); // verbatim — no JS normalization
+		expect(receipt.details.predicateKind).toBe("bash");
+		const cards = sentMonitorEvents(pi);
+		expect(cards).toHaveLength(1);
+		expect(cards[0]!.message.details).toMatchObject({ kind: "fired", predicateKind: "bash", predicate });
+	});
+
+	test("`return 0` survives registration verbatim (runtime exit 1 → idle → armed)", async () => {
+		const { pi } = makeBashHarness();
+		const receipt = await bashRegister(pi, { predicate: "return 0", predicateKind: "bash" });
+		expect(receipt.details.state).toBe("armed");
+		expect(receipt.details.predicate).toBe("return 0");
+	});
+
+	test("an unknown predicateKind rejects loudly", async () => {
+		const { pi } = makeBashHarness();
+		await expect(bashRegister(pi, { predicate: "exit 0", predicateKind: "zsh" })).rejects.toThrow(/predicateKind/);
+	});
+});
+
+// ------------------------------------------------------------------ M3: register async
+
+describe("M3: async register — gate order, self-visibility, abort", () => {
+	test("the bash -n gate runs BEFORE the monitor-cap check (rejects free)", async () => {
+		const { pi } = makeBashHarness();
+		for (let i = 1; i <= 8; i++) await bashRegister(pi, { predicate: "false", name: `wake-${i}` });
+		await expect(bashRegister(pi, { predicate: "if then", predicateKind: "bash" })).rejects.toThrow(/invalid bash predicate/);
+		await expect(bashRegister(pi, { predicate: "if then", predicateKind: "bash" })).rejects.not.toThrow(/cap/);
+		// …while a VALID bash register still hits the full cap:
+		await expect(bashRegister(pi, { predicate: "exit 1", predicateKind: "bash" })).rejects.toThrow(/8 active monitors/);
+	});
+
+	test("immediate eval runs after armed.set — self is visible in snapshot.monitors", async () => {
+		const { pi } = makeBashHarness();
+		await bashRegister(pi, { predicate: "exit 0", predicateKind: "bash", name: "self-seer" });
+		const cards = sentMonitorEvents(pi);
+		expect(cards).toHaveLength(1);
+		const snapshot = (cards[0]!.message.details as Record<string, unknown>).snapshot as { monitors: Array<{ name: string }> };
+		expect(snapshot.monitors.map((m) => m.name)).toContain("self-seer");
+	});
+
+	test("an abort signal kills the immediate child — error receipt, one error card, nothing in flight", async () => {
+		const { pi } = makeBashHarness();
+		const controller = new AbortController();
+		const pending = bashRegister(pi, { predicate: "sleep 30; exit 0", predicateKind: "bash" }, { signal: controller.signal });
+		await pause(100);
+		controller.abort();
+		const receipt = await pending;
+		expect(receipt.details.state).toBe("error");
+		const cards = sentMonitorEvents(pi);
+		expect(cards).toHaveLength(1);
+		expect(cards[0]!.message.details).toMatchObject({ kind: "error" });
+		expect(bashInFlightCount()).toBe(0);
+	});
+
+	test("the tool description documents the stdin contract, the exit mapping, the 5 s block and the trust model (S2/S4)", () => {
+		const { pi } = makeBashHarness();
+		const tool = pi.tools.get("monitor") as unknown as { description: string; parameters: object };
+		expect(tool.description).toMatch(/stdin/i);
+		expect(tool.description).toMatch(/exit 0/i);
+		expect(tool.description).toMatch(/5 ?s/);
+		expect(tool.description).toMatch(/unsandboxed/i);
+		const params = JSON.parse(JSON.stringify(tool.parameters)) as {
+			properties: { predicateKind: { description: string }; predicate: { description: string } };
+		};
+		expect(params.properties.predicateKind.description).toMatch(/bash/);
+		expect(params.properties.predicate.description).toMatch(/stdin/);
+	});
+});
+
+// ------------------------------------------------------------------ M8: value plumbing + kind echo
+
+describe("M8: bash value plumbing and predicateKind echo", () => {
+	test("stdout becomes the fire value in details and on the card; empty stdout becomes true", async () => {
+		const { pi } = makeBashHarness();
+		const receipt = await bashRegister(pi, { predicate: "echo hello; exit 0", predicateKind: "bash", name: "v" });
+		expect(receipt.details.state).toBe("fired");
+		expect(receipt.details.value).toBe("hello");
+		const cards = sentMonitorEvents(pi);
+		expect(cards[0]!.message.content).toContain("hello");
+		expect(cards[0]!.message.details).toMatchObject({ kind: "fired", value: "hello" });
+		expect((cards[0]!.message.details as Record<string, unknown>).snapshot).toBeDefined();
+
+		const second = makeBashHarness();
+		const receipt2 = await bashRegister(second.pi, { predicate: "exit 0", predicateKind: "bash" });
+		expect(receipt2.details.value).toBe(true);
+	});
+
+	test("long stdout is head-capped at 1 KB", async () => {
+		const { pi } = makeBashHarness();
+		const receipt = await bashRegister(pi, { predicate: "printf 'y%.0s' $(seq 1 5000); exit 0", predicateKind: "bash" });
+		expect((receipt.details.value as string).length).toBeLessThanOrEqual(1024);
+	});
+
+	test("bash errors carry exit code + stderr on the card and the receipt", async () => {
+		const { pi } = makeBashHarness();
+		const receipt = await bashRegister(pi, { predicate: "echo kaboom >&2; exit 4", predicateKind: "bash" });
+		expect(receipt.details.state).toBe("error");
+		expect(String(receipt.details.reason)).toMatch(/kaboom/);
+		const cards = sentMonitorEvents(pi);
+		expect(cards).toHaveLength(1);
+		expect(String(cards[0]!.message.content)).toMatch(/kaboom/);
+		expect(String((cards[0]!.message.details as Record<string, unknown>).reason)).toMatch(/4/);
+	});
+
+	test("receipt, list and /monitors echo predicateKind; JS defaults to 'js'", async () => {
+		const { pi } = makeBashHarness();
+		const jsReceipt = await bashRegister(pi, { predicate: "false", name: "js-one" });
+		expect(jsReceipt.details.predicateKind).toBe("js");
+		await bashRegister(pi, { predicate: "exit 1", predicateKind: "bash", name: "bash-one" });
+
+		const listed = await monitorTool(pi)("tc-list", { action: "list" }, undefined, undefined, makeCtx());
+		const monitors = (listed.details as { monitors: Array<{ id: string; predicateKind: string }> }).monitors;
+		expect(monitors.find((m) => m.id === "m-1")!.predicateKind).toBe("js");
+		expect(monitors.find((m) => m.id === "m-2")!.predicateKind).toBe("bash");
+		expect(listed.content[0]!.text).toContain("[bash]");
+
+		const command = pi.commands.get("monitors") as unknown as { handler(args: string, ctx: unknown): Promise<void> };
+		await command.handler("", makeCtx());
+		expect(bashNotifications).toHaveLength(1);
+		expect(bashNotifications[0]!.message).toContain("[bash]");
+		expect(bashNotifications[0]!.message).toContain("[js]");
+	});
+});
+
+// ------------------------------------------------------------------ M2: JS fast path
+
+describe("M2: JS cards send synchronously — never behind a bash await", () => {
+	test("a JS fire and a slow bash share one drain: the JS card is already sent, the bash card follows", async () => {
+		const { pi } = makeBashHarness();
+		const jsPredicate = `delegations.some((d) => d.state === "completed")`;
+		await bashRegister(pi, { predicate: jsPredicate, name: "js-fast" });
+		pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running"));
+		await bashRegister(pi, { predicate: "sleep 0.2; grep -q completed", predicateKind: "bash", name: "bash-slow" });
+
+		pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "completed"));
+
+		// Same tick, no await: the JS card is already on the wire, the bash child still sleeping.
+		const syncCards = sentMonitorEvents(pi);
+		expect(syncCards).toHaveLength(1);
+		expect(syncCards[0]!.message.details).toMatchObject({ kind: "fired", predicate: jsPredicate });
+
+		await pause(600);
+		const lateCards = sentMonitorEvents(pi);
+		expect(lateCards).toHaveLength(2);
+		expect(lateCards[1]!.message.details).toMatchObject({ kind: "fired", predicateKind: "bash" });
+	});
+});
+
+// ------------------------------------------------------------------ M1: one-shot across the async seam
+
+describe("M1: one-shot holds across the async seam", () => {
+	test("two rapid transitions fire a bash monitor exactly once", async () => {
+		const { pi } = makeBashHarness();
+		await bashRegister(pi, { predicate: "grep -q completed", predicateKind: "bash", name: "once" });
+		pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "completed"));
+		pi.fireTransition(TRANSITION_CHANNEL, transition("d-2", "completed"));
+		await pause(400);
+		const cards = sentMonitorEvents(pi);
+		expect(cards).toHaveLength(1);
+		expect(cards[0]!.message.details).toMatchObject({ kind: "fired", monitorId: "m-1" });
+		expect(bashInFlightCount()).toBe(0);
+	});
+
+	test("a completion resolving after shutdown sends nothing", async () => {
+		const { pi, scheduler } = makeBashHarness();
+		await bashRegister(pi, { predicate: PARKED_PREDICATE, predicateKind: "bash", name: "parked" });
+		pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running"));
+		await pause(100); // the instant-idle drain child settles first — deterministic below
+		expect(sentMonitorEvents(pi)).toHaveLength(0);
+		pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "completed"));
+		expect(bashInFlightCount()).toBe(1); // the sleeper is parked in-flight, synchronously
+		shutdown(pi);
+		await pause(300);
+		expect(sentMonitorEvents(pi)).toHaveLength(0); // suppressed — kill alone would still exit 0/143
+		expect(bashInFlightCount()).toBe(0);
+		expect(scheduler.timers.size).toBe(0);
+		const entry = pi.entries.find((e) => e.customType === "monitor-shutdown");
+		expect(entry).toBeDefined();
+	});
+});
+
+// ------------------------------------------------------------------ M7/S5: expiry kills the in-flight child
+
+describe("expiry and shutdown lifecycle for bash children", () => {
+	test("expiry kills the parked child: one expired card, never a fire, nothing in flight", async () => {
+		const { pi, scheduler } = makeBashHarness();
+		await bashRegister(pi, { predicate: PARKED_PREDICATE, predicateKind: "bash", name: "parked", timeoutMs: 60_000 });
+		pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "completed"));
+		expect(bashInFlightCount()).toBe(1);
+
+		const [handle] = [...scheduler.timers.keys()];
+		scheduler.fire(handle!); // manual expiry while the child sleeps
+		await pause(300);
+
+		const cards = sentMonitorEvents(pi);
+		expect(cards).toHaveLength(1); // the expired card only — the late completion is suppressed
+		expect(cards[0]!.message.details).toMatchObject({ kind: "expired", monitorId: "m-1" });
+		expect(bashInFlightCount()).toBe(0);
+		expect(bashPendingTimerCount()).toBe(0);
+		expect(scheduler.timers.size).toBe(0);
 	});
 });

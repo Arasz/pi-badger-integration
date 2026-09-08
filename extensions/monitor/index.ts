@@ -36,6 +36,7 @@ import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-cod
 import { Type } from "typebox";
 import { TRANSITION_CHANNEL } from "../subagent/index.ts";
 import { DEFAULT_POLL_MAX, DEFAULT_POLL_WINDOW_MS, MONITOR_TIMEOUT_DEFAULT_MS, clampMonitorCap, clampMonitorTimeoutMs, compilePredicate, composeMonitorEvent, evaluateMonitor, formatMonitorLifetime, manualWaitDecision, normalizePredicate, pollingDecision, type DelegationView, type MonitorSnapshot } from "./monitor-core.ts";
+import { BASH_COMPILE_TIMEOUT_MS, BASH_PREDICATE_GRACE_MS, BASH_PREDICATE_TIMEOUT_MS, compileBashPredicate, serializeBashSnapshot, startBashPredicate, type BashHandle } from "./bash-predicate.ts";
 
 // ------------------------------------------------------------------ contract constants
 
@@ -89,6 +90,12 @@ export interface MonitorDeps {
 	mode?: (ctx: unknown) => string | undefined;
 	/** Poll-guard overrides (R9): window 120 s, max 3 allowed, counted tool "delegations". */
 	pollGuard?: { windowMs?: number; max?: number; toolName?: string };
+	/** Bash-predicate seams (bash-predicate.ts): one-evaluation budget (default 5000 ms),
+	 * SIGTERM→SIGKILL grace (default 500 ms) and the `bash -n` gate budget (default 2000 ms).
+	 * Tests run 50–100 ms evaluation budgets against real short-lived children (M7). */
+	bashTimeoutMs?: number;
+	bashGraceMs?: number;
+	bashCompileTimeoutMs?: number;
 }
 
 /** Structural mirror of the subagent's transition payload — the monitor depends on the
@@ -119,6 +126,15 @@ interface ArmedMonitor {
 	id: string;
 	name?: string;
 	predicate: string;
+	/** Predicate kind: 'js' (vm expression, default) or 'bash' (unsandboxed script). */
+	predicateKind: "js" | "bash";
+	/** M1 per-monitor epoch, captured disarm-before-await: every disarm path (fire, error,
+	 * expiry, cancel, shutdown) deletes the record AND bumps this, so a late bash completion
+	 * can tell a stale evaluation from a live one. Kill alone is NOT the guard — SIGTERM
+	 * delivery races the child's own exit, so completions re-check map membership + epoch. */
+	epoch: number;
+	/** True while a bash child for this monitor is in flight — concurrent drains skip it. */
+	evaluating: boolean;
 	interrupt: boolean;
 	armedAt: number;
 	timeoutMs: number;
@@ -181,6 +197,11 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 	};
 	const maxMonitors = clampMonitorCap(deps.maxMonitors);
+	const positiveMs = (value: number | undefined, fallback: number): number =>
+		typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+	const bashTimeoutMs = positiveMs(deps.bashTimeoutMs, BASH_PREDICATE_TIMEOUT_MS);
+	const bashGraceMs = positiveMs(deps.bashGraceMs, BASH_PREDICATE_GRACE_MS);
+	const bashCompileTimeoutMs = positiveMs(deps.bashCompileTimeoutMs, BASH_COMPILE_TIMEOUT_MS);
 	const resolveMode = (ctx: unknown): string | undefined =>
 		deps.mode ? deps.mode(ctx) : (ctx as { mode?: string } | undefined)?.mode;
 
@@ -191,6 +212,30 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 	let monitorSeq = 0;
 	let unsubscribeTransition: (() => void) | undefined;
 	let inputArmed = false;
+
+	// In-flight bash children by monitor id: expiry/cancel/shutdown kill through these
+	// (SIGTERM→grace→SIGKILL); the helper's own in-flight set drains on child exit (S5).
+	const bashHandles = new Map<string, Set<BashHandle>>();
+	const trackBashHandle = (id: string, handle: BashHandle): void => {
+		const set = bashHandles.get(id) ?? new Set<BashHandle>();
+		set.add(handle);
+		bashHandles.set(id, set);
+	};
+	const untrackBashHandle = (id: string, handle: BashHandle): void => {
+		const set = bashHandles.get(id);
+		if (!set) return;
+		set.delete(handle);
+		if (set.size === 0) bashHandles.delete(id);
+	};
+	const killBashHandles = (id: string): void => {
+		const set = bashHandles.get(id);
+		if (!set) return;
+		for (const handle of set) handle.kill();
+		bashHandles.delete(id);
+	};
+	const killAllBashHandles = (): void => {
+		for (const id of [...bashHandles.keys()]) killBashHandles(id);
+	};
 
 	const displayName = (record: ArmedMonitor): string => record.name ?? record.id;
 
@@ -228,16 +273,19 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		);
 	};
 
-	/** Disarm + one fired card. The snapshot is built once per evaluation drain. */
-	const fireMonitor = (record: ArmedMonitor, snapshot: MonitorSnapshot): void => {
+	/** Disarm + one fired card. The snapshot is built once per evaluation drain. `value` is
+	 * bash-only (stdout head-capped, or true) — JS fires omit it (M8, Option B). */
+	const fireMonitor = (record: ArmedMonitor, snapshot: MonitorSnapshot, value?: unknown): void => {
 		armed.delete(record.id);
 		clearTimer(record);
-		const event = composeMonitorEvent("fired", coreRecord(record), { snapshot });
+		const event = composeMonitorEvent("fired", coreRecord(record), value === undefined ? { snapshot } : { snapshot, value });
 		sendMonitorEvent(event.content, {
 			kind: "fired",
 			monitorId: record.id,
 			...(record.name !== undefined ? { name: record.name } : {}),
 			predicate: record.predicate,
+			predicateKind: record.predicateKind,
+			...(value === undefined ? {} : { value }),
 			firedAt: now(),
 			snapshot,
 		});
@@ -254,15 +302,67 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			monitorId: record.id,
 			...(record.name !== undefined ? { name: record.name } : {}),
 			predicate: record.predicate,
+			predicateKind: record.predicateKind,
 			reason,
 		});
 	};
 
-	/** One evaluation drain over every armed monitor against the current snapshot. */
+	/** What one bash evaluation settles to: a real outcome, or "suppressed" when expiry /
+	 * shutdown / cancel (or a second fire) disarmed the monitor mid-flight (M1). */
+	type BashSettlement =
+		| { readonly settlement: "fired"; readonly value: string | true }
+		| { readonly settlement: "error"; readonly reason: string }
+		| { readonly settlement: "idle" }
+		| { readonly settlement: "suppressed" };
+
+	/**
+	 * Settle one bash evaluation for an armed monitor: spawn on the per-drain snapshot JSON,
+	 * await the mapped outcome, then fire/error/idle — or suppress when the epoch moved.
+	 * `signal` (registration only) kills the child on turn abort. Never rejects: the helper's
+	 * `done` never rejects and every line below is non-throwing by construction.
+	 */
+	const settleBashEvaluation = async (
+		record: ArmedMonitor,
+		snapshotJson: string,
+		snapshot: MonitorSnapshot,
+		signal?: AbortSignal,
+	): Promise<BashSettlement> => {
+		record.evaluating = true;
+		record.epoch += 1;
+		const epoch = record.epoch;
+		const handle = startBashPredicate(record.predicate, snapshotJson, {
+			timeoutMs: bashTimeoutMs,
+			graceMs: bashGraceMs,
+			...(signal ? { signal } : {}),
+		});
+		trackBashHandle(record.id, handle);
+		const outcome = await handle.done;
+		untrackBashHandle(record.id, handle);
+		if (armed.get(record.id) !== record || record.epoch !== epoch) return { settlement: "suppressed" };
+		record.evaluating = false;
+		if (outcome.kind === "fired") {
+			fireMonitor(record, snapshot, outcome.value);
+			return { settlement: "fired", value: outcome.value };
+		}
+		if (outcome.kind === "error") {
+			errorMonitor(record, outcome.reason);
+			return { settlement: "error", reason: outcome.reason };
+		}
+		return { settlement: "idle" }; // stays armed — the next transition drains again
+	};
+
+	/**
+	 * One evaluation drain over every armed monitor against the current snapshot. JS runs
+	 * FIRST and synchronously (M2: fire/error cards send in the same tick — JS latency never
+	 * waits for a bash child); bash follows concurrently on ONE snapshot stringified once.
+	 * The bash tail is fire-and-forget from the transition dispatch — every handle settles
+	 * through settleBashEvaluation, whose promise never rejects.
+	 */
 	const evaluateArmedMonitors = (): void => {
 		if (armed.size === 0) return;
 		const snapshot = currentSnapshot();
 		for (const record of [...armed.values()]) {
+			if (record.predicateKind !== "js") continue;
 			const outcome = evaluateMonitor(
 				{ name: displayName(record), predicate: record.predicate, armed: true },
 				snapshot,
@@ -271,6 +371,14 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			else if (outcome.action === "error") errorMonitor(record, outcome.reason);
 			// idle / disarmed: nothing to do — the record stays armed
 		}
+		const pending = [...armed.values()].filter((record) => record.predicateKind === "bash" && !record.evaluating);
+		if (pending.length === 0) return;
+		const serialized = serializeBashSnapshot(snapshot);
+		if (serialized.kind === "error") {
+			for (const record of pending) errorMonitor(record, serialized.reason); // M5: never throws
+			return;
+		}
+		void Promise.all(pending.map((record) => settleBashEvaluation(record, serialized.json, snapshot)));
 	};
 
 	const onTransition = (payload: unknown): void => {
@@ -348,6 +456,9 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			id: `m-${++monitorSeq}`,
 			name: WAIT_TIMER_MONITOR_NAME,
 			predicate: "false",
+			predicateKind: "js", // the wait-timer monitor is always JS — never a bash child
+			epoch: 0,
+			evaluating: false,
 			interrupt: false,
 			armedAt: nowMs,
 			timeoutMs,
@@ -514,6 +625,9 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		const record = armed.get(id);
 		if (!record) return;
 		armed.delete(id); // the timer already fired — nothing left to clear
+		record.epoch += 1; // M1: invalidate in-flight bash evaluations — kill alone is async
+		// (SIGTERM delivery races the child's own exit), so completions re-check epoch + map.
+		killBashHandles(id); // SIGTERM→grace→SIGKILL; grace timers clear on child exit (S5)
 		const event = composeMonitorEvent("expired", coreRecord(record), { now: now() });
 		sendMonitorEvent(event.content, {
 			kind: "expired",
@@ -528,6 +642,13 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 	};
 
 	// ---------------------------------------------------------------- tool
+
+	/** The turn's abort signal, structurally detected (fakes pass undefined). Registration
+	 * threads it into the immediate bash eval so an abort kills the child (M3). */
+	const asAbortSignal = (value: unknown): AbortSignal | undefined =>
+		typeof value === "object" && value !== null && typeof (value as AbortSignal).addEventListener === "function"
+			? (value as AbortSignal)
+			: undefined;
 
 	/** R10/N-1: the WHOLE tool is tui-only — one gate for every action (M-B5). */
 	const requireTui = (ctx: unknown, action: string): void => {
@@ -545,7 +666,16 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		predicate: Type.Optional(
 			Type.String({
 				description:
-					"register: a bare JS expression — NO `return` keyword, write the condition itself, e.g. `delegations.some(d => d.state === \"completed\")` — evaluated against { delegations, monitors } on every delegation transition. 4 KB cap; must evaluate to a primitive (a promise or object is an error and disarms the monitor). A leading `return` is stripped when the remainder compiles; anything else is rejected with guidance naming the mistake.",
+					"register: the condition. With predicateKind 'js' (default) a bare JS expression — NO `return` keyword, write the condition itself, e.g. `delegations.some(d => d.state === \"completed\")` — evaluated against { delegations, monitors } on every delegation transition. 4 KB cap; must evaluate to a primitive (a promise or object is an error and disarms the monitor). A leading `return` is stripped when the remainder compiles; anything else is rejected with guidance naming the mistake. " +
+					"With predicateKind 'bash' a bash script instead (4 KB cap, `bash -n` gate at register): it reads the monitor snapshot JSON on stdin — { delegations, monitors } via stdin, e.g. `grep -q '\"state\":\"completed\"'` — and exit codes decide: 0 fires (trimmed stdout, ≤1 KB, is the fire value; empty means true), 1 is idle, any other exit / signal death / 5 s timeout / spawn failure is an error card and disarms.",
+			}),
+		),
+		predicateKind: Type.Optional(
+			Type.Union([Type.Literal("js"), Type.Literal("bash")], {
+				description:
+					"register: predicate kind — 'js' (default) evaluates the predicate as a JS expression in a vm sandbox; " +
+					"'bash' runs it UNSANDBOXED as `bash -c` with your full user privileges (only register what your own agent wrote), " +
+					"snapshot JSON on stdin, exit 0 fires / exit 1 idle / anything else error+disarms, 5 s kill, register can block up to 5 s",
 			}),
 		),
 		name: Type.Optional(
@@ -566,6 +696,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 	type MonitorParams = {
 		action: "register" | "list" | "cancel";
 		predicate?: string;
+		predicateKind?: "js" | "bash";
 		name?: string;
 		interrupt?: boolean;
 		timeoutMs?: number;
@@ -573,9 +704,9 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 	};
 
 	async function execute(_toolCallId: string, params: MonitorParams, _signal: unknown, _onUpdate: unknown, ctx: unknown): Promise<ToolResult> {
-		switch (params.action) {
+			switch (params.action) {
 			case "register":
-				return registerMonitor(params, ctx);
+				return registerMonitor(params, ctx, asAbortSignal(_signal));
 			case "list":
 				return listMonitors(ctx);
 			case "cancel":
@@ -585,20 +716,41 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		}
 	}
 
-	function registerMonitor(params: MonitorParams, ctx: unknown): ToolResult {
+	async function registerMonitor(params: MonitorParams, ctx: unknown, signal?: AbortSignal): Promise<ToolResult> {
 		requireTui(ctx, "register");
 		const raw = params.predicate;
-		if (typeof raw !== "string" || !raw.trim()) {
-			throw new Error("monitor register needs a predicate — a bare JS expression (no `return`) evaluated against the snapshot on every delegation transition");
+		const predicateKind = params.predicateKind ?? "js";
+		if (predicateKind !== "js" && predicateKind !== "bash") {
+			throw new Error(`monitor register: predicateKind must be "js" or "bash" (got ${JSON.stringify(predicateKind)})`);
 		}
-		// Recover the one known authoring mistake (a leading `return`, the old schema's phrasing
-		// copied literally) and store the CLEAN expression: list, cards and the receipt echo the
-		// bare predicate the monitor actually evaluates. Compile-check FIRST — a syntax error or
-		// an over-cap string rejects without consuming the cap (R6).
-		const predicate = normalizePredicate(raw);
-		const compiled = compilePredicate(predicate);
-		if (compiled.kind === "syntax-error") {
-			throw new Error(`monitor rejected — invalid predicate: ${compiled.reason}`);
+		if (typeof raw !== "string" || !raw.trim()) {
+			throw new Error(
+				predicateKind === "bash"
+					? "monitor register needs a predicate — a bash script reading the monitor snapshot JSON on stdin (exit 0 fires, exit 1 is idle)"
+					: "monitor register needs a predicate — a bare JS expression (no `return`) evaluated against the snapshot on every delegation transition",
+			);
+		}
+		// Gate BEFORE the cap check — an invalid predicate rejects free (M-B5, M3). M6: bash
+		// skips normalizePredicate/compilePredicate entirely (`if...fi` and `return 0` are
+		// scripts, not JS expressions, and must survive verbatim); the `bash -n` gate + the
+		// shared 4 KB cap are the only registration checks.
+		let predicate: string;
+		if (predicateKind === "bash") {
+			const gate = await compileBashPredicate(raw, { timeoutMs: bashCompileTimeoutMs });
+			if (gate.kind === "syntax-error") {
+				throw new Error(`monitor rejected — invalid bash predicate: ${gate.reason}`);
+			}
+			predicate = raw;
+		} else {
+			// Recover the one known authoring mistake (a leading `return`, the old schema's phrasing
+			// copied literally) and store the CLEAN expression: list, cards and the receipt echo the
+			// bare predicate the monitor actually evaluates. Compile-check FIRST — a syntax error or
+			// an over-cap string rejects without consuming the cap (R6).
+			predicate = normalizePredicate(raw);
+			const compiled = compilePredicate(predicate);
+			if (compiled.kind === "syntax-error") {
+				throw new Error(`monitor rejected — invalid predicate: ${compiled.reason}`);
+			}
 		}
 		if (armed.size >= maxMonitors) {
 			throw new Error(
@@ -614,6 +766,9 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			id: `m-${++monitorSeq}`,
 			...(params.name !== undefined && params.name.trim() ? { name: params.name.trim() } : {}),
 			predicate,
+			predicateKind,
+			epoch: 0,
+			evaluating: false,
 			interrupt: params.interrupt === true,
 			armedAt: nowMs,
 			timeoutMs,
@@ -623,18 +778,59 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		armed.set(record.id, record);
 
 		// R7: one-shot, edge-triggered, INCLUDING at registration — evaluate once against the
-		// current snapshot; an already-true condition fires (or errors) immediately.
+		// current snapshot; an already-true condition fires (or errors) immediately. armed.set
+		// ran first, so the monitor's own name is visible in snapshot.monitors (M3).
 		const snapshot = currentSnapshot();
-		const outcome = evaluateMonitor({ name: displayName(record), predicate, armed: true }, snapshot);
 		const echo = {
 			id: record.id,
 			...(record.name !== undefined ? { name: record.name } : {}),
 			predicate,
+			predicateKind,
 			interrupt: record.interrupt,
 			armedAt: record.armedAt,
 			timeoutMs: record.timeoutMs,
 			expiresAt: record.expiresAt,
 		};
+		const armedMessage =
+			`Monitor ${record.id} armed — evaluates on every delegation transition, fires once when the predicate first evaluates true. ` +
+			`Expires in ${formatMonitorLifetime(record.timeoutMs)} (at ${record.expiresAt}).`;
+		if (predicateKind === "bash") {
+			// The immediate bash eval is AWAITED: register blocks up to the bash budget
+			// (default 5 s — documented on the tool) so the receipt names the real outcome;
+			// the turn's abort signal kills the child (M3).
+			const serialized = serializeBashSnapshot(snapshot);
+			if (serialized.kind === "error") {
+				errorMonitor(record, serialized.reason);
+				return textResult(`Monitor ${record.id} error at registration — disarmed: ${serialized.reason}`, {
+					...echo,
+					state: "error",
+					reason: serialized.reason,
+				});
+			}
+			const settled = await settleBashEvaluation(record, serialized.json, snapshot, signal);
+			if (settled.settlement === "suppressed") {
+				// Shutdown/cancel raced the immediate eval — the monitor is gone; loud, no phantom receipt.
+				throw new Error(
+					`monitor ${record.id} was disarmed while its registration evaluation was still running ` +
+						`(session shutdown or cancel) — register again if still needed`,
+				);
+			}
+			if (settled.settlement === "fired") {
+				return textResult(
+					`Monitor ${record.id} fired immediately — its condition was already true; the monitor-event card follows.`,
+					{ ...echo, state: "fired", value: settled.value, firedAt: now() },
+				);
+			}
+			if (settled.settlement === "error") {
+				return textResult(`Monitor ${record.id} error at registration — disarmed: ${settled.reason}`, {
+					...echo,
+					state: "error",
+					reason: settled.reason,
+				});
+			}
+			return textResult(armedMessage, { ...echo, state: "armed" });
+		}
+		const outcome = evaluateMonitor({ name: displayName(record), predicate, armed: true }, snapshot);
 		if (outcome.action === "fire") {
 			fireMonitor(record, snapshot);
 			return textResult(
@@ -650,11 +846,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 				reason: outcome.reason,
 			});
 		}
-		return textResult(
-			`Monitor ${record.id} armed — evaluates on every delegation transition, fires once when the predicate first evaluates true. ` +
-				`Expires in ${formatMonitorLifetime(record.timeoutMs)} (at ${record.expiresAt}).`,
-			{ ...echo, state: "armed" },
-		);
+		return textResult(armedMessage, { ...echo, state: "armed" });
 	}
 
 	function listMonitors(ctx: unknown): ToolResult {
@@ -664,7 +856,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		const nowMs = now();
 		const lines = views.map(
 			(view) =>
-				`${view.id}${view.name !== undefined ? ` (${view.name})` : ""} — ${view.predicate} — ` +
+				`${view.id}${view.name !== undefined ? ` (${view.name})` : ""} [${view.predicateKind}] — ${view.predicate} — ` +
 				`armed ${formatMonitorLifetime(nowMs - view.armedAt)} ago, expires in ${formatMonitorLifetime(view.expiresAt - nowMs)}` +
 				`${view.interrupt ? ", interrupt" : ""}`,
 		);
@@ -695,6 +887,8 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			"list (armed monitors), cancel id (disarm one).",
 			"Optional name and timeoutMs (default 10 min, max 60 min — expiry delivers an expired card).",
 			"A throwing or non-primitive predicate is an error card and disarms the monitor.",
+			"With predicateKind 'bash' the predicate is a bash script, not a JS expression: it runs UNSANDBOXED as `bash -c` with your full user privileges — only register what your own agent wrote — reading the monitor snapshot JSON on stdin (never argv/env; env/cwd inherit), e.g. `grep -q '\"state\":\"completed\"'`. Exit 0 fires (trimmed stdout, ≤1 KB, is the fire value; empty means true), exit 1 is idle, any other exit / signal death / 5 s timeout / spawn failure is an error card and disarms.",
+			"Registering or draining a bash monitor can block up to 5 s per evaluation; expiry, cancel and shutdown kill in-flight bash children. On Windows bash must be on PATH (Git Bash or WSL).",
 			"Prefer monitors or wait over polling delegations list — repeated polling is blocked.",
 		].join(" "),
 		parameters: MonitorParams,
@@ -737,6 +931,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		id: string;
 		name?: string;
 		predicate: string;
+		predicateKind: "js" | "bash";
 		interrupt: boolean;
 		armedAt: number;
 		expiresAt: number;
@@ -745,6 +940,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			id: record.id,
 			...(record.name !== undefined ? { name: record.name } : {}),
 			predicate: record.predicate,
+			predicateKind: record.predicateKind,
 			interrupt: record.interrupt,
 			armedAt: record.armedAt,
 			expiresAt: record.expiresAt,
@@ -757,6 +953,8 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		const record = armed.get(id);
 		if (!record) throw new Error(`no monitor ${id} — use monitor list for the active ids`);
 		armed.delete(id);
+		record.epoch += 1; // M1: invalidate in-flight bash evaluations before the async kill lands
+		killBashHandles(id);
 		clearTimer(record);
 		return record;
 	}
@@ -770,7 +968,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		return views
 			.map(
 				(view) =>
-					`${view.id}${view.name !== undefined ? ` (${view.name})` : ""} — ${excerpt(view.predicate)} — ` +
+					`${view.id}${view.name !== undefined ? ` (${view.name})` : ""} [${view.predicateKind}] — ${excerpt(view.predicate)} — ` +
 					`armed ${formatMonitorLifetime(nowMs - view.armedAt)} ago, time left ${formatMonitorLifetime(view.expiresAt - nowMs)}`,
 			)
 			.join("\n");
@@ -902,7 +1100,11 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			...(record.name !== undefined ? { name: record.name } : {}),
 			ageMs: Math.max(0, now() - record.armedAt),
 		}));
-		for (const record of armed.values()) clearTimer(record);
+		for (const record of armed.values()) {
+			clearTimer(record);
+			record.epoch += 1; // M1/S5: suppress late bash completions — kill alone is insufficient
+		}
+		killAllBashHandles(); // SIGTERM→grace→SIGKILL per child; grace timers clear on exit
 		armed.clear();
 		if (unsubscribeTransition) {
 			unsubscribeTransition();
