@@ -669,3 +669,38 @@ describe("(12) ask pure-function pins", () => {
 		expect(fallback).toEqual({ command: "pi", args: argv });
 	});
 });
+
+// ------------------------------------------------------------------ (13) QA majors: no-hits + skip counters
+
+describe("(13) /ask no-hits and skip counters", () => {
+	test("empty results+code => skipped no-hits, zero spawns", async () => {
+		clearRagEnv();
+		process.env["AI_BADGER_PROJECT_ID"] = "proj-ask-13";
+		const { pi, calls, spawnCalls } = installAsk({ results: [], code: [] });
+		const notes: Notify[] = [];
+		let result: unknown = "sentinel";
+		let threw = false;
+		try {
+			result = await fireAsk(pi, P1, "/tmp/ask-13", "sess-ask-13", notes);
+		} catch {
+			threw = true;
+		}
+		expect(threw).toBe(false);
+		expect(result).toBeUndefined();
+		expect(calls.filter((c) => c.tool === "memory_search")).toHaveLength(1);
+		expect(spawnCalls).toHaveLength(0);
+		expect(notes[notes.length - 1]!.message).toContain("no-hits");
+		expect(notes[notes.length - 1]!.type).toBe("info");
+	});
+
+	test("thin skip bumps skippedAsk in /rag status", async () => {
+		clearRagEnv();
+		process.env["AI_BADGER_PROJECT_ID"] = "proj-ask-13c";
+		const { pi } = installAsk({ results: MEM_HITS, code: CODE_HITS });
+		const notes: Notify[] = [];
+		await fireAsk(pi, "hi", "/tmp/ask-13c", "sess-ask-13c", notes);
+		const status = await ragStatus(pi, "/tmp/ask-13c", "sess-ask-13c");
+		expect(status).toContain("skippedAsk 1");
+		expect(status).toContain("too-short");
+	});
+});
