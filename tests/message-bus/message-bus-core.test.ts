@@ -62,16 +62,28 @@ describe("ack discipline", () => {
 		expect(isAck("acknowledged")).toBe(false);
 		expect(isAck("done")).toBe(false);
 	});
-	test("buildAckContent wraps original once", () => {
-		expect(buildAckContent(msg({ id: 1, content: "[t] starting: x" }))).toBe("ack: [t] starting: x");
+	test("buildAckContent returns a metadata-only stub, never the original body (F7 9cc29df overrides the old echo rule)", () => {
+		expect(buildAckContent(msg({ id: 1, content: "[t] starting: x" }))).toBe("ack: #1 — terminal, no reply expected");
 	});
 	test("buildAckContent refuses an ack (no reply to ack)", () => {
 		expect(buildAckContent(msg({ id: 2, content: "ack: [t] starting: x" }))).toBeUndefined();
 	});
-	test("buildAckContent caps long content", () => {
-		const long = "x".repeat(5000);
-		const ack = buildAckContent(msg({ id: 3, content: long }))!;
-		expect(ack.startsWith("ack: ")).toBe(true);
+	test("F7 ack stub: request-shaped original yields a metadata-only stub, never the body (owner addendum 9cc29df)", () => {
+		// F7 (owner addendum 9cc29df): ack #701 echoed the review request's
+		// full text and sibling 01a08098 read the echoed second-person
+		// imperative as a live request (#703). The ack must carry the id +
+		// terminal marker and zero body bytes.
+		const ack = buildAckContent(msg({ id: 701, content: "you authored commit abc — please reply with feedback on the proposal?" }))!;
+		expect(ack).toContain("#701");
+		expect(ack).toMatch(/terminal/);
+		expect(ack).not.toMatch(/please/i);
+		expect(ack).not.toMatch(/reply with/i);
+		expect(ack).not.toContain("?");
+		expect(ack).not.toContain("you authored");
+	});
+	test("buildAckContent stub is fixed-length, far under the wire cap (F7 9cc29df: no body bytes, so no cap needed)", () => {
+		const ack = buildAckContent(msg({ id: 3, content: "x".repeat(5000) }))!;
+		expect(ack).toBe("ack: #3 — terminal, no reply expected");
 		expect(ack.length).toBeLessThanOrEqual(2048);
 	});
 });

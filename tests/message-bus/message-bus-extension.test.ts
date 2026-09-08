@@ -82,6 +82,25 @@ async function callTool(pi: ReturnType<typeof createFakePi>, params: Record<stri
 }
 
 describe("tool send", () => {
+	test("registry-unreadable send logs via console.error, still succeeds without warning", async () => {
+		const pi = createFakePi();
+		const store = fakeStore();
+		(store as unknown as Record<string, unknown>).hasIdentity = () => {
+			throw new Error("registry locked");
+		};
+		makeExtension(pi as never, { store: store as never, projectId: () => "p1" });
+		const errors: unknown[] = [];
+		const orig = console.error;
+		console.error = (...a: unknown[]) => { errors.push(a); };
+		try {
+			const result = await callTool(pi, { action: "send", content: "hi", sessionId: "s-dead" });
+			expect((result.content[0] as { text: string }).text).toContain("sent");
+			expect(result.details).not.toHaveProperty("warning");
+		} finally {
+			console.error = orig;
+		}
+		expect(errors.length).toBeGreaterThan(0);
+	});
 	test("1:1 send normalizes session-wins", async () => {
 		const pi = createFakePi();
 		const store = fakeStore();
@@ -114,6 +133,30 @@ describe("tool send", () => {
 });
 
 describe("tool list", () => {
+	test("list survives getCursor failure with cursor 0 fallback (whoami parity)", async () => {
+		const pi = createFakePi();
+		const store = fakeStore([msg({ id: 1, targetSession: "s-me", content: "one" })]);
+		(store as unknown as Record<string, unknown>).getCursor = () => {
+			throw new Error("cursor locked");
+		};
+		makeExtension(pi as never, { store: store as never, projectId: () => "p1" });
+		const result = await callTool(pi, { action: "list" });
+		const text = (result.content[0] as { text: string }).text;
+		expect(text).toContain("direct");
+		expect(result.details).toMatchObject({ cursor: 0 });
+	});
+	test("default action error lists all six actions (send/list/check/ack/reply/whoami)", async () => {
+		const pi = createFakePi();
+		makeExtension(pi as never, { store: fakeStore() as never, projectId: () => "p1" });
+		let error = "";
+		try {
+			await callTool(pi, { action: "bogus" });
+		} catch (e) {
+			error = String(e);
+		}
+		expect(error).toContain("reply");
+		expect(error).toContain("whoami");
+	});
 	test("grouped text, no raw JSON", async () => {
 		const pi = createFakePi();
 		const store = fakeStore([msg({ id: 1, targetSession: "s-me", content: "one" }), msg({ id: 2, targetSession: null, targetProject: "p1", content: "two" })]);
@@ -133,7 +176,8 @@ describe("tool ack", () => {
 		makeExtension(pi as never, { store: store as never, projectId: () => "p1" });
 		const result = await callTool(pi, { action: "ack", id: 7 });
 		expect((result.content[0] as { text: string }).text).toContain("ack sent");
-		expect(store.sent[0]?.content).toBe("ack: [t] starting: x");
+		// F7 (owner addendum 9cc29df): ack is a metadata-only stub, never the original body.
+		expect(store.sent[0]?.content).toBe("ack: #7 — terminal, no reply expected");
 		expect(store.sent[0]?.targetProject).toBe("p1");
 	});
 
@@ -242,25 +286,37 @@ describe("startup direct gate", () => {
 		expect(pi.sent.length).toBe(0);
 	});
 
-	test("broadcasts only: silent, no summary and no card", async () => {
+	test("broadcasts only: user-only entry, no agent card (PKG-4 intentional change)", async () => {
+		// Reason (PKG-4/P4): the startup cursor lands past MAX(id), so broadcasts
+		// predating the session were ALWAYS consumed — the old silence made that
+		// invisible (F5). The entry is user-only (appendEntry, never LLM context),
+		// with no card and no turn. A store reporting no counts keeps the old
+		// silence — unknown, never zero (see startup-counts fallback test).
 		const pi = createFakePi();
-		makeExtension(
-			pi as never,
-			{
-				store: fakeStore([
-					msg({ id: 6, targetSession: null, targetProject: "p1", content: "project noise" }),
-					msg({ id: 7, targetSession: null, targetProject: null, content: "machine noise" }),
-				]) as never,
-				projectId: () => "p1",
-			},
-		);
+		const store = fakeStore([
+			msg({ id: 6, targetSession: null, targetProject: "p1", content: "project noise" }),
+			msg({ id: 7, targetSession: null, targetProject: null, content: "machine noise" }),
+		]);
+		(store as unknown as Record<string, unknown>).deliverDirectForSession = () => ({ messages: [], cursor: 7, droppedDirects: 0, droppedBroadcasts: 2 });
+		makeExtension(pi as never, { store: store as never, projectId: () => "p1" });
 		await fire(pi, "session_start", {}, confirmCtx(true));
-		expect(pi.entries.length).toBe(0);
+		const summaries = pi.entries.filter((e) => e.customType === MESSAGE_BUS_START_ENTRY_TYPE);
+		expect(summaries.length).toBe(1);
+		expect(String((summaries[0]!.data as { text: string }).text)).toContain("0 older directs and 2 broadcasts");
 		expect(pi.sent.length).toBe(0);
 	});
 });
 
 describe("command", () => {
+	test("/messages list first line is the identity header (tool list parity)", async () => {
+		const pi = createFakePi();
+		makeExtension(pi as never, { store: fakeStore([msg({ id: 1, targetSession: "s-me" })]) as never, projectId: () => "p1" });
+		const cmd = pi.commands.get("messages") as unknown as { handler: (args: string, ctx: unknown) => Promise<void> };
+		let notified = "";
+		await cmd.handler("list", { ...ctx(), ui: { notify: (m: string) => { notified = m; } } });
+		expect(notified.split("\n")[0]).toContain("s-me".slice(0, 8));
+		expect(notified).toContain("direct");
+	});
 	test("/messages list notifies grouped text", async () => {
 		const pi = createFakePi();
 		makeExtension(pi as never, { store: fakeStore([msg({ id: 1, targetSession: "s-me" })]) as never, projectId: () => "p1" });
@@ -277,6 +333,42 @@ describe("command", () => {
 		let notified = "";
 		await cmd.handler("bogus", { ...ctx(), ui: { notify: (m: string) => { notified = m; } } });
 		expect(notified).toMatch(/usage/);
+	});
+
+	test("send-to with $(x) rejects zero-inserts (P3 shape gate parity)", async () => {
+		const pi = createFakePi();
+		const store = fakeStore();
+		makeExtension(pi as never, { store: store as never, projectId: () => "p1" });
+		const cmd = pi.commands.get("messages") as unknown as { handler: (args: string, ctx: unknown) => Promise<void> };
+		let notified = "";
+		await cmd.handler("send-to $(x) hello", { ...ctx(), ui: { notify: (m: string) => { notified = m; } } });
+		expect(notified).toMatch(/invalid|shape|reject/i);
+		expect(store.sent.length).toBe(0);
+	});
+
+	test("send-to self warns (never deliverable, success + warning)", async () => {
+		const pi = createFakePi();
+		const store = fakeStore();
+		makeExtension(pi as never, { store: store as never, projectId: () => "p1" });
+		const cmd = pi.commands.get("messages") as unknown as { handler: (args: string, ctx: unknown) => Promise<void> };
+		let notified = "";
+		await cmd.handler("send-to s-me hello self", { ...ctx(), ui: { notify: (m: string) => { notified = m; } } });
+		expect(notified).toContain("sent");
+		expect(notified).toContain("never deliverable");
+		expect(store.sent.length).toBe(1);
+	});
+
+	test("send-to unknown warns (success + warning, still sends)", async () => {
+		const pi = createFakePi();
+		const store = fakeStore();
+		(store as unknown as Record<string, unknown>).hasIdentity = (id: string) => id === "s-me";
+		makeExtension(pi as never, { store: store as never, projectId: () => "p1" });
+		const cmd = pi.commands.get("messages") as unknown as { handler: (args: string, ctx: unknown) => Promise<void> };
+		let notified = "";
+		await cmd.handler("send-to s-dead hello there", { ...ctx(), ui: { notify: (m: string) => { notified = m; } } });
+		expect(notified).toContain("sent");
+		expect(notified).toContain("never seen on this machine");
+		expect(store.sent.length).toBe(1);
 	});
 });
 

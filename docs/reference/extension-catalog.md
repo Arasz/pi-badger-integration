@@ -97,6 +97,14 @@ directory), so `delegations log d-N` stays unambiguous across restarts. One docu
 limitation: `/tree` navigation away from the delegating branch hides that branch's
 receipts — the log directory remains the way to find those runs.
 
+Delegation-skip guard: a `tool_call` listener matches bash commands that spawn `pi`
+directly (command-position pattern with env/sudo/nohup/npx/timeout/path prefixes;
+15/15 must-detect, 20/20 must-not including `pip`, `publish.ts`, and the `nohup`
+gates) and notifies `spawning pi directly — prefer delegate` plus an append-only
+record. Advisory only — it never blocks the call and fails open; kill switch
+`PI_BADGER_DELEGATION_SKIP_GUARD=0`. Spawning through wrappers (`sh -c`, `pnpm dlx`)
+is a known silent gap.
+
 
 ## The monitor extension: predicate wake-ups
 
@@ -204,19 +212,36 @@ as a project broadcast, never reply to an ack, only ack what is in your inbox).
 
 - `send content` (+`sessionId` for 1:1, +`projectId` for project broadcast,
   neither for machine broadcast; session wins over project at write, blanks
-  read as unset). Sender identity is mandatory: the session manager's id plus
+  read as unset). Direct ids pass a shape gate (whitespace/`$(`/backtick/newline
+  reject pre-insert — the #672 class); sends to an unknown session id or to self
+  succeed with a warning in the result (`never seen on this machine` /
+  `never deliverable`), never a block. `/messages send-to` shares the same gate.
+  Sender identity is mandatory: the session manager's id plus
   the nearest `.ai-badger/project-id` above the session cwd
   (`AI_BADGER_PROJECT_ID` wins).
 - `list` renders the inbox grouped by scope — direct (1:1), project
   broadcast, machine broadcast — last 3 per group, rows marked received (✓)
-  or new (●). Never raw JSON; the same text backs the delivery card
+  or new (●). Every `list`/`check`/`whoami` output opens with a
+  `you are <sid8> in project <pid8>` identity line so announcements carry wire
+  truth. Never raw JSON; the same text backs the delivery card
   (`message-bus-event` via `registerMessageRenderer`).
 - `check` delivers new mail now (cursor advances exactly-once; first read has
   the 30-minute gate + 16-cap and lands past `MAX(id)`).
-- `ack id` sends `ack: <original>` once as a project broadcast; acking an ack
-  or a message outside your inbox refuses.
-- Hooks on `session_start` (wakes with a card when mail is waiting) and
-  `turn_start` (quiet context for the starting turn). The idle-session wake
+- `reply id content` answers the original's sender as a direct message — never
+  copy a session id from message content. Refuses the session's own sends,
+  acks, and unknown ids.
+- `whoami` returns the wire identity (session id, project id, cursor) through
+  the same seams; fail-open to identity-without-cursor on a broken backend.
+- `ack id` sends a stub (`ack: #<id> — terminal, no reply expected`) once as a
+  project broadcast — never the original body (F7: echoed bodies read as live
+  requests). Acking an ack or a message outside your inbox refuses.
+- Hooks on `session_start` (directs only behind a user confirm gate; the summary
+  is user-only via `appendEntry`, never LLM context) and
+  `turn_start` (quiet context for the starting turn). The startup summary states
+  what was silently consumed (`n older directs and m broadcasts`, window/cap causes);
+  broadcasts-only startups append the user-only entry with no agent card. `session_start`
+  also upserts the session into `bus_identities` (fail-open, never creates a missing DB).
+  The idle-session wake
   stays with the adapter's poll timer — these hooks never arm their own.
   `PI_BADGER_MESSAGE_BUS=0` disables the hooks; tools stay. Every backend
   failure is fail-open: an error result, a command notify, or a silent hook
