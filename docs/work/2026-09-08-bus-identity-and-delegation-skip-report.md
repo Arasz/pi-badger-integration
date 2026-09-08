@@ -99,6 +99,17 @@ in-session work), not via agents hiding work in bash; the "pi in background via 
 is the delegation runner's own child process or nohup'd shell gates. A specific recent change is
 not implicated — the fallback language and the persona-pin failure mode both predate this week.
 
+### F7 — Ack bodies echo the original's full text and read as live requests · MEASURED (post-report addendum)
+
+The ack of the implementation task's review request (#701, a project broadcast) carried the
+original request text after an `ack: ` prefix (`buildAckContent`, `message-bus-core.ts:79-85` —
+truncation is a char cap, not a title). Project sibling 01a08098 consumed it (cursor=701 at
+14:50:30.44Z) and within the same second sent a decline direct (#703): the echoed second-person
+text ("you authored … please reply with feedback") reads like a live, addressed request to any
+sibling without the sender's context. One wasted turn here; the same shape could make a sibling
+act on an echoed work-request. Protocol note: "never reply to an ack" assumed acks are
+recognizable — the wire format does not guarantee it.
+
 ---
 
 ## Part 2 — Plan (implementation, this repo)
@@ -115,8 +126,10 @@ F6 (skip visibility). Ordered; each item is independently shippable and test-fir
 - `index.ts`: new `reply` action — `reply` + `id` + `content`; refuses when the original is the
   session's own send; result names the resolved target id explicitly (`replied to #N from <sid8>`).
 - Tool description gains the rule: **"never copy a session id from message content — reply by id"**.
-- Tests: reply targets the original sender (direct); reply to own message refused; reply to
-  unknown id errors; ack path untouched.
+- Ack body becomes a stub (F7): `ack: #<id> (<title prefix>) — terminal, no reply expected`,
+  never the original body. Tests: reply targets the original sender (direct); reply to own
+  message refused; reply to unknown id errors; ack stub contains no request-shaped second-person
+  body; ack path otherwise untouched.
 
 ### P2 — Identity surfacing: the agent must be able to know who it is (completes F2)
 
