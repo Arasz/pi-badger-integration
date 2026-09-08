@@ -99,11 +99,14 @@ receipts — the log directory remains the way to find those runs.
 
 Delegation-skip guard: a `tool_call` listener matches bash commands that spawn `pi`
 directly (command-position pattern with env/sudo/nohup/npx/timeout/path prefixes;
-15/15 must-detect, 20/20 must-not including `pip`, `publish.ts`, and the `nohup`
-gates) and notifies `spawning pi directly — prefer delegate` plus an append-only
-record. Advisory only — it never blocks the call and fails open; kill switch
-`PI_BADGER_DELEGATION_SKIP_GUARD=0`. Spawning through wrappers (`sh -c`, `pnpm dlx`)
-is a known silent gap.
+13/13 prompt-like must-block, 9/9 help/version must-allow including `pip`,
+`publish.ts`, and the `nohup` gates) and returns `{ block: true }` with
+`spawning pi directly is blocked — use delegate instead` plus an append-only
+record. Help/version reads (`pi --help`, `-h`, `--version`, `-v`, including
+`pi <subcommand> --help`) stay silent — documentation, not delegation skips.
+Blocking with fail-open on predicate crash (a record failure still blocks);
+kill switch `PI_BADGER_DELEGATION_SKIP_GUARD=0`. Spawning through wrappers
+(`sh -c`, `pnpm dlx`) is a known silent gap.
 
 
 ## The monitor extension: predicate wake-ups

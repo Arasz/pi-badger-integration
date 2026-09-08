@@ -1,9 +1,9 @@
 /**
- * Wiring + decision tests for the P5 delegation-skip advisory guard (PKG-5 P5):
- * bash/powershell commands that spawn `pi` directly notify "prefer `delegate`"
- * (advisory only — the tool call always proceeds) and record a `delegation-skip`
- * entry. Never blocks, never throws: a throwing tool_call handler BLOCKS the call
- * in pi core (beforeToolCall rethrows), so notify+record sit inside try/catch.
+ * Wiring + decision tests for the P5 delegation-skip BLOCKING guard (PKG-5 P5,
+ * f: 2026-09-08 — advisory gave us nothing, so prompt-like `pi` spawns block):
+ * bash/powershell commands that spawn `pi` directly return `{ block: true }`
+ * with "use `delegate` instead" and record a `delegation-skip` entry.
+ * Help/version reads (`pi --help`, `-h`, `--version`, `-v`) stay silent.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
@@ -11,9 +11,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  isBenignPiSpawn,
   PI_SPAWN_COMMAND,
   piSpawnDecision,
   registerDelegationSkipGuard,
+  SKIP_BLOCK_MESSAGE,
 } from "../../extensions/subagent/delegation-skip-guard.ts";
 import subagentFactory from "../../extensions/subagent/index.ts";
 import { createFakePi, type FakePi } from "../helpers/fake-pi.ts";
@@ -62,8 +64,6 @@ let toolCallSeq = 0;
 
 /**
  * Dispatch one tool_call through every registered handler; collect every result.
- * The real dispatch runs every handler until one blocks — collecting all results
- * lets D-S3 assert no `{ block: true }` appears anywhere.
  */
 function fireToolCall(
   pi: FakePi,
@@ -80,11 +80,11 @@ function entriesOf(pi: FakePi, customType: string): Array<{ customType: string; 
   return pi.entries.filter((entry) => entry.customType === customType);
 }
 
-// ------------------------------------------------------------------ spike §AC2 matrix, verbatim
+// ------------------------------------------------------------------ matrices
 
-const MUST_DETECT = [
+/** Prompt-like spawns: must BLOCK (original spike §AC2 minus the two --help rows). */
+const MUST_BLOCK = [
   "pi run --task 'x'",
-  "pi --help",
   "pi",
   "nohup pi run --task hi &",
   "nohup pi &",
@@ -92,12 +92,24 @@ const MUST_DETECT = [
   "VAR=x pi run",
   "npx pi run --task x",
   "./pi run",
-  "/usr/local/bin/pi --help",
   "sudo pi run",
   "if true; then pi run; fi",
   "$(pi run)",
   "timeout 60 pi run --task x",
   "FOO=1\npi run",
+];
+
+/** Help/version reads: documentation, never delegation skips — must stay silent. */
+const MUST_ALLOW_HELP = [
+  "pi --help",
+  "/usr/local/bin/pi --help",
+  "pi -h",
+  "pi --version",
+  "pi -v",
+  "npx pi --help",
+  "sudo pi --version",
+  "./pi --help",
+  "pi list --help",
 ];
 
 const MUST_NOT_FIRE = [
@@ -126,11 +138,19 @@ const MUST_NOT_FIRE = [
 
 // ------------------------------------------------------------------ rows
 
-describe("delegation-skip guard matrix (spike §AC2: 15/15 notify, 20/20 silent)", () => {
-  test("matrix positives: every MUST-detect command decides notify", () => {
-    expect(MUST_DETECT).toHaveLength(15);
-    for (const command of MUST_DETECT) {
-      expect(piSpawnDecision(command), command).toEqual({ action: "notify" });
+describe("delegation-skip guard matrix (blocking: 13/13 block, help/version + 20/20 silent)", () => {
+  test("matrix positives: every MUST-block command decides block with the delegate reason", () => {
+    expect(MUST_BLOCK).toHaveLength(13);
+    for (const command of MUST_BLOCK) {
+      expect(piSpawnDecision(command), command).toEqual({ action: "block", reason: SKIP_BLOCK_MESSAGE });
+    }
+  });
+
+  test("matrix help/version: every help/version read decides silent", () => {
+    expect(MUST_ALLOW_HELP.length).toBeGreaterThan(0);
+    for (const command of MUST_ALLOW_HELP) {
+      expect(piSpawnDecision(command), command).toEqual({ action: "silent" });
+      expect(isBenignPiSpawn(command), command).toBe(true);
     }
   });
 
@@ -141,6 +161,14 @@ describe("delegation-skip guard matrix (spike §AC2: 15/15 notify, 20/20 silent)
     }
   });
 
+  test("benign scope is pi-scoped: flags on other commands do not exempt a pi prompt run", () => {
+    // --help belongs to echo, not pi → still blocks.
+    expect(piSpawnDecision("echo --help; pi run --task x")).toEqual({ action: "block", reason: SKIP_BLOCK_MESSAGE });
+    expect(piSpawnDecision("pi run --task x; echo --help")).toEqual({ action: "block", reason: SKIP_BLOCK_MESSAGE });
+    // Mixed: one benign pi read + one prompt run → still blocks.
+    expect(piSpawnDecision("pi --help; pi run --task x")).toEqual({ action: "block", reason: SKIP_BLOCK_MESSAGE });
+  });
+
   test("empty/undefined commands are silent, and the predicate is stateless across calls", () => {
     expect(piSpawnDecision(undefined)).toEqual({ action: "silent" });
     expect(piSpawnDecision("")).toEqual({ action: "silent" });
@@ -148,45 +176,53 @@ describe("delegation-skip guard matrix (spike §AC2: 15/15 notify, 20/20 silent)
     // No /g/ flag: repeated tests of the same command must agree.
     expect(PI_SPAWN_COMMAND.flags).not.toContain("g");
     for (let i = 0; i < 3; i += 1) {
-      expect(piSpawnDecision("pi run --task x")).toEqual({ action: "notify" });
+      expect(piSpawnDecision("pi run --task x")).toEqual({ action: "block", reason: SKIP_BLOCK_MESSAGE });
     }
   });
 });
 
-describe("D-S1: positives notify + record + return undefined", () => {
-  for (const command of ["pi run --task x", "nohup pi run --task hi &", "/usr/local/bin/pi --help", "npx pi run --task x"]) {
-    test(`advisory fires on \`${command}\``, () => {
+describe("D-S1: positives block + record", () => {
+  for (const command of ["pi run --task x", "nohup pi run --task hi &", "pi", "npx pi run --task x"]) {
+    test(`block fires on \`${command}\``, () => {
       const { pi, notified, ctxFor } = makeHarness();
 
       const results = fireToolCall(pi, "bash", { command }, ctxFor());
 
       expect(results).toHaveLength(1);
-      expect(results[0]).toBeUndefined();
-      expect(notified).toHaveLength(1);
-      expect(notified[0]!.message).toContain("prefer `delegate`");
-      expect(notified[0]!.level).toBe("warning");
+      expect(results[0]).toEqual({ block: true, reason: SKIP_BLOCK_MESSAGE });
+      // The block reason is the surface (monitor precedent) — no separate ui.notify.
+      expect(notified).toHaveLength(0);
       const recorded = entriesOf(pi, "delegation-skip");
       expect(recorded).toHaveLength(1);
-      expect(recorded[0]!.data).toMatchObject({ command });
+      expect(recorded[0]!.data).toMatchObject({ command, blocked: true });
     });
   }
+
+  test("help/version reads stay silent (no block, no record)", () => {
+    const { pi, notified, ctxFor } = makeHarness();
+    for (const command of ["pi --help", "pi --version", "/usr/local/bin/pi --help", "pi -h"]) {
+      const results = fireToolCall(pi, "bash", { command }, ctxFor());
+      expect(results, command).toEqual([undefined]);
+    }
+    expect(notified).toHaveLength(0);
+    expect(entriesOf(pi, "delegation-skip")).toHaveLength(0);
+  });
 });
 
-describe("D-S1b: powershell parity + headless record-without-notify", () => {
-  test("powershell pi spawn notifies + records (bash parity)", () => {
+describe("D-S1b: powershell parity + headless blocks too", () => {
+  test("powershell pi spawn blocks + records (bash parity)", () => {
     const { pi, notified, ctxFor } = makeHarness();
     const results = fireToolCall(pi, "powershell", { command: "pi run --task x" }, ctxFor());
-    expect(results).toEqual([undefined]);
-    expect(notified).toHaveLength(1);
-    expect(notified[0]!.message).toContain("prefer `delegate`");
+    expect(results).toEqual([{ block: true, reason: SKIP_BLOCK_MESSAGE }]);
+    expect(notified).toHaveLength(0);
     expect(entriesOf(pi, "delegation-skip")).toHaveLength(1);
   });
-  test("hasUI:false records without notify (headless parity)", () => {
+  test("hasUI:false still blocks + records (headless parity)", () => {
     const { pi, notified, ctxFor } = makeHarness();
     const ctx = ctxFor();
     ctx.hasUI = false;
     const results = fireToolCall(pi, "bash", { command: "pi run --task x" }, ctx);
-    expect(results).toEqual([undefined]);
+    expect(results).toEqual([{ block: true, reason: SKIP_BLOCK_MESSAGE }]);
     expect(notified).toHaveLength(0);
     expect(entriesOf(pi, "delegation-skip")).toHaveLength(1);
   });
@@ -215,18 +251,6 @@ describe("D-S2: near-miss negatives stay silent", () => {
       expect(entriesOf(pi, "delegation-skip")).toHaveLength(0);
     });
   }
-});
-
-describe("D-S3: the firing path is advisory-only (no block anywhere)", () => {
-  test("a detected spawn returns undefined from every handler — the tool still runs", () => {
-    const { pi, notified, ctxFor } = makeHarness();
-
-    const results = fireToolCall(pi, "bash", { command: "pi run --task x" }, ctxFor());
-
-    expect(results.every((result) => result === undefined)).toBe(true);
-    expect(results.some((result) => (result as { block?: boolean } | undefined)?.block === true)).toBe(false);
-    expect(notified).toHaveLength(1); // the advisory still fired
-  });
 });
 
 describe("D-S4: non-shell tools and non-string commands never reach the predicate", () => {
@@ -259,20 +283,16 @@ describe("D-S4: non-shell tools and non-string commands never reach the predicat
   });
 });
 
-describe("D-S5: recorder/notify failure fails open", () => {
-  test("throwing notify AND throwing appendEntry still return undefined — the tool proceeds", () => {
+describe("D-S5: recorder failure still blocks; predicate crash fails open; kill switch silences", () => {
+  test("throwing appendEntry still blocks — the block is intentional, the record is audit", () => {
     const { pi, ctxFor } = makeHarness();
-    const ctx = ctxFor();
-    ctx.ui.notify = () => {
-      throw new Error("ui gone");
-    };
     pi.appendEntry = () => {
       throw new Error("store gone");
     };
 
-    const results = fireToolCall(pi, "bash", { command: "pi run --task x" }, ctx);
+    const results = fireToolCall(pi, "bash", { command: "pi run --task x" }, ctxFor());
 
-    expect(results).toEqual([undefined]);
+    expect(results).toEqual([{ block: true, reason: SKIP_BLOCK_MESSAGE }]);
   });
 
   test("kill switch PI_BADGER_DELEGATION_SKIP_GUARD=0 silences a detected spawn", () => {
@@ -288,7 +308,7 @@ describe("D-S5: recorder/notify failure fails open", () => {
 });
 
 describe("registration: the guard fires through the real subagent factory", () => {
-  test("factory-wired guard notifies + records on a bash pi spawn, undefined on both paths", () => {
+  test("factory-wired guard blocks a bash pi spawn, silent on pip and pi --help", () => {
     const pi = createFakePi();
     const notified: Array<{ message: string; level?: string }> = [];
     const logDir = mkdtempSync(join(tmpdir(), "delegation-skip-guard-"));
@@ -313,19 +333,26 @@ describe("registration: the guard fires through the real subagent factory", () =
           handler({ type: "tool_call", toolCallId: "tc-factory-1", toolName: "bash", input: { command: "pi run --task x" } }, ctx),
         );
       }
-      expect(fired.every((result) => result === undefined)).toBe(true);
-      expect(notified.some(({ message }) => message.includes("prefer `delegate`"))).toBe(true);
+      expect(fired.some((result) => (result as { block?: boolean } | undefined)?.block === true)).toBe(true);
       expect(entriesOf(pi, "delegation-skip")).toHaveLength(1);
 
-      notified.length = 0;
       const silent: Array<unknown> = [];
       for (const handler of pi.handlers.get("tool_call") ?? []) {
         silent.push(
           handler({ type: "tool_call", toolCallId: "tc-factory-2", toolName: "bash", input: { command: "pip install pi" } }, ctx),
         );
       }
+      // pip is silent from THIS guard; other guards (monitor) also return undefined for it.
       expect(silent.every((result) => result === undefined)).toBe(true);
-      expect(notified).toHaveLength(0);
+      expect(entriesOf(pi, "delegation-skip")).toHaveLength(1);
+
+      const helpSilent: Array<unknown> = [];
+      for (const handler of pi.handlers.get("tool_call") ?? []) {
+        helpSilent.push(
+          handler({ type: "tool_call", toolCallId: "tc-factory-3", toolName: "bash", input: { command: "pi --help" } }, ctx),
+        );
+      }
+      expect(helpSilent.every((result) => result === undefined)).toBe(true);
       expect(entriesOf(pi, "delegation-skip")).toHaveLength(1);
     } finally {
       rmSync(logDir, { recursive: true, force: true });
