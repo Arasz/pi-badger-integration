@@ -481,6 +481,8 @@ export interface ReceiptDetails {
   queuePosition?: number;
   toolCallId: string;
   logFile?: string;
+  /** The delegating session's id (from sessionManager at execute time) — omitted when unavailable. */
+  sessionId?: string;
   /** PKG-5: the G-6 explicit-wins sentence, when an explicit model overrode a valid level. */
   levelOverride?: string;
 }
@@ -492,6 +494,8 @@ export interface BlockingDetails {
   agentsDir: string;
   errors: string[];
   usage?: DelegationUsage;
+  /** The delegating session's id (from sessionManager at execute time) — omitted when unavailable. */
+  sessionId?: string;
   /** PKG-5: the G-6 explicit-wins sentence, when an explicit model overrode a valid level. */
   levelOverride?: string;
 }
@@ -1219,7 +1223,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   // ------------------------------------------------------------------ result builders
 
   /** Row 45 / T68 (§4): the receipt — running and queued variants, details { id, agent, state,
-   * queuePosition?, toolCallId, logFile? }.
+   * queuePosition?, toolCallId, logFile?, sessionId? }.
    *
    * PKG-5: when an explicit model overrode a valid level, the override sentence rides
    * details.levelOverride (read, not consumed — deliverNote consumes it at settle). */
@@ -1242,6 +1246,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         ...(record.queuePosition !== undefined ? { queuePosition: record.queuePosition } : {}),
         toolCallId,
         ...(record.logFile !== undefined ? { logFile: record.logFile } : {}),
+        ...(record.sessionId !== undefined ? { sessionId: record.sessionId } : {}),
         ...(override !== undefined ? { levelOverride: override } : {}),
       } satisfies ReceiptDetails,
     };
@@ -1271,6 +1276,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     notes.delete(id);
 
     const body = blockingContent(record, note, context.personaName);
+    const sessionId = record.sessionId ?? note?.sessionId;
     return {
       content: text(body),
       details: {
@@ -1279,6 +1285,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         agentsDir: context.agentsDir,
         errors: context.errors,
         ...(record.usage !== undefined ? { usage: record.usage } : {}),
+        ...(sessionId !== undefined ? { sessionId } : {}),
         // PKG-5: the merged note carries the G-6 override sentence when one was recorded.
         ...(note?.levelOverride !== undefined ? { levelOverride: note.levelOverride } : {}),
       } satisfies BlockingDetails,

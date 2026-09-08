@@ -414,6 +414,44 @@ describe("row 45 — tool result while running says running (receipt with id/too
   });
 });
 
+describe("delegation returns session-id", () => {
+  test("receipt details carry the delegating session id", async () => {
+    h = makeHarness();
+    const result = await callDelegate({ agent: "architect", task: "t" }, makeCtx(), undefined, "call-42");
+
+    expect(result.details.sessionId).toBe("sess-test");
+  });
+
+  test("queued receipt details carry the delegating session id", async () => {
+    h = makeHarness("tui", { cap: 1 });
+    await callDelegate({ agent: "architect", task: "first" }, makeCtx(), undefined, "call-1");
+    const second = await callDelegate({ agent: "architect", task: "second" }, makeCtx(), undefined, "call-2");
+
+    expect(second.details.state).toBe("queued");
+    expect(second.details.sessionId).toBe("sess-test");
+  });
+
+  test("blocking details carry the delegating session id", async () => {
+    h = makeHarness();
+    const pending = callDelegate({ agent: "architect", task: "t" }, makeCtx("print"));
+    h.children[0]!.write(`${SESSION_LINE}\n`);
+    h.children[0]!.write(`${assistantEnd("the plan, done")}\n`);
+    h.children[0]!.exit(0);
+    const result = await pending;
+
+    expect(result.details.exitCode).toBe(0);
+    expect(result.details.sessionId).toBe("sess-test");
+  });
+
+  test("session-id omitted when the session manager is unavailable", async () => {
+    h = makeHarness();
+    const ctx = { ...(makeCtx() as Record<string, unknown>), sessionManager: undefined };
+    const result = await callDelegate({ agent: "architect", task: "t" }, ctx, undefined, "call-42");
+
+    expect("sessionId" in result.details).toBe(false);
+  });
+});
+
 describe("T68 — receipt queued variant", () => {
   test("cap full → receipt says queued (position N), not started", async () => {
     h = makeHarness("tui", { cap: 1 });
