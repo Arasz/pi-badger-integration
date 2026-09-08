@@ -9,6 +9,9 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import monitor from "../../extensions/monitor/index.ts";
 import { TRANSITION_CHANNEL } from "../../extensions/subagent/index.ts";
@@ -56,6 +59,13 @@ describe("bash compile gate", () => {
 		const result = await compileBashPredicate(`# ${"x".repeat(BASH_PREDICATE_MAX_CHARS)}`);
 		expect(result.kind).toBe("syntax-error");
 		if (result.kind === "syntax-error") expect(result.reason).toMatch(/4096|cap/i);
+	});
+
+	test("exactly-at-cap input passes the gate (cap is >, not >=)", async () => {
+		// Minor-6: `# ` is 2 chars, so MAX-2 filler lands exactly on BASH_PREDICATE_MAX_CHARS.
+		await expect(compileBashPredicate(`# ${"x".repeat(BASH_PREDICATE_MAX_CHARS - 2)}`)).resolves.toEqual({
+			kind: "ok",
+		});
 	});
 
 	test("a missing bash executable rejects loud with guidance, never a crash", async () => {
@@ -136,6 +146,36 @@ describe("bash timeout, escalation and orphans", () => {
 		expect(bashPendingTimerCount()).toBe(0);
 	});
 
+	test("timeout kill reaps the whole process group — no orphaned grandchildren (major-3)", async () => {
+		// The sleep GRANDCHILD shares bash's group: own-pid ESRCH alone cannot prove it died
+		// (a child.kill-only fallback kills bash while sleep leaks reparented). Track the
+		// grandchild via a pid file and assert IT is unrecyclable after the kill.
+		if (process.platform === "win32") return; // POSIX process groups only
+		const dir = mkdtempSync(join(tmpdir(), "monitor-orphan-"));
+		const pidFile = join(dir, "sleeper.pid");
+		try {
+			const handle = startBashPredicate(`sleep 30 & echo $! > '${pidFile}'; wait`, `{}`, {
+				timeoutMs: 50,
+				graceMs: 50,
+			});
+			const outcome = await handle.done;
+			expect(outcome.kind).toBe("error");
+			const sleeperPid = Number(readFileSync(pidFile, "utf8").trim());
+			expect(Number.isInteger(sleeperPid) && sleeperPid > 0).toBe(true);
+			let esrch = false;
+			try {
+				process.kill(sleeperPid, 0);
+			} catch (err) {
+				esrch = (err as NodeJS.ErrnoException).code === "ESRCH";
+			}
+			expect(esrch).toBe(true); // grandchild reaped by the group kill
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+		expect(bashInFlightCount()).toBe(0);
+		expect(bashPendingTimerCount()).toBe(0);
+	});
+
 	test("kill() escalates SIGTERM→SIGKILL and resolves the error outcome", async () => {
 		const handle = startBashPredicate(`sleep 30; exit 0`, `{}`, { timeoutMs: 5000, graceMs: 50 });
 		await sleep(50); // let the child exec before killing
@@ -143,6 +183,26 @@ describe("bash timeout, escalation and orphans", () => {
 		const outcome = await handle.done;
 		expect(outcome.kind).toBe("error");
 		if (outcome.kind === "error") expect(outcome.reason).toMatch(/SIGTERM|SIGKILL|signal/i);
+		expect(bashInFlightCount()).toBe(0);
+	});
+
+	test("a TERM-ignoring child is escalated to SIGKILL (grace leg executes)", async () => {
+		// Blocker-1: `sleep 30` dies on SIGTERM, so the plain kill test above never exercises
+		// the grace timer. `trap '' TERM` is inherited across exec — the whole group ignores
+		// TERM — so only the SIGKILL escalation can reap it. Deleting the grace leg turns this
+		// into a timeout error instead of SIGKILL.
+		const handle = startBashPredicate(`trap '' TERM; sleep 30; exit 0`, `{}`, {
+			timeoutMs: 5000,
+			graceMs: 50,
+		});
+		await sleep(50); // let the child exec (and install the trap) before killing
+		handle.kill();
+		const outcome = await handle.done;
+		expect(outcome.kind).toBe("error");
+		if (outcome.kind === "error") expect(outcome.reason).toMatch(/SIGKILL/);
+		const child = handle.child;
+		expect(child).toBeDefined();
+		expect(child!.signalCode).toBe("SIGKILL");
 		expect(bashInFlightCount()).toBe(0);
 	});
 
@@ -222,6 +282,20 @@ describe("bash kill portability", () => {
 		const fakeChild = { pid: 4242, kill: (signal?: string): boolean => (kills.push(signal ?? ""), true) };
 		killChildProcess(fakeChild, "SIGTERM", "linux", (pid) => (group.push(pid), true));
 		expect(group).toEqual([-4242]);
+	});
+
+	test("a throwing group kill falls back to child.kill (minor-7)", () => {
+		const kills: string[] = [];
+		const fakeChild = { pid: 4242, kill: (signal?: string): boolean => (kills.push(signal ?? ""), true) };
+		killChildProcess(
+			fakeChild,
+			"SIGTERM",
+			"linux",
+			() => {
+				throw Object.assign(new Error("no such process"), { code: "ESRCH" });
+			},
+		);
+		expect(kills).toEqual(["SIGTERM"]);
 	});
 });
 
@@ -385,6 +459,13 @@ describe("M6: bash skips the JS gates entirely", () => {
 		const { pi } = makeBashHarness();
 		await expect(bashRegister(pi, { predicate: "exit 0", predicateKind: "zsh" })).rejects.toThrow(/predicateKind/);
 	});
+
+	test("an unknown predicateKind rejects before the cap check, even at full cap (minor-5)", async () => {
+		const { pi } = makeBashHarness();
+		for (let i = 1; i <= 8; i++) await bashRegister(pi, { predicate: "false", name: `wake-${i}` });
+		await expect(bashRegister(pi, { predicate: "exit 0", predicateKind: "zsh" })).rejects.toThrow(/predicateKind/);
+		await expect(bashRegister(pi, { predicate: "exit 0", predicateKind: "zsh" })).rejects.not.toThrow(/cap/);
+	});
 });
 
 // ------------------------------------------------------------------ M3: register async
@@ -470,6 +551,19 @@ describe("M8: bash value plumbing and predicateKind echo", () => {
 		expect(cards).toHaveLength(1);
 		expect(String(cards[0]!.message.content)).toMatch(/kaboom/);
 		expect(String((cards[0]!.message.details as Record<string, unknown>).reason)).toMatch(/4/);
+	});
+
+	test("an errored monitor stays disarmed — a follow-up transition sends nothing (blocker-2)", async () => {
+		// Fire-disarm is pinned elsewhere; error-disarm was not: without it an errored monitor
+		// would re-drain (error-card spam per transition). One error card, then silence.
+		const { pi } = makeBashHarness();
+		const receipt = await bashRegister(pi, { predicate: "echo kaboom >&2; exit 4", predicateKind: "bash", name: "err" });
+		expect(receipt.details.state).toBe("error");
+		expect(sentMonitorEvents(pi)).toHaveLength(1); // the error card
+		pi.fireTransition(TRANSITION_CHANNEL, transition("d-9", "completed"));
+		await pause(300); // a re-drain would settle a fast child by now
+		expect(sentMonitorEvents(pi)).toHaveLength(1); // still just the error card
+		expect(bashInFlightCount()).toBe(0);
 	});
 
 	test("receipt, list and /monitors echo predicateKind; JS defaults to 'js'", async () => {
@@ -574,7 +668,7 @@ describe("expiry and shutdown lifecycle for bash children", () => {
 // ------------------------------------------------------------------ review fixes (SHOULD-1/2/3, MUST-2)
 
 describe("MUST-2: the wait-timer monitor is always JS — never a bash child", () => {
-	test("an idle-fleet wait arms a [js] wait-timer with zero bash children throughout", async () => {
+	test("an idle-fleet wait arms a [js] wait-timer (never a bash child)", async () => {
 		const { pi, scheduler } = makeBashHarness();
 		expect(bashInFlightCount()).toBe(0);
 		const pending = waitTool(pi)("tc-wait", {}, undefined, undefined, makeCtx());
