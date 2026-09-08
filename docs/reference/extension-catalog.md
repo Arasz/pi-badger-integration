@@ -122,7 +122,17 @@ evaluation — including at registration, when the condition already holds — r
 monitor and delivers one `monitor-event` follow-up (unbatched, wakes the agent). The
 predicate must evaluate to a primitive: a promise or object is an error card that disarms
 the monitor. At most 8 monitors are active (9th register rejects naming them); `list`
-shows them, `cancel <id>` disarms. A monitor with no `timeoutMs` expires after 10 minutes
+shows them (each row names its `predicateKind`), `cancel <id>` disarms. Register also accepts
+`predicateKind: "bash"` (default `"js"`). A bash predicate is a script, not an expression,
+and it runs unsandboxed as `bash -c` with your full user privileges, so only register what
+your own agent wrote. The monitor snapshot JSON arrives on stdin (never argv or env, while
+env and cwd inherit), e.g. `grep -q '"state":"completed"'`. Exit 0 fires and the trimmed
+stdout (capped at 1 KB) becomes the fire value, with empty output meaning true. Exit 1 is
+idle. Any other exit, signal death, timeout kill after 5 s or spawn failure delivers an
+`error` card and disarms. JS monitors evaluate synchronously inside the transition dispatch
+while bash monitors evaluate concurrently on one frozen per-drain snapshot, so a slow script
+never delays a JS card. Registering a bash monitor awaits its immediate evaluation (compile gate plus up to one evaluation budget, defaults ~2s + 5s); transition drains never block — bash evaluates concurrently on one frozen snapshot while JS cards send synchronously. Expiry, cancel and shutdown kill in-flight bash children and their late
+completions are suppressed, never delivered. On Windows bash must be on PATH (Git Bash or WSL). A monitor with no `timeoutMs` expires after 10 minutes
 (max 60): the expiry delivers an `expired` card and removes it. A throwing predicate
 delivers an `error` card once and is never retried. Outside the TUI every `monitor`
 action rejects loudly — there is no idle session to wake.
