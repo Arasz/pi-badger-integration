@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFakePi, type FakePi } from "../helpers/fake-pi.ts";
 import factory from "../../extensions/mem-based-rag/index.ts";
-import { ASK_CHILD_EXCLUDED_TOOLS, ASK_CHILD_TIMEOUT_MS } from "../../extensions/mem-based-rag/index.ts";
+import { ASK_CHILD_EXCLUDED_TOOLS, ASK_CHILD_TIMEOUT_MS, ASK_ANSWER_CAP_CHARS, askPiInvocation, capAskAnswer, parseAskAnswer } from "../../extensions/mem-based-rag/index.ts";
 import { CHILD_EXCLUDED_TOOLS } from "../../extensions/subagent/index.ts";
 
 // ------------------------------------------------------------------ env hygiene
@@ -607,5 +607,65 @@ describe("(10) mode off / env kill-switch", () => {
 		expect(calls).toHaveLength(0);
 		expect(spawnCalls).toHaveLength(0);
 		expect(notes[notes.length - 1]!.message).toMatch(/off/i);
+	});
+});
+
+// ------------------------------------------------------------------ (11) review SHOULD-1: stripped question
+
+describe("(11) /ask child prompt carries the stripped query", () => {
+	test("/skill:<id> <text> args => search query AND Question: both stripped", async () => {
+		clearRagEnv();
+		process.env["AI_BADGER_PROJECT_ID"] = "proj-ask-11";
+		const answer = "stripped-question answer";
+		const { pi, calls, spawnCalls } = installAsk({ results: MEM_HITS, code: CODE_HITS }, async () => ({
+			stdout: jsonlAnswer(answer),
+			stderr: "",
+			exitCode: 0,
+		}));
+		const notes: Notify[] = [];
+		const args = `/skill:task ${P1}`;
+		const result = await fireAsk(pi, args, "/tmp/ask-11", "sess-ask-11", notes);
+		expect(result).toBe(notes[notes.length - 1]!.message);
+		const searches = calls.filter((c) => c.tool === "memory_search");
+		expect(searches).toHaveLength(1);
+		expect((searches[0]!.args as Record<string, unknown>)["query"]).toBe(P1);
+		expect(spawnCalls).toHaveLength(1);
+		const prompt = String(spawnCalls[0]!.argv.slice(-8)[7] ?? "");
+		expect(prompt).toContain(`Question: ${P1}`);
+		expect(prompt).not.toContain("/skill:task");
+	});
+});
+
+// ------------------------------------------------------------------ (12) review SHOULD-2: pure-function pins
+
+describe("(12) ask pure-function pins", () => {
+	test("capAskAnswer: short text untouched, long text tail-capped with drop notice", () => {
+		expect(capAskAnswer("tiny", 100)).toBe("tiny");
+		expect(capAskAnswer("x".repeat(100), 100)).toBe("x".repeat(100));
+		const long = `head-${"y".repeat(200)}-tail`;
+		const capped = capAskAnswer(long, 50);
+		expect(capped.length).toBeLessThan(long.length);
+		expect(capped).toContain("earlier characters dropped");
+		expect(capped.endsWith(long.slice(-50))).toBe(true);
+		expect(ASK_ANSWER_CAP_CHARS).toBe(8 * 1024);
+	});
+
+	test("parseAskAnswer: flat {result|answer|text} + {event:{...}} shapes", () => {
+		expect(parseAskAnswer(`${JSON.stringify({ result: "flat result" })}\n`)).toBe("flat result");
+		expect(parseAskAnswer(`${JSON.stringify({ answer: "flat answer" })}\n`)).toBe("flat answer");
+		expect(parseAskAnswer(`${JSON.stringify({ text: "flat text" })}\n`)).toBe("flat text");
+		expect(parseAskAnswer(`${JSON.stringify({ event: { text: "wrapped text" } })}\n`)).toBe("wrapped text");
+		expect(parseAskAnswer(`${JSON.stringify({ event: { answer: "wrapped answer" } })}\n`)).toBe("wrapped answer");
+		// Non-JSON lines ignored, empty envelope yields "".
+		expect(parseAskAnswer("not json\n\n")).toBe("");
+		expect(parseAskAnswer("")).toBe("");
+	});
+
+	test("askPiInvocation: script-exists re-runs the runner, else pi on PATH", () => {
+		const argv = ["-p", "--", "q"];
+		const via = askPiInvocation(argv, { argv: ["node", "/tmp/pi-run.js"], execPath: "/usr/bin/node" }, () => true);
+		expect(via).toEqual({ command: "/usr/bin/node", args: ["/tmp/pi-run.js", ...argv] });
+		const fallback = askPiInvocation(argv, { argv: [], execPath: "/usr/bin/node" }, () => false);
+		expect(fallback).toEqual({ command: "pi", args: argv });
 	});
 });

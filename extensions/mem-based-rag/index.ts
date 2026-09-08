@@ -873,7 +873,7 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 				} else {
 					block = toMemoryContext(decision.query, mem, code, { snippetChars: config.snippetChars });
 				}
-				const augmented = `${block}\n\nQuestion: ${raw}`;
+				const augmented = `${block}\n\nQuestion: ${decision.query}`;
 				const childArgv = [
 					"-p",
 					"--mode",
@@ -911,6 +911,11 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 						lastAskReason = `ask failed (exit ${String(result.exitCode)})`;
 						const tail = result.stderr?.trim() ? ` ${result.stderr.trim().slice(0, 200)}` : "";
 						notify(`mem-based-rag /ask: failed (exit ${String(result.exitCode)}).${tail}`, "warning");
+						console.error("ai-badger mem-based-rag: /ask child failed —", {
+							exitCode: result.exitCode,
+							cwd: ctx.cwd,
+							stderr: result.stderr,
+						});
 						return undefined;
 					}
 					const parsed = parseAskAnswer(result.stdout);
