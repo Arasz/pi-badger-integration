@@ -1,7 +1,20 @@
 {
-  "lastUpdated": "2026-09-08T15:37:11Z",
+  "lastUpdated": "2026-09-08T18:55:30Z",
   "next": null,
   "completedTasks": [
+    {
+      "taskId": "pbi-delivery-cursor-duplicate-missing-fix",
+      "title": "Delivery late-card + missing-cursor anomalies",
+      "finishedAt": "2026-09-08T18:54:39Z",
+      "summary": "A1 late card → IMPL-BUG fixed: hook-path peek-then-post-then-advance (optional peek seam, reject-holds-redeliver, old stores byte-identical) + 11-row visibility suite, all mutant-proven. A2 missing cursor → NO-FAULT-FOUND (write path proven 15/15 white-box; disappearance has no in-repo cause). 154 tests green, tsc clean outside pre-existing pi-mcp-tools, impl-review SHIP, review-tests unblocked (confirm-yes/no, empty-preview, broadcasts/empty settle rows). PR #11 squash-merged; manual bump PR #12 (auto-bump bot still PR-blocked) cut v1.1.1; published, check in sync. Low-effort: architect plan + code-reviewer review (READY-WITH-FOLDS) + api-engineer investigation + api-engineer fix + code-reviewer gate (SHIP) + qa review-tests (BLOCKED→fixed).",
+      "decisions": [
+        "Peek-then-post-then-advance over await-card (sendMessage returns void, hooks return void — acceptance ordering is the only implementable shape); reject-holds-redeliver gives hook-path at-least-once",
+        "Targeted cursor-write rejected as bigger shape; peek-settle micro-race documented in-code as bounded synchronous window, intentionally untested (no deterministic cross-process row possible)",
+        "A2 filed NO-FAULT-FOUND not exonerated-lightly: 15/15 repro + zero DELETE paths + twin control correct; per-process DB-path/external-surgery stay hypotheses with named boundary",
+        "QA confirm/empty/broadcasts rows added post-BLOCKED with per-mutant kills; old-store row passes pre/post by design as preservation pin",
+        "House repeats: manual bump PR again (default ruleset still has zero bot bypass); VERSION owned by release chain, never hand-shaped beyond the bump"
+      ]
+    },
     {
       "taskId": "pbi-bus-identity-delegation-skip-fix",
       "title": "Bus identity and delegation-skip fixes P1-P5 + F7 ack stub",
