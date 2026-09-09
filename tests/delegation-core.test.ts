@@ -931,3 +931,25 @@ describe("deriveActivity target hygiene (R9)", () => {
     expect(deriveActivity(readEvent({ path: "  " }))).toBe("reading…");
   });
 });
+
+// ------------------------------------------------------------------ P1: conditional session segment on panel lines
+
+describe("P1-A2 — session segment on delegation panel lines (DelegationStatusRun.sessionId)", () => {
+  const run: DelegationStatusRun = {
+    id: "d-1",
+    agent: "architect",
+    state: "running",
+    startedAt: NOW - 3000,
+    usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+  };
+
+  test("run with sessionId renders a trailing `session <id>` segment", () => {
+    expect(renderDelegationStatus([{ ...run, sessionId: "sess-1" }], NOW)).toBe(
+      "d-1 architect — 3s — ↑10 ↓2 — session sess-1",
+    );
+  });
+
+  test("run without sessionId is byte-identical to today", () => {
+    expect(renderDelegationStatus([run], NOW)).toBe("d-1 architect — 3s — ↑10 ↓2");
+  });
+});

@@ -345,6 +345,8 @@ export interface DelegationStatusRun {
   usage?: DelegationUsage;
   queuePosition?: number;
   spawnError?: string;
+  /** P1: the delegating session's id — rendered as a trailing `session <id>` segment when present. */
+  sessionId?: string;
   /** RR2: "timeout" on a run killed by its per-run timeout, "lost" on a watchdog kill; a user
    * abort carries no marker. */
   abortReason?: "timeout" | "lost";
@@ -514,6 +516,8 @@ function renderRunLine(run: DelegationStatusRun, now: number, contextWindow?: nu
       segments.push("stale");
       break;
   }
+  // P1: conditional session segment — trailing, only when the run knows its session.
+  if (run.sessionId !== undefined) segments.push(`session ${run.sessionId}`);
   return segments.join(" — ");
 }
 

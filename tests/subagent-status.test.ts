@@ -36,6 +36,7 @@ import {
   MAX_LOG_TAIL_BYTES,
   MIN_LOG_TAIL_BYTES,
   probePid,
+  describeRecord,
   registerDelegationStatus,
   widgetLines,
   type PidLiveness,
@@ -842,3 +843,37 @@ describe("T123 — probePid's EPERM branch witnessed directly (d-52 NIT-3)", () 
 });
 
 
+
+// ------------------------------------------------------------------ P1: conditional session segment on list + widget lines
+
+describe("P1 — session segment on list (describeRecord) and widget lines", () => {
+  const record = {
+    id: "d-1",
+    agent: "architect",
+    task: "do the thing",
+    toolCallId: "tc-1",
+    state: "running" as const,
+    startedAt: NOW,
+    usage: { input: 1, output: 7, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+  };
+
+  test("P1-A1: list line with sessionId contains a trailing `session <id>` segment", () => {
+    expect(describeRecord({ ...record, sessionId: "sess-test" }, NOW)).toBe(
+      "d-1 architect — 0s — ↑1 ↓7 — task: do the thing — session sess-test",
+    );
+  });
+
+  test("P1-A1: list line without sessionId is byte-identical to today", () => {
+    expect(describeRecord(record, NOW)).toBe("d-1 architect — 0s — ↑1 ↓7 — task: do the thing");
+  });
+
+  test("P1-A2: widget line with sessionId contains a trailing `session <id>` segment", () => {
+    expect(widgetLines([{ ...record, sessionId: "sess-test" }], new Set(), NOW)).toEqual([
+      "d-1 architect — 0s — ↑1 ↓7 — session sess-test",
+    ]);
+  });
+
+  test("P1-A2: widget line without sessionId is byte-identical to today", () => {
+    expect(widgetLines([record], new Set(), NOW)).toEqual(["d-1 architect — 0s — ↑1 ↓7"]);
+  });
+});

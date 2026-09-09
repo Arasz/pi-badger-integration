@@ -162,6 +162,8 @@ export function describeRecord(record: DelegationRecord, now: number, probe?: (p
 			break;
 	}
 	parts.push(`task: ${taskExcerpt(record.task)}`);
+	// P1: conditional session segment — trailing, only when the record knows its session.
+	if (record.sessionId !== undefined) parts.push(`session ${record.sessionId}`);
 	return parts.join(" — ");
 }
 
@@ -188,6 +190,8 @@ export function widgetLines(
 		if (record.activity) parts.push(record.activity);
 		const usage = formatUsage(record.usage, contextWindow);
 		if (usage) parts.push(usage);
+		// P1: conditional session segment — trailing, only when the record knows its session.
+		if (record.sessionId !== undefined) parts.push(`session ${record.sessionId}`);
 		lines.push(parts.join(" — "));
 	}
 	const queued = background.filter((r) => r.state === "queued").length;
