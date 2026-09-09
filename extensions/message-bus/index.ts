@@ -60,6 +60,8 @@ import {
 	type StartupDropStats,
 	unknownTargetWarning,
 } from "./message-bus-core.ts";
+import { tickCoordinator } from "./coordinator.ts";
+import { buildChannelCache, groupByScope, type ChannelCache } from "./coordinator-group.ts";
 
 /** The message-bus card's custom message type. */
 export const MESSAGE_BUS_CUSTOM_TYPE = "message-bus-event";
@@ -808,6 +810,61 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		}
 		return undefined;
 	});
+
+	// ---- coordinator tick wire-in (PKG-4A): piggyback wake-set inside live turns
+	//
+	// Composes PKG-1 (readRegistrySnapshot) → PKG-2 (groupByScope, version-gated
+	// buildChannelCache) → PKG-3 (tickCoordinator), read-only end to end: the
+	// tick only computes WHO has pending mail and the result is console.debug
+	// observability — zero cards, zero cursor writes, zero registry writes.
+	// Fail-open per-tick catch: any failure logs one line and the turn proceeds.
+	// Idle-machine wake is struck by design (d-728: no pi host owns a durable
+	// tick) — this seam only observes turns that are starting anyway.
+	let coordinatorChannels: ChannelCache | null = null;
+	const runCoordinatorTick = async (ctx: ExtensionContext): Promise<void> => {
+		const sessionId = resolveSid(ctx);
+		if (!sessionId) return;
+		let store: BusStore;
+		try {
+			store = storeFor(ctx.cwd);
+		} catch (error) {
+			console.error("ai-badger message-bus: coordinator tick unavailable — fail-open", error);
+			return;
+		}
+		try {
+			const snapshot = readRegistrySnapshot(store, now);
+			const projectId = resolvePid(ctx);
+			// PKG-2 observability: group this turn's peeked rows into channels
+			// (pure; the cache rebuilds only when the registry version moves).
+			// Read-only like the tick; its failure never breaks the wake set.
+			let channelSummary = "n/a";
+			try {
+				const preview =
+					typeof store.peekForSession === "function"
+						? store.peekForSession(sessionId, projectId)
+						: { messages: store.listForSession(sessionId, projectId).filter((m) => m.id > store.getCursor(sessionId)) };
+				coordinatorChannels = buildChannelCache(coordinatorChannels, snapshot, () => groupByScope(preview.messages, projectId));
+				channelSummary = Object.entries(coordinatorChannels.channels)
+					.map(([key, rows]) => `${key}:${rows.length}`)
+					.join(",");
+			} catch {
+				// grouping is observability-only — the wake set still computes
+			}
+			const result = await tickCoordinator(store, snapshot, { now: now(), env });
+			console.debug(
+				`ai-badger message-bus coordinator tick: woke=[${result.woke.join(",")}] errors=${result.errors.length} truncated=${result.truncated} channels={${channelSummary}}`,
+				{ kind: "coordinator-tick", woke: result.woke, errors: result.errors, truncated: result.truncated },
+			);
+		} catch (error) {
+			console.error("ai-badger message-bus: coordinator tick failed — fail-open", error);
+		}
+	};
+
+	pi.on("turn_start", (_event, ctx) => {
+		if (hooksDisabled()) return undefined;
+		return runCoordinatorTick(ctx);
+	});
+	// ---- end coordinator tick wire-in (PKG-4A)
 
 	// ---- tool
 
