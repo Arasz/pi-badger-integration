@@ -1,7 +1,19 @@
 {
-  "lastUpdated": "2026-09-09T21:20:00Z",
+  "lastUpdated": "2026-09-09T23:10:00Z",
   "next": null,
   "completedTasks": [
+    {
+      "taskId": "pbi-bus-identity-whoami-prose-guard",
+      "title": "Bus identity: full-id whoami pull, session env sync, prose-beats-wire mandates",
+      "finishedAt": "2026-09-09T23:10:00Z",
+      "summary": "Closed the truncated-only + prose-beats-wire gap behind F2 (stale prose-copied ids stranded 1:1 mail at dead ids). Delivered: message-bus whoami echoes FULL session+project ids in content (explicit pull; list/check headers stay truncated, F7 stays closed); session_start pins PI_SESSION_ID to the live manager id and clears stale foreign CLAUDE/HERMES vars (fail-open, single-resolve, trim guard); tool description carries the whoami-before-first-send rule for immediate effect; whoami-first mandates staged scaffold-safe in multi-agent-communication + task project-local.md; framework-source halves (skill SKILL.md text, task_tracker.py stale-binding warning) recorded as docs/work/2026-09-09-bus-identity-framework-followup.md for a feed-badger draft PR (generated-file guard forbids in-repo edits). 115/115 message-bus tests green (4 new), CI tests 1514 pass 0 fail with only the pre-existing monitor/mem-based-rag typecheck red (identical on main). code-reviewer SHIP-WITH-FIXES, 0 MUST 4 SHOULD all folded. PR #21 squash-merged 945a661. Low-effort, in-session plan, delegated review. User must /reload running sessions.",
+      "decisions": [
+        "whoami (explicit pull) is the one surface echoing full ids; list/check stay truncated — full ids never enter broadcasts, acks, or quoted bodies",
+        "Foreign harness env vars are pi-session-stale by construction when they differ from the live id; clearing them in-process is safe (parent env unaffected)",
+        "Generated skill/tracker files change only at their framework source: project-local.md stages the mandate, feed-badger PR delivers it upstream",
+        "Pre-existing CI typecheck red (monitor ExtensionContext mismatch, identical on main) does not gate this merge; documented, not fixed here"
+      ]
+    },
     {
       "taskId": "pbi-wait-mail-text-list-fallback",
       "title": "Live-test findings: mail text list-fallback and record",
