@@ -1,7 +1,19 @@
 {
-  "lastUpdated": "2026-09-09T16:25:08Z",
+  "lastUpdated": "2026-09-09T17:42:43Z",
   "next": null,
   "completedTasks": [
+    {
+      "taskId": "pbi-ask-silent-failure-repro-fix",
+      "title": "Fix /ask silent failure + input lock",
+      "finishedAt": "2026-09-09T17:42:43Z",
+      "summary": "/ask went mute (notify-only output + discarded return + swallowing wrapper) and wedged input (unbounded awaits). P1: askSettle race bounds on all 4 /ask awaits (searchCall, fetchFull, getClient call-site, spawnAsk race); 6 RED-first repro tests incl. poisoned-searchFlight next-turn + silent abort-race. P2: durable append-only card ({triggerTurn:false}, AskCardKind answer/skip/failure) + ack notify pre-first-await; thin/mode-off/no-id skips notify-only; /rag bare notify wrapped. Review SHIP + 3 SHOULD fixes (stray-emission waits, notifySafely dedupe, outer-catch comment). 125 mem-based-rag tests green, tsc zero touched-file errors, published + --check in sync. Low-effort: architect plan + code-reviewer READY-WITH-FOLDS (5 MUSTs) + 2 api-engineer lanes + code-reviewer SHIP. Follow-ups: none structural; user must /reload to load fix in running sessions.",
+      "decisions": [
+        "Per-seam askSettle bounds over one overall deadline (preserves snippet-fallback + bank-vs-child notify shapes; flight self-heals)",
+        "Durable card append-only {triggerTurn:false}: subagent triggerTurn:true precedent rejected (idle branch would spawn a fresh LLM turn per answer)",
+        "Thin-skip + abort-race stay notify-only/silent; answers/failures = card+notify; ack precedes everything accepted",
+        "Poisoned searchFlight + hung seams proven by RED (4 lock paths); init-hang leg dropped per hatch (createClient sync, prod init already 15s-bounded)"
+      ]
+    },
     {
       "taskId": "pbi-delegation-session-peek-output",
       "title": "Delegation surfaces: session id + peek output",
