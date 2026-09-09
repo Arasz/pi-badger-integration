@@ -21,6 +21,7 @@ const RAG_KEYS = [
 	"PI_BADGER_MEM_RAG_MIN_WORDS",
 	"PI_BADGER_MEM_RAG_MIN_CHARS",
 	"PI_BADGER_MEM_RAG_TIMEOUT_MS",
+	"PI_BADGER_MEM_RAG_ASK_CHILD_TIMEOUT_MS",
 	"PI_BADGER_MEM_RAG_SNIPPET_CHARS",
 	"PI_BADGER_MEM_RAG_BIN",
 	"AI_BADGER_PROJECT_ID",
@@ -229,28 +230,40 @@ describe("(1) rich /ask default", () => {
 		expect((searches[0]!.args as Record<string, unknown>)["limit"]).toBe(5);
 		expect((searches[0]!.args as Record<string, unknown>)["query"]).toBe(P1);
 		// One spawn with exact argv shape (tail: piInvocation may prefix the runner
-		// script, so pin the last 8 — the isolated child argv per spec).
+		// script, so pin the last 12 — the isolated child argv per spec).
 		expect(spawnCalls).toHaveLength(1);
 		const argv = spawnCalls[0]!.argv;
-		const tail = argv.slice(-8);
-		expect(tail.length).toBe(8);
-		expect(tail.slice(0, 7)).toEqual([
+		const tail = argv.slice(-12);
+		expect(tail.length).toBe(12);
+		expect(tail.slice(0, 11)).toEqual([
 			"-p",
 			"--mode",
 			"json",
 			"--no-session",
+			"--no-tools",
+			"--no-skills",
+			"--no-extensions",
+			"--no-prompt-templates",
 			"--exclude-tools",
 			ASK_CHILD_EXCLUDED_TOOLS,
 			"--",
 		]);
-		expect(tail[5]).toBe(CHILD_EXCLUDED_TOOLS);
-		const prompt = String(tail[7] ?? "");
+		expect(tail[9]).toBe(CHILD_EXCLUDED_TOOLS);
+		const prompt = String(tail[11] ?? "");
 		expect(prompt).toContain("Memory context (ai-raccoon memory_search");
 		expect(prompt).toContain(`Question: ${P1}`);
 		expect(spawnCalls[0]!.opts.cwd).toBe("/tmp/ask-1");
 		expect(spawnCalls[0]!.opts.timeoutMs).toBe(ASK_CHILD_TIMEOUT_MS);
+		// T1 strip flags present; forbidden model/offline flags absent.
+		expect(argv).toContain("--no-tools");
+		expect(argv).toContain("--no-skills");
+		expect(argv).toContain("--no-extensions");
+		expect(argv).toContain("--no-prompt-templates");
 		// No --model in argv.
 		expect(argv).not.toContain("--model");
+		expect(argv).not.toContain("--thinking");
+		expect(argv).not.toContain("--offline");
+		expect(argv).not.toContain("--no-context-files");
 		// Notify contains answer tail + return value is the answer.
 		expect(notes.length).toBeGreaterThan(0);
 		expect(notes[notes.length - 1]!.message).toContain(answer);
@@ -291,7 +304,7 @@ describe("(2) expanded /ask", () => {
 		for (const g of gets) expect(g.timeoutMs).toBeLessThanOrEqual(5000);
 		// Fallback + provenance land in the spawned prompt (tail: script prefix aware).
 		expect(spawnCalls).toHaveLength(1);
-		const prompt = String(spawnCalls[0]!.argv.slice(-8)[7] ?? "");
+		const prompt = String(spawnCalls[0]!.argv.slice(-12)[11] ?? "");
 		expect(prompt).toContain("memory_get/code_get, expanded");
 		expect(prompt).toContain("the full decision text");
 		expect(prompt).toContain("second memory snippet about timeouts");
@@ -517,7 +530,7 @@ describe("(8) CHILD_EXCLUDED_TOOLS pin", () => {
 		const notes: Notify[] = [];
 		await fireAsk(pi, P1, "/tmp/ask-8", "sess-ask-8", notes);
 		expect(spawnCalls).toHaveLength(1);
-		expect(spawnCalls[0]!.argv.slice(-8)[5]).toBe(CHILD_EXCLUDED_TOOLS);
+		expect(spawnCalls[0]!.argv.slice(-12)[9]).toBe(CHILD_EXCLUDED_TOOLS);
 	});
 });
 
@@ -630,7 +643,7 @@ describe("(11) /ask child prompt carries the stripped query", () => {
 		expect(searches).toHaveLength(1);
 		expect((searches[0]!.args as Record<string, unknown>)["query"]).toBe(P1);
 		expect(spawnCalls).toHaveLength(1);
-		const prompt = String(spawnCalls[0]!.argv.slice(-8)[7] ?? "");
+		const prompt = String(spawnCalls[0]!.argv.slice(-12)[11] ?? "");
 		expect(prompt).toContain(`Question: ${P1}`);
 		expect(prompt).not.toContain("/skill:task");
 	});
@@ -703,4 +716,123 @@ describe("(13) /ask no-hits and skip counters", () => {
 		expect(status).toContain("skippedAsk 1");
 		expect(status).toContain("too-short");
 	});
+});
+
+// ------------------------------------------------------------------ (14) child budget split (P1 T2/T3/T5)
+
+describe("(14) /ask child budget split", () => {
+	test("T2 unset NEW var → spawn timeoutMs === 90000 (=== ASK_CHILD_TIMEOUT_MS)", async () => {
+		clearRagEnv();
+		process.env["AI_BADGER_PROJECT_ID"] = "proj-ask-child-default";
+		expect(ASK_CHILD_TIMEOUT_MS).toBe(90000);
+		const { pi, spawnCalls } = installAsk({ results: MEM_HITS, code: CODE_HITS }, async () => ({
+			stdout: jsonlAnswer("child default answer"),
+			stderr: "",
+			exitCode: 0,
+		}));
+		const notes: Notify[] = [];
+		await fireAsk(pi, P1, "/tmp/ask-child-default", "sess-ask-child-default", notes);
+		expect(spawnCalls).toHaveLength(1);
+		expect(spawnCalls[0]!.opts.timeoutMs).toBe(90000);
+		expect(spawnCalls[0]!.opts.timeoutMs).toBe(ASK_CHILD_TIMEOUT_MS);
+	});
+
+	test("T2 set NEW var → honored; search budget untouched", async () => {
+		clearRagEnv();
+		process.env["AI_BADGER_PROJECT_ID"] = "proj-ask-child-set";
+		process.env["PI_BADGER_MEM_RAG_ASK_CHILD_TIMEOUT_MS"] = "45000";
+		process.env["PI_BADGER_MEM_RAG_TIMEOUT_MS"] = "5000";
+		const { pi, calls, spawnCalls } = installAsk({ results: MEM_HITS, code: CODE_HITS }, async () => ({
+			stdout: jsonlAnswer("child set answer"),
+			stderr: "",
+			exitCode: 0,
+		}));
+		const notes: Notify[] = [];
+		await fireAsk(pi, P1, "/tmp/ask-child-set", "sess-ask-child-set", notes);
+		expect(spawnCalls).toHaveLength(1);
+		expect(spawnCalls[0]!.opts.timeoutMs).toBe(45000);
+		const searches = calls.filter((c) => c.tool === "memory_search");
+		expect(searches).toHaveLength(1);
+		expect(searches[0]!.timeoutMs).toBe(5000);
+	});
+
+	test("T3 malformed/blank NEW var → 90000 fallback; 500 fast path works", async () => {
+		for (const raw of ["boom", "", "   "]) {
+			clearRagEnv();
+			process.env["AI_BADGER_PROJECT_ID"] = "proj-ask-child-fallback";
+			if (raw !== "__unset__") process.env["PI_BADGER_MEM_RAG_ASK_CHILD_TIMEOUT_MS"] = raw;
+			const { pi, spawnCalls } = installAsk({ results: MEM_HITS, code: CODE_HITS }, async () => ({
+				stdout: jsonlAnswer("fallback answer"),
+				stderr: "",
+				exitCode: 0,
+			}));
+			const notes: Notify[] = [];
+			await fireAsk(pi, P1, "/tmp/ask-child-fallback", "sess-ask-child-fallback", notes);
+			expect(spawnCalls).toHaveLength(1);
+			expect(spawnCalls[0]!.opts.timeoutMs, JSON.stringify(raw)).toBe(90000);
+		}
+		clearRagEnv();
+		process.env["AI_BADGER_PROJECT_ID"] = "proj-ask-child-500";
+		process.env["PI_BADGER_MEM_RAG_ASK_CHILD_TIMEOUT_MS"] = "500";
+		const fast = installAsk({ results: MEM_HITS, code: CODE_HITS }, async () => ({
+			stdout: jsonlAnswer("fast answer"),
+			stderr: "",
+			exitCode: 0,
+		}));
+		const notes: Notify[] = [];
+		await fireAsk(fast.pi, P1, "/tmp/ask-child-500", "sess-ask-child-500", notes);
+		expect(fast.spawnCalls).toHaveLength(1);
+		expect(fast.spawnCalls[0]!.opts.timeoutMs).toBe(500);
+	});
+
+	test("T5 status keeps search timeout verbatim + appends child token (90000 default)", async () => {
+		clearRagEnv();
+		process.env["AI_BADGER_PROJECT_ID"] = "proj-ask-status-child";
+		const { pi } = installAsk({ results: MEM_HITS, code: CODE_HITS });
+		const status = await ragStatus(pi, "/tmp/ask-status-child", "sess-ask-status-child");
+		expect(status).toContain("timeout 20000ms");
+		expect(status).toContain("child 90000ms");
+	});
+
+	test("T5 status child token follows NEW var; ack names child budget", async () => {
+		clearRagEnv();
+		process.env["AI_BADGER_PROJECT_ID"] = "proj-ask-ack-child";
+		process.env["PI_BADGER_MEM_RAG_ASK_CHILD_TIMEOUT_MS"] = "500";
+		const { pi } = installAsk({ results: MEM_HITS, code: CODE_HITS }, async () => ({
+			stdout: jsonlAnswer("ack child answer"),
+			stderr: "",
+			exitCode: 0,
+		}));
+		const status = await ragStatus(pi, "/tmp/ask-ack-child", "sess-ask-ack-child");
+		expect(status).toContain("child 500ms");
+		const notes: Notify[] = [];
+		await fireAsk(pi, P1, "/tmp/ask-ack-child", "sess-ask-ack-child", notes);
+		expect(notes.length).toBeGreaterThan(0);
+		expect(notes[0]!.message).toContain(P1);
+		expect(notes[0]!.message).toContain("500");
+		expect(notes[0]!.message).toContain("child");
+	});
+
+	test("T5 child failure text keeps actual child ms (500 fast path + 90000 default)", async () => {
+		clearRagEnv();
+		process.env["AI_BADGER_PROJECT_ID"] = "proj-ask-fail-500";
+		process.env["PI_BADGER_MEM_RAG_ASK_CHILD_TIMEOUT_MS"] = "500";
+		const fast = installAsk({ results: MEM_HITS, code: CODE_HITS }, async (): Promise<never> => new Promise<never>(() => {}));
+		const fastNotes: Notify[] = [];
+		const pending = fireAsk(fast.pi, P1, "/tmp/ask-fail-500", "sess-ask-fail-500", fastNotes);
+		const raced = await Promise.race([
+			pending.then(() => "settled", () => "settled"),
+			new Promise<string>((resolve) => setTimeout(() => resolve("hung"), 5000)),
+		]);
+		expect(raced).toBe("settled");
+		expect(fastNotes[fastNotes.length - 1]!.message).toContain("500");
+		clearRagEnv();
+		process.env["AI_BADGER_PROJECT_ID"] = "proj-ask-fail-default";
+		const { pi } = installAsk({ results: MEM_HITS, code: CODE_HITS }, async () => {
+			throw new Error("ask child timed out after 90000ms");
+		});
+		const notes: Notify[] = [];
+		await fireAsk(pi, P1, "/tmp/ask-fail-default", "sess-ask-fail-default", notes);
+		expect(notes[notes.length - 1]!.message).toContain("90000");
+	}, 10_000);
 });

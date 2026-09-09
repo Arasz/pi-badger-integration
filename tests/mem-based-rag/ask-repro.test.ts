@@ -49,6 +49,7 @@ const RAG_KEYS = [
 	"PI_BADGER_MEM_RAG_MIN_WORDS",
 	"PI_BADGER_MEM_RAG_MIN_CHARS",
 	"PI_BADGER_MEM_RAG_TIMEOUT_MS",
+	"PI_BADGER_MEM_RAG_ASK_CHILD_TIMEOUT_MS",
 	"PI_BADGER_MEM_RAG_SNIPPET_CHARS",
 	"PI_BADGER_MEM_RAG_BIN",
 	"AI_BADGER_PROJECT_ID",
@@ -240,7 +241,7 @@ describe("P1 H3 every-path-settles (hung seam = locked TUI)", () => {
 	test("hung spawnAsk settles within budget (seam index.ts:907)", async () => {
 		clearRagEnv();
 		process.env["AI_BADGER_PROJECT_ID"] = "proj-repro-spawn";
-		process.env["PI_BADGER_MEM_RAG_TIMEOUT_MS"] = "500";
+		process.env["PI_BADGER_MEM_RAG_ASK_CHILD_TIMEOUT_MS"] = "500";
 		const pi = createFakePi();
 		(factory as (pi: unknown, deps: unknown) => void)(pi as never, {
 			createClient: () => ({
@@ -301,7 +302,7 @@ describe("P1 H3 every-path-settles (hung seam = locked TUI)", () => {
 	test("abort-race: shutdown settles promptly + counters reset + NO notify (seam index.ts:904-905→907)", async () => {
 		clearRagEnv();
 		process.env["AI_BADGER_PROJECT_ID"] = "proj-repro-abort";
-		process.env["PI_BADGER_MEM_RAG_TIMEOUT_MS"] = "500";
+		process.env["PI_BADGER_MEM_RAG_ASK_CHILD_TIMEOUT_MS"] = "500";
 		const pi = createFakePi();
 		let spawnSeen = 0;
 		(factory as (pi: unknown, deps: unknown) => void)(pi as never, {
