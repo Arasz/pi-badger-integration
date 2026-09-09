@@ -9,7 +9,7 @@
  * or absent mail false, never throws).
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -51,6 +51,10 @@ function tempDir(prefix: string): string {
 	return dir;
 }
 
+afterEach(() => {
+	while (tempDirs.length) rmSync(tempDirs.pop()!, { recursive: true, force: true });
+});
+
 function makeHarness(busProbe?: (ctx: unknown) => boolean): { pi: FakePi; scheduler: Scheduler } {
 	const pi = createFakePi();
 	const scheduler = manualScheduler();
@@ -76,7 +80,7 @@ function waitTool(pi: FakePi): Execute {
 	return tool.execute as unknown as Execute;
 }
 
-function makeCtx(mode = "tui"): unknown {
+function makeCtx(mode = "tui"): Record<string, unknown> {
 	return {
 		ui: { notify: () => {}, setWidget: () => {}, setStatus: () => {} },
 		mode,
@@ -161,8 +165,19 @@ describe("wait + message-bus mail guidance", () => {
 // ------------------------------------------------------------------ internal mail tick
 
 describe("wait internal mail tick", () => {
-	test("the tick cadence is a fixed 1 second — no ms knob", () => {
+	test("the tick cadence is a fixed 1 second — no ms knob", async () => {
 		expect(BUS_MAIL_TICK_MS).toBe(1000);
+		const { pi, scheduler } = makeHarness(() => false);
+		startSession(pi);
+		pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running"));
+		// An unknown tickMs param is ignored — the cadence still comes from the const.
+		const pending = waitTool(pi)("tc-wait", { tickMs: 5, timeoutMs: 5000 }, undefined, undefined, makeCtx());
+		await tick();
+		expect([...scheduler.timers.values()].filter((t) => t.ms === BUS_MAIL_TICK_MS)).toHaveLength(1);
+		for (const [handle, timer] of scheduler.timers) {
+			if (timer.ms !== BUS_MAIL_TICK_MS) scheduler.fire(handle);
+		}
+		await pending;
 	});
 
 	test("mail already waiting resolves observed mail, beating the empty fleet", async () => {
@@ -170,7 +185,58 @@ describe("wait internal mail tick", () => {
 		const pending = waitTool(pi)("tc-wait", {}, undefined, undefined, makeCtx());
 		const result = await pending;
 		expect(result.details).toMatchObject({ observed: "mail" });
+		expect(result.content[0]!.text).toMatch(/mail/i); // the mail line exists, not just the observed flag
 		expect(scheduler.timers.size).toBe(0); // tick disarmed with the last wait
+	});
+
+	test("the tick re-arms: an empty tick followed by a mail tick wakes", async () => {
+		let mail = false;
+		const { pi, scheduler } = makeHarness(() => mail);
+		startSession(pi);
+		pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running"));
+		let settled = false;
+		const pending = waitTool(pi)("tc-wait", {}, undefined, undefined, makeCtx()).then((r) => {
+			settled = true;
+			return r;
+		});
+		await tick();
+		fireTick(scheduler); // empty tick — still waiting, the tick must re-arm
+		await tick();
+		expect(settled).toBe(false);
+		expect(scheduler.timers.size).toBe(2); // timeout plus the re-armed tick
+		mail = true;
+		fireTick(scheduler);
+		const result = await pending;
+		expect(result.details).toMatchObject({ observed: "mail" });
+		expect(result.content[0]!.text).toMatch(/mail/i);
+	});
+
+	test("a positive probe settles only its own ctx's waits", async () => {
+		const ctxA = { ...makeCtx(), cwd: "/a" };
+		const ctxB = { ...makeCtx(), cwd: "/b" };
+		const { pi, scheduler } = makeHarness((ctx) => ctx === ctxA);
+		startSession(pi);
+		pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running"));
+		let settledA = false;
+		let settledB = false;
+		const pendingA = waitTool(pi)("tc-a", {}, undefined, undefined, ctxA).then((r) => {
+			settledA = true;
+			return r;
+		});
+		const pendingB = waitTool(pi)("tc-b", {}, undefined, undefined, ctxB).then((r) => {
+			settledB = true;
+			return r;
+		});
+		await tick();
+		// ctxA's wait resolved via the start-up check; ctxB's keeps waiting.
+		expect(settledA).toBe(true);
+		expect(settledB).toBe(false);
+		expect((await pendingA).details).toMatchObject({ observed: "mail" });
+		for (const [handle, timer] of scheduler.timers) {
+			if (timer.ms !== BUS_MAIL_TICK_MS) scheduler.fire(handle); // ctxB's own timeout
+		}
+		expect((await pendingB).details).toMatchObject({ observed: "timeout" });
+		void settledB;
 	});
 
 	test("mail landing mid-wait wakes the wait on the next tick", async () => {
@@ -266,8 +332,26 @@ describe("defaultBusMailProbe", () => {
 		expect(defaultBusMailProbe(ctx, env)).toBe(true);
 		store.deliverForSession("s-me", null); // the hook's own read advances past it
 		expect(defaultBusMailProbe(ctx, env)).toBe(false);
-		rmSync(dbPath, { force: true });
-		tempDirs.splice(tempDirs.indexOf(dir), 1);
-		rmSync(dir, { recursive: true, force: true });
+	});
+
+	test("the kill switch wins even with mail waiting", () => {
+		const dir = tempDir("aib-bus-probe-kill-");
+		const dbPath = join(dir, "ai-badger.db");
+		writeFileSync(dbPath, "");
+		const store = createSqliteStore(dbPath);
+		store.send({ senderSession: "s-other", senderProject: "p1", content: "hello", targetSession: "s-me", targetProject: null });
+		const ctx = { cwd: dir, sessionManager: { getSessionId: () => "s-me" } };
+		expect(defaultBusMailProbe(ctx, { AI_BADGER_USER_ROOT: "." })).toBe(true); // sanity: mail is visible
+		expect(defaultBusMailProbe(ctx, { AI_BADGER_USER_ROOT: ".", PI_BADGER_MESSAGE_BUS: "0" })).toBe(false);
+	});
+
+	test("mail for another session does not read as mine", () => {
+		const dir = tempDir("aib-bus-probe-stranger-");
+		const dbPath = join(dir, "ai-badger.db");
+		writeFileSync(dbPath, "");
+		const store = createSqliteStore(dbPath);
+		store.send({ senderSession: "s-other", senderProject: "p1", content: "for stranger", targetSession: "s-stranger", targetProject: null });
+		const ctx = { cwd: dir, sessionManager: { getSessionId: () => "s-me" } };
+		expect(defaultBusMailProbe(ctx, { AI_BADGER_USER_ROOT: "." })).toBe(false);
 	});
 });

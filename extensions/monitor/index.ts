@@ -216,6 +216,9 @@ export function defaultBusMailProbe(ctx: unknown, env: Record<string, string | u
 		if (typeof store.peekForSession === "function") {
 			return store.peekForSession(sessionId, projectId).messages.length > 0;
 		}
+		// Legacy stores without the peek seam: id-past-cursor over the full list. This skips
+		// the first-read window/cap the peek path honors, but only fake stores lack peek —
+		// the real store always takes the branch above.
 		const cursor = store.getCursor(sessionId);
 		return store.listForSession(sessionId, projectId).some((m) => m.id > cursor);
 	} catch {
@@ -561,23 +564,35 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 	};
 
 	/** One shared mail-tick timer for every pending wait (the internal message loop — from
-	 * the agent's perspective `wait` just wakes with observed "mail"). One probe per tick
-	 * settles every pending wait; the timer lives only while waits are pending. */
+	 * the agent's perspective `wait` just wakes with observed "mail"). One probe per distinct
+	 * ctx per tick; a positive probe settles only that ctx's waits. The timer lives only
+	 * while waits are pending. */
 	let busTimer: unknown | undefined;
 
 	const pollBusMail = (): boolean => {
 		if (pendingWaits.size === 0) return false;
-		let mail = false;
-		try {
-			const first = [...pendingWaits][0]!;
-			const probe = deps.busProbe ?? defaultBusMailProbe;
-			mail = first.ctx !== undefined && probe(first.ctx);
-		} catch {
-			mail = false; // fail-open: a throwing probe never resolves the wait
+		const probe = deps.busProbe ?? defaultBusMailProbe;
+		// Group by ctx (usually one): concurrent waits for different sessions/projects never
+		// steal each other's wake — a spurious cross-ctx wake would cost an empty check loop.
+		const groups = new Map<unknown, PendingWait[]>();
+		for (const wait of pendingWaits) {
+			const list = groups.get(wait.ctx) ?? [];
+			list.push(wait);
+			groups.set(wait.ctx, list);
 		}
-		if (!mail) return false;
-		for (const wait of [...pendingWaits]) wait.settle("mail");
-		return true;
+		let woke = false;
+		for (const [ctx, waits] of groups) {
+			let mail = false;
+			try {
+				mail = ctx !== undefined && probe(ctx);
+			} catch {
+				mail = false; // fail-open: a throwing probe never resolves the wait
+			}
+			if (!mail) continue;
+			for (const wait of waits) wait.settle("mail");
+			woke = true;
+		}
+		return woke;
 	};
 
 	const armBusTick = (): void => {
@@ -611,7 +626,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			empty:
 				"Nothing to wait for — no live delegations and no armed monitors. Start a delegation (delegate) or arm a monitor (monitor register), then wait again.",
 			aborted: `Wait ended: aborted (the turn was aborted or the session is shutting down) after ${formatMonitorLifetime(waitedMs)}.`,
-			mail: `Wait resolved: new message-bus mail arrived after ${formatMonitorLifetime(waitedMs)} — delivery follows on this turn (see the message-bus card, or run message-bus check).`,
+			mail: `Wait resolved: new message-bus mail arrived after ${formatMonitorLifetime(waitedMs)} — run message-bus check to read it (the turn_start hook also delivers it at the next turn boundary).`,
 		};
 		return textResult(lines[observed]!, {
 			observed,
