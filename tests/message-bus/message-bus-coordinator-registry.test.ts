@@ -7,6 +7,7 @@ import makeExtension, {
 	readRegistrySnapshot,
 	type BusStore,
 } from "../../extensions/message-bus/index.ts";
+import { REGISTRY_TTL_S as CORE_REGISTRY_TTL_S } from "../../extensions/message-bus/message-bus-core.ts";
 
 const SID = "s-live-local";
 const PID = "p-local";
@@ -64,7 +65,7 @@ describe("PKG-1 registry heartbeat", () => {
 	});
 
 	test("AC2: entries older than REGISTRY_TTL_S are excluded (value from the constant, no DDL change)", async () => {
-		expect(REGISTRY_TTL_S).toBe(300); // MEASUREMENT-TODO placeholder — cited here, never duplicated
+		expect(REGISTRY_TTL_S).toBe(CORE_REGISTRY_TTL_S); // single-sourced from core — the 300 value pins once in coordinator.test.ts
 		const pi = createFakePi();
 		const now = () => pi.clock.now;
 		const store = makeRegistryStore(now);
@@ -139,7 +140,7 @@ describe("PKG-1 registry heartbeat", () => {
 		expect(errors.length).toBe(0); // old store: silent, not even the fail-open log line
 	});
 
-	test("AC6: 10 rapid turn_starts cause at most 2 registry writes", async () => {
+	test("AC6: 10 rapid turn_starts cause exactly 1 registry write (session_start force-touch; turns throttled)", async () => {
 		expect(REGISTRY_TOUCH_INTERVAL_MS).toBe((REGISTRY_TTL_S * 1000) / 4);
 		const pi = createFakePi();
 		const now = () => pi.clock.now;
@@ -147,7 +148,17 @@ describe("PKG-1 registry heartbeat", () => {
 		makeExtension(pi as never, { store: store as never, now, projectId: () => PID });
 		await fire(pi, "session_start", {}, hookCtx());
 		for (let i = 0; i < 10; i++) await fire(pi, "turn_start", {}, hookCtx());
-		expect(store.writes).toBeLessThanOrEqual(2);
+		expect(store.writes).toBe(1);
+	});
+
+	test("kill-switch + tool check performs zero registry writes (touchRegistry early-returns under kill-switch)", async () => {
+		const pi = createFakePi();
+		const now = () => pi.clock.now;
+		const store = makeRegistryStore(now);
+		makeExtension(pi as never, { store: store as never, now, env: { PI_BADGER_MESSAGE_BUS: "0" }, projectId: () => PID });
+		const result = await callTool(pi, { action: "check" });
+		expect(store.writes).toBe(0);
+		expect((result.content[0] as { text: string }).text).toContain("no new messages");
 	});
 
 	test("AC6b: touch refreshes after the throttle interval passes", async () => {

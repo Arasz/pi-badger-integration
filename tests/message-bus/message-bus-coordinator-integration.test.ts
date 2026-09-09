@@ -418,7 +418,38 @@ describe("INT-(vi) failures fail-open with a held cursor", () => {
 	});
 });
 
-describe("INT-(vii) contention smoke (heartbeat writes included, pragma pinned)", () => {
+	test("channel summary peek is lazy: a same-version second turn issues zero summary reads", async () => {
+		// Per-turn peek budget: hook preview (1) + tick wake-set (1 per live entry)
+		// every turn; the channel-summary preview ONLY on a cache miss (first turn).
+		const pi = createFakePi();
+		let peeks = 0;
+		const lazyStore = {
+			send: () => 1,
+			getMessage: () => null,
+			listForSession: () => [],
+			getCursor: () => 0,
+			deliverForSession: () => ({ messages: [], cursor: 0 }),
+			deliverDirectForSession: () => ({ messages: [], cursor: 0 }),
+			peekForSession: () => {
+				peeks++;
+				return { messages: [], cursor: 0 };
+			},
+			peekDirectForSession: () => ({ messages: [], cursor: 0 }),
+			recordIdentity: () => {},
+			hasIdentity: () => true,
+			listIdentities: () => [{ sessionId: "s-lazy", projectId: "p1", lastSeenMs: T0 }],
+		};
+		makeExtension(pi as never, { store: lazyStore as never, now: () => T0, sessionId: () => "s-lazy", projectId: () => "p1" });
+		await fire(pi, "session_start", {}, turnCtx("s-lazy"));
+		expect(peeks).toBe(0); // startup reads via peekDirect, never peek
+		await fire(pi, "turn_start", {}, turnCtx("s-lazy"));
+		const firstTurnPeeks = peeks;
+		expect(firstTurnPeeks).toBe(3); // hook preview + summary miss + tick wake-set
+		await fire(pi, "turn_start", {}, turnCtx("s-lazy"));
+		expect(peeks - firstTurnPeeks).toBe(2); // hook preview + tick only — the summary hit costs zero reads
+	});
+
+	describe("INT-(vii) contention smoke (heartbeat writes included, pragma pinned)", () => {
 	test("busy_timeout pinned at 5000 via openBusDb", () => {
 		expect(BUS_BUSY_TIMEOUT_MS).toBe(5000);
 		const path = tempDb();
@@ -437,7 +468,23 @@ describe("INT-(vii) contention smoke (heartbeat writes included, pragma pinned)"
 		const N = 5;
 		const writers = ids.map(() => createSqliteStore(path, () => T0));
 		const jobs: Array<Promise<unknown>> = [];
+		// Ticks participate alongside the writes: one read pass per round over a
+		// static registry view (same version collapses onto one pass — that IS the
+		// single-flight behavior; the pass still contends with the writes below).
+		// Ticks are fail-open per-target, so contention surfaces as errors entries,
+		// never a throw — the shape asserts below hold with or without lock pressure.
+		const ticker = createSqliteStore(path, () => T0);
+		const smokeSnapshot = {
+			version: "vii-smoke",
+			entries: ids.map((sessionId) => ({ sessionId, projectId: "p1" as string | null, lastSeenMs: T0 })),
+		};
 		for (let round = 0; round < N; round++) {
+			jobs.push(
+				tickCoordinator(ticker as unknown as CoordinatorStore, smokeSnapshot, { now: T0, env: {} }).then((r) => {
+					expect(Array.isArray(r.woke)).toBe(true);
+					expect(Array.isArray(r.errors)).toBe(true);
+				}),
+			);
 			ids.forEach((sid, i) => {
 				const store = writers[i]!;
 				const next = ids[(i + 1) % ids.length]!;
