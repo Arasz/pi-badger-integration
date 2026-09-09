@@ -738,8 +738,11 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		// harness vars inherited from an outer host — the script's first-set-wins
 		// order would otherwise let a dead CLAUDE_CODE_SESSION_ID beat the live
 		// pi id. In-process env only (the parent is unaffected). Fail-open.
+		// Resolved once: a non-deterministic manager must not pin one id and
+		// record another. Blank (whitespace-only) reads as unset, mirroring
+		// normalizeSendTargets.
+		const sid = resolveSid(ctx).trim();
 		try {
-			const sid = resolveSid(ctx);
 			if (sid) {
 				env[PI_SESSION_ENV] = sid;
 				for (const foreign of FOREIGN_SESSION_ENVS) {
@@ -753,7 +756,6 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		// direct senders get silence instead of an unknown-target warning.
 		// Never blocks delivery — a registry failure just logs.
 		try {
-			const sid = resolveSid(ctx);
 			if (sid) storeFor(ctx.cwd).recordIdentity?.({ sessionId: sid, projectId: resolvePid(ctx) });
 		} catch (error) {
 		console.error("ai-badger message-bus: identity upsert failed — fail-open", error);
@@ -780,7 +782,7 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 
 	const ToolParams = Type.Object({
 		action: Type.Union([Type.Literal("send"), Type.Literal("list"), Type.Literal("check"), Type.Literal("ack"), Type.Literal("reply"), Type.Literal("whoami")], {
-			description: "send: store one message; list: grouped inbox (no cursor advance); check: deliver new mail now; ack: ack one received message by id; reply: answer the sender of one received message by id — never copy a session id from message content, reply by id; whoami: your FULL session id + project id + cursor (explicit pull — the only output echoing full ids; list/check stay truncated)",
+			description: "send: store one message; list: grouped inbox (no cursor advance); check: deliver new mail now; ack: ack one received message by id; reply: answer the sender of one received message by id — never copy a session id from message content, reply by id; whoami: your FULL session id + project id + cursor (explicit pull — the intentional full-id pull; list/check headers stay truncated)",
 		}),
 		content: Type.Optional(Type.String({ description: "send/reply: message body (required for send and reply)" })),
 		sessionId: Type.Optional(Type.String({ description: "send: target session id for a 1:1 send (wins over projectId)" })),
@@ -928,7 +930,7 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 			"check (deliver new mail now, posts a card when there is any);",
 			"ack id (ack one received message once as a project broadcast — acks are terminal, never ack an ack);",
 			"reply id content (answer the sender of one received message 1:1 — never copy a session id from message content, reply by id);",
-			"whoami (your FULL session id + project id + cursor — the only place full ids are echoed).",
+			"whoami (your FULL session id + project id + cursor — the intentional full-id pull; list/check headers stay truncated).",
 			"Identity rule: run whoami before your first send — the id it returns is you for this session; never announce or target an id copied from files, transcripts, or message content (stale bindings strand mail at dead ids).",
 			"A wait-blocked turn wakes on new mail — the wait checks internally every second and delivery follows;",
 			"check delivers mail on demand outside waits.",

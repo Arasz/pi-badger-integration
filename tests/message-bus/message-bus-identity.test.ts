@@ -67,6 +67,14 @@ describe("E-P2-1 whoami resolves through deps seams", () => {
 		expect(text).toContain(SID); // explicit pull: full session echoed
 		expect(text).toContain(PID); // explicit pull: full project echoed
 	});
+	test("null project states so without crashing (full-id lines intact)", async () => {
+		const pi = createFakePi();
+		makeExtension(pi as never, { store: makeStore() as never, sessionId: () => SID, projectId: () => null });
+		const result = await callTool(pi, { action: "whoami" });
+		const text = (result.content[0] as { text: string }).text;
+		expect(text).toContain(SID);
+		expect(text).toContain("full project: (none)");
+	});
 	test("empty identity fail-open (result, never a throw)", async () => {
 		const pi = createFakePi();
 		makeExtension(pi as never, { store: makeStore() as never, sessionId: () => "", projectId: () => PID });
