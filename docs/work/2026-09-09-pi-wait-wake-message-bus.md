@@ -84,6 +84,25 @@ and post-late (followUp queued behind the blocked turn, flushed at its end).
 `/Users/arasz/.pi/agent/sessions/--Users-arasz-RiderProjects-pi-badger-integration--/2026-09-09T19-55-52-865Z_01a087bd-b8a0-73e5-8693-4edbe14dd5b0.jsonl`
 lines 10–11 (wait timeout toolResult and adapter card share timestamp 20:00:51.554Z).
 
+### F10 — the mark-based tick hits every race window live, plus the silence control [MEASURED]
+
+Ack-gated retest against a fresh session (`01a087f3`, new code from process start):
+the waiter signalled each window (`READY-Wn`), the tester sent the WAKE ~30 s later,
+three windows — W1 `mail` 44 s seeing WAKE-A, W2 `mail` 43 s seeing WAKE-B (no re-fire
+on WAKE-A: strict-above-mark holds live), W3 `timeout` 40 s on silence (no phantom
+wake). The waiter's post-wake `check` calls again read "no new messages" while the
+mail was pending (adapter-consumed), reconfirming F9 from the other side — which is
+why the `mail` result text now names `list` as the fallback read.
+
+Method note (for future live tests): the ack-gated protocol (READY per window, WAKE
+~30 s after) cost ~5–9 s of sync per round vs 150 s+ blind leads — whole suite ~2.5 min
+vs ~15 min. Tester-side sub-60 s timing is imprecise (own LLM latency adds ~15 s),
+so keep ≥30 s margins; READY labels prevent misattribution across windows.
+
+**Evidence:** bus DB rows `#829` (instructions, 21:09:55Z) through `#835` (waiter
+report `W1 mail,44000,WAKE-A / W2 mail,43000,WAKE-B / W3 timeout,40000`, 21:12:30Z);
+WAKE-A `#831` (21:10:46Z) and WAKE-B `#833` (21:11:38Z) each resolved within a second.
+
 ### Closure (2026-09-09) — will not continue
 
 Closed as wont-continue under task pbi-wait-check-loop-bus-mail: F6 (short-wait +

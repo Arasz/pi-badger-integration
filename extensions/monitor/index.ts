@@ -656,7 +656,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			empty:
 				"Nothing to wait for — no live delegations and no armed monitors. Start a delegation (delegate) or arm a monitor (monitor register), then wait again.",
 			aborted: `Wait ended: aborted (the turn was aborted or the session is shutting down) after ${formatMonitorLifetime(waitedMs)}.`,
-			mail: `Wait resolved: new message-bus mail arrived after ${formatMonitorLifetime(waitedMs)} — run message-bus check to read it (the turn_start hook also delivers it at the next turn boundary).`,
+			mail: `Wait resolved: new message-bus mail arrived after ${formatMonitorLifetime(waitedMs)} — run message-bus check to read it (if check shows nothing new, it is still in message-bus list; the turn_start hook also delivers it at the next turn boundary).`,
 		};
 		return textResult(lines[observed]!, {
 			observed,

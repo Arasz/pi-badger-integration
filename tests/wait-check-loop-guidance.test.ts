@@ -194,6 +194,7 @@ describe("wait internal mail tick", () => {
 		const result = await pending;
 		expect(result.details).toMatchObject({ observed: "mail" });
 		expect(result.content[0]!.text).toMatch(/mail/i); // the mail line exists, not just the observed flag
+		expect(result.content[0]!.text).toMatch(/list/i); // names list: check can read empty when the adapter won the race
 		expect(scheduler.timers.size).toBe(0); // tick disarmed with the last wait
 	});
 
@@ -217,6 +218,7 @@ describe("wait internal mail tick", () => {
 		const result = await pending;
 		expect(result.details).toMatchObject({ observed: "mail" });
 		expect(result.content[0]!.text).toMatch(/mail/i);
+		expect(result.content[0]!.text).toMatch(/list/i);
 	});
 
 	test("a positive probe settles only its own ctx's waits", async () => {
