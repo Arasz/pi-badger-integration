@@ -1,8 +1,18 @@
 {
-  "lastUpdated": "2026-09-09T20:35:00Z",
+  "lastUpdated": "2026-09-09T21:00:00Z",
   "next": null,
   "completedTasks": [
     {
+      "taskId": "pbi-footer-shows-all-cron-jobs",
+      "title": "Footer reflects all cron jobs, not just cron.json",
+      "finishedAt": "2026-09-09T21:00:00Z",
+      "summary": "Footer cron status + cron-status now reflect pi-cron (cron.json) + system crontab (crontab -l), fail-open. NEW extensions/pi-cron/crontab.ts (parseCrontab, readSystemCrontab, formatCronStatus, truncateCommand); footer matrix (both->'N jobs (A pi + B crontab)', pi-only/system-unavailable->legacy byte-identical, system-only->new (s) form); cron-status gains system section + launchd non-pi out-of-scope note. 45 pass (22 new + 23 existing), tsc clean pi-cron (only pre-existing pi-mcp-tools reds), merged FF 1a7bd91. Low-effort: architect plan + code-reviewer READY-WITH-FOLDS (5 MUSTs folded) + api-engineer impl + code-reviewer SHIP (4 SHOULD follow-ups, non-blocking). User must /reload running sessions.",
+      "decisions": [
+        "Read-only scope: count + display only, no manage-system-crontab (would push to standard effort)",
+        "System 0/unavailable -> legacy strings byte-identical (no suffix); launchd non-pi daemons explicitly out of scope (documented)",
+        "Sync execFileSync with 2s timeout inside handlers only (never top-level); injected exec in tests, never real binary"
+      ]
+    },
       "taskId": "pbi-wait-tick-shared-cursor-race",
       "title": "Fix wait mail-tick losing shared-cursor race with adapter",
       "finishedAt": "2026-09-09T20:35:00Z",
