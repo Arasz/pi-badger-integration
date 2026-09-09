@@ -877,6 +877,8 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 			"ack id (ack one received message once as a project broadcast — acks are terminal, never ack an ack);",
 			"reply id content (answer the sender of one received message 1:1 — never copy a session id from message content, reply by id);",
 			"whoami (your session id + project id + cursor).",
+			"A wait-blocked turn wakes on new mail — the wait checks internally every second and delivery follows;",
+			"check delivers mail on demand outside waits.",
 			"Fail-open: a broken bus returns an error result, never breaks the session.",
 		].join(" "),
 		parameters: ToolParams,

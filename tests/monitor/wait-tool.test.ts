@@ -13,7 +13,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import monitor from "../../extensions/monitor/index.ts";
+import monitor, { BUS_MAIL_TICK_MS } from "../../extensions/monitor/index.ts";
 import { TRANSITION_CHANNEL } from "../../extensions/subagent/index.ts";
 import subagent from "../../extensions/subagent/index.ts";
 import { createFakePi, type FakePi } from "../helpers/fake-pi.ts";
@@ -61,6 +61,17 @@ function transition(id: string, state: string, at = 1_700_000_000_000) {
       ...(state === "completed" ? { exitCode: 0, endedAt: at } : {}),
     },
   };
+}
+
+/** The wait's own timeout handle: the internal bus-mail tick (BUS_MAIL_TICK_MS) is also armed
+ * while a wait pends, so timer-order pins skip it instead of assuming index 0. With a
+ * wait-timer monitor armed, the first non-tick timer is the wait timeout (armed before the
+ * monitor's expiry in executeWait). */
+function timeoutHandle(scheduler: Scheduler): number {
+	for (const [handle, timer] of scheduler.timers) {
+		if (timer.ms !== BUS_MAIL_TICK_MS) return handle;
+	}
+	throw new Error("no wait-timeout timer armed");
 }
 
 interface Harness {
@@ -148,7 +159,7 @@ describe("W-A1: delegation settles resolve the wait", () => {
     pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running")); // something live
     const pending = waitTool(pi)("tc-wait", {}, undefined, undefined, makeCtx());
     await tick();
-    expect(scheduler.timers.size).toBe(1); // the wait's own timeout is armed
+    expect(scheduler.timers.size).toBe(2); // the wait's own timeout plus the internal mail tick, no timer monitor
 
     pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "completed"));
     const result = await pending;
@@ -200,9 +211,9 @@ describe("W-A2: timeout and the empty fleet", () => {
     pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running"));
     const pending = waitTool(pi)("tc-wait", {}, undefined, undefined, makeCtx());
     await tick();
-    expect(scheduler.timers.size).toBe(1); // something live: the wait's own timeout only, no timer monitor
-    expect([...scheduler.timers.values()][0]!.ms).toBe(300_000); // the 5 min default (W-A7)
-    scheduler.fire([...scheduler.timers.keys()][0]!);
+    expect(scheduler.timers.size).toBe(2); // something live: the wait's own timeout plus the mail tick, no timer monitor
+    expect(scheduler.timers.get(timeoutHandle(scheduler))!.ms).toBe(300_000); // the 5 min default (W-A7)
+    scheduler.fire(timeoutHandle(scheduler));
 
     const result = await pending;
     expect(result.details.observed).toBe("timeout");
@@ -218,8 +229,8 @@ describe("W-A2: timeout and the empty fleet", () => {
     pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running"));
     const pending = waitTool(pi)("tc-wait", { timeoutMs: 999_999 }, undefined, undefined, makeCtx());
     await tick();
-    expect([...scheduler.timers.values()][0]!.ms).toBe(600_000);
-    scheduler.fire([...scheduler.timers.keys()][0]!);
+    expect(scheduler.timers.get(timeoutHandle(scheduler))!.ms).toBe(600_000);
+    scheduler.fire(timeoutHandle(scheduler));
     await pending;
   });
 
@@ -232,12 +243,12 @@ describe("W-A2: timeout and the empty fleet", () => {
     });
     await tick();
     expect(settled).toBe(false); // no immediate empty — the wait sleeps
-    expect(scheduler.timers.size).toBe(2); // the wait's own timeout AND the timer monitor's expiry
+    expect(scheduler.timers.size).toBe(3); // the wait's own timeout, the mail tick, AND the timer monitor's expiry
     const list = await monitorTool(pi)("tc-list", { action: "list" }, undefined, undefined, makeCtx());
     expect(list.content[0]!.text).toMatch(/wait-timer/); // visible: name + never-firing predicate
     expect(list.content[0]!.text).toMatch(/\bfalse\b/);
 
-    scheduler.fire([...scheduler.timers.keys()][0]!); // the wait's own timeout (armed first)
+    scheduler.fire(timeoutHandle(scheduler)); // the wait's own timeout (not the mail tick)
     const result = await pending;
     expect(result.details.observed).toBe("timeout");
     expect(scheduler.timers.size).toBe(0); // the timer monitor disarmed with the wait
@@ -249,7 +260,7 @@ describe("W-A2: timeout and the empty fleet", () => {
     const pending = waitTool(pi)("tc-wait", {}, undefined, undefined, makeCtx());
     await tick();
     const handles = [...scheduler.timers.keys()];
-    scheduler.fire(handles[1]!); // the timer monitor's expiry (inserted second)
+    scheduler.fire(handles[handles.length - 1]!); // the timer monitor's expiry (inserted last, after tick + timeout)
 
     const result = await pending;
     expect(result.details.observed).toBe("monitor");
@@ -265,9 +276,9 @@ describe("W-A2: timeout and the empty fleet", () => {
     const pending = waitTool(pi)("tc-wait", { timeoutMs: 5_000 }, undefined, undefined, makeCtx());
     await tick();
     await monitorTool(pi)("tc-cancel", { action: "cancel", id: "m-1" }, undefined, undefined, makeCtx());
-    expect(scheduler.timers.size).toBe(1); // only the wait's own timeout remains
+    expect(scheduler.timers.size).toBe(2); // the mail tick plus the wait's own timeout remain
 
-    scheduler.fire([...scheduler.timers.keys()][0]!);
+    scheduler.fire(timeoutHandle(scheduler));
     const result = await pending;
     expect(result.details.observed).toBe("timeout");
     expect(scheduler.timers.size).toBe(0);
@@ -375,7 +386,7 @@ describe("W-A5: abort and shutdown (combined subagent + monitor load)", () => {
     const controller = new AbortController();
     const pending = waitTool(pi)("tc-wait", {}, controller.signal, undefined, makeCtx());
     await tick();
-    expect(scheduler.timers.size).toBe(1);
+    expect(scheduler.timers.size).toBe(2); // the wait's own timeout plus the mail tick
 
     controller.abort();
     const result = await pending;

@@ -13,7 +13,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import monitor from "../../extensions/monitor/index.ts";
+import monitor, { BUS_MAIL_TICK_MS } from "../../extensions/monitor/index.ts";
 import { TRANSITION_CHANNEL } from "../../extensions/subagent/index.ts";
 import { createFakePi, type FakePi } from "../helpers/fake-pi.ts";
 
@@ -717,8 +717,10 @@ describe("MUST-2: the wait-timer monitor is always JS — never a bash child", (
 		expect(listed.content[0]!.text).toContain("[js]");
 		expect(listed.content[0]!.text).not.toContain("[bash]");
 		expect(bashInFlightCount()).toBe(0);
-		// Cleanup: fire the wait's own timeout (armed first); the timer monitor disarms silently.
-		scheduler.fire([...scheduler.timers.keys()][0]!);
+		// Cleanup: fire the wait's own timeout (not the internal mail tick); the timer monitor disarms silently.
+		const timeoutHandle = [...scheduler.timers.entries()].find(([, timer]) => timer.ms !== BUS_MAIL_TICK_MS)?.[0];
+		if (timeoutHandle === undefined) throw new Error("no wait-timeout timer armed");
+		scheduler.fire(timeoutHandle);
 		const result = await pending;
 		expect(result.details.observed).toBe("timeout");
 		expect(bashInFlightCount()).toBe(0);

@@ -35,6 +35,7 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { TRANSITION_CHANNEL } from "../subagent/index.ts";
+import { MESSAGE_BUS_ENV, createSqliteStore, resolveProjectId, resolveSessionId, userDbPath } from "../message-bus/index.ts";
 import { DEFAULT_POLL_MAX, DEFAULT_POLL_WINDOW_MS, MONITOR_TIMEOUT_DEFAULT_MS, clampMonitorCap, clampMonitorTimeoutMs, compilePredicate, composeMonitorEvent, evaluateMonitor, formatMonitorLifetime, manualWaitDecision, normalizePredicate, pollingDecision, type DelegationView, type MonitorSnapshot } from "./monitor-core.ts";
 import { BASH_COMPILE_TIMEOUT_MS, BASH_PREDICATE_GRACE_MS, BASH_PREDICATE_TIMEOUT_MS, compileBashPredicate, serializeBashSnapshot, startBashPredicate, type BashHandle } from "./bash-predicate.ts";
 
@@ -60,6 +61,11 @@ export const WAIT_TIMER_MONITOR_NAME = "wait-timer";
 
 /** Upper bound of a wait (R8: 600 s, clamped not rejected). */
 export const WAIT_MAX_MS = 600_000;
+
+/** Fixed cadence of the wait's internal message-bus mail check: 1 second, deliberately not
+ * configurable — sub-second polling buys nothing against human-scale mail latency, and one
+ * shared timer serves every pending wait. */
+export const BUS_MAIL_TICK_MS = 1000;
 
 /** Custom entry type of the shutdown report (M-B4). */
 export const SHUTDOWN_ENTRY_TYPE = "monitor-shutdown";
@@ -96,6 +102,10 @@ export interface MonitorDeps {
 	bashTimeoutMs?: number;
 	bashGraceMs?: number;
 	bashCompileTimeoutMs?: number;
+	/** Wait mail-tick seam: true means deliverable message-bus mail is waiting for this
+	 * session. Defaults to the real SQLite peek (defaultBusMailProbe); tests inject
+	 * true/false/throwing fakes. A throwing probe never resolves the wait (fail-open). */
+	busProbe?: (ctx: unknown) => boolean;
 }
 
 /** Structural mirror of the subagent's transition payload — the monitor depends on the
@@ -151,9 +161,11 @@ interface PendingWait {
 	ids?: string[];
 	startedAt: number;
 	settled: boolean;
+	/** The tool-call ctx, carried so the mail tick can probe this session's bus. */
+	ctx: unknown;
 	/** W-A7: the idle fleet's auto-armed wait-timer monitor, disarmed silently with the wait. */
 	timerMonitorId?: string;
-	settle(observed: "delegation" | "monitor" | "input" | "timeout" | "empty" | "aborted", records?: DelegationView[]): void;
+	settle(observed: "delegation" | "monitor" | "input" | "timeout" | "empty" | "aborted" | "mail", records?: DelegationView[]): void;
 	unsubscribe: () => void;
 	timer?: unknown;
 	signal?: AbortSignal;
@@ -183,6 +195,32 @@ function clampWaitMs(timeoutMs: number | undefined): number {
  * `lost`/`stale`; those exist only on log-dir reconstruction, which never transitions here). */
 function isTerminalState(state: string): boolean {
 	return state === "completed" || state === "failed" || state === "aborted";
+}
+
+/**
+ * Default wait mail-tick probe: true iff message-bus mail is deliverable for this session
+ * right now. Read-only (peek, never advances the cursor — the turn_start hook still
+ * delivers after the wait resolves), fail-open (missing DB, missing identity, a locked
+ * backend, or PI_BADGER_MESSAGE_BUS=0 all read as "no mail", never throw).
+ */
+export function defaultBusMailProbe(ctx: unknown, env: Record<string, string | undefined> = process.env): boolean {
+	try {
+		if (env[MESSAGE_BUS_ENV] === "0") return false;
+		const context = ctx as ExtensionContext;
+		const cwd = typeof context?.cwd === "string" ? context.cwd : undefined;
+		if (!cwd) return false;
+		const sessionId = resolveSessionId(context);
+		if (!sessionId) return false;
+		const projectId = resolveProjectId(cwd, env);
+		const store = createSqliteStore(userDbPath(env, cwd));
+		if (typeof store.peekForSession === "function") {
+			return store.peekForSession(sessionId, projectId).messages.length > 0;
+		}
+		const cursor = store.getCursor(sessionId);
+		return store.listForSession(sessionId, projectId).some((m) => m.id > cursor);
+	} catch {
+		return false;
+	}
 }
 
 // ------------------------------------------------------------------ factory
@@ -465,6 +503,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			wait.timerMonitorId = undefined;
 		}
 		pendingWaits.delete(wait);
+		if (pendingWaits.size === 0) disarmBusTick(); // the mail tick lives only while waits pend
 	};
 
 	/** W-A7 (f: 2026-09-02): the default wait implementation for an idle fleet — arm a one-shot
@@ -521,8 +560,44 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		});
 	};
 
+	/** One shared mail-tick timer for every pending wait (the internal message loop — from
+	 * the agent's perspective `wait` just wakes with observed "mail"). One probe per tick
+	 * settles every pending wait; the timer lives only while waits are pending. */
+	let busTimer: unknown | undefined;
+
+	const pollBusMail = (): boolean => {
+		if (pendingWaits.size === 0) return false;
+		let mail = false;
+		try {
+			const first = [...pendingWaits][0]!;
+			const probe = deps.busProbe ?? defaultBusMailProbe;
+			mail = first.ctx !== undefined && probe(first.ctx);
+		} catch {
+			mail = false; // fail-open: a throwing probe never resolves the wait
+		}
+		if (!mail) return false;
+		for (const wait of [...pendingWaits]) wait.settle("mail");
+		return true;
+	};
+
+	const armBusTick = (): void => {
+		if (busTimer !== undefined || pendingWaits.size === 0) return;
+		busTimer = scheduler.setTimeout(() => {
+			busTimer = undefined;
+			if (pendingWaits.size === 0) return;
+			pollBusMail();
+			if (pendingWaits.size > 0) armBusTick();
+		}, BUS_MAIL_TICK_MS);
+	};
+
+	const disarmBusTick = (): void => {
+		if (busTimer === undefined) return;
+		scheduler.clearTimeout(busTimer);
+		busTimer = undefined;
+	};
+
 	function waitResult(
-		observed: "delegation" | "monitor" | "input" | "timeout" | "empty" | "aborted",
+		observed: "delegation" | "monitor" | "input" | "timeout" | "empty" | "aborted" | "mail",
 		startedAt: number,
 		records?: DelegationView[],
 	): ToolResult {
@@ -536,6 +611,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			empty:
 				"Nothing to wait for — no live delegations and no armed monitors. Start a delegation (delegate) or arm a monitor (monitor register), then wait again.",
 			aborted: `Wait ended: aborted (the turn was aborted or the session is shutting down) after ${formatMonitorLifetime(waitedMs)}.`,
+			mail: `Wait resolved: new message-bus mail arrived after ${formatMonitorLifetime(waitedMs)} — delivery follows on this turn (see the message-bus card, or run message-bus check).`,
 		};
 		return textResult(lines[observed]!, {
 			observed,
@@ -580,10 +656,11 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 				...(ids.length > 0 ? { ids } : {}),
 				startedAt,
 				settled: false,
+				ctx,
 				settle: () => {},
 				unsubscribe: () => {},
 			};
-			const finish = (observed: "delegation" | "monitor" | "input" | "timeout" | "empty" | "aborted", records?: DelegationView[]): void => {
+			const finish = (observed: "delegation" | "monitor" | "input" | "timeout" | "empty" | "aborted" | "mail", records?: DelegationView[]): void => {
 				if (wait.settled) return; // resolve-once (W-A3)
 				wait.settled = true;
 				cleanupWait(wait);
@@ -602,6 +679,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 				}) ?? (() => {});
 			// 2. the monitor source joins pendingWaits (fire path notifies);
 			pendingWaits.add(wait);
+			armBusTick(); // the internal mail loop starts with the first pending wait
 			// 3. the input source is the persistent pi.on("input") observer;
 			// 4. the timeout — resolves with a snapshot, never an error.
 			wait.timer = scheduler.setTimeout(() => finish("timeout", fleetSnapshot()), timeoutMs);
@@ -627,6 +705,9 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 						return;
 					}
 				}
+				// Mail beats idleness: mail already waiting resolves now instead of one tick
+				// later — and instead of "empty" when nothing else is live.
+				if (pollBusMail()) return;
 				// W-A7: an idle fleet no longer resolves empty in tui — arm the wait-timer monitor
 				// and keep blocking. Non-tui (R10: no idle session for a followUp to wake) keeps the
 				// immediate `empty` fallback.
@@ -937,6 +1018,8 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			"wait time as timeoutMs; outside tui it resolves immediately with observed 'empty'.",
 			"Allowed in every mode. The result is a terse pointer: a monitor wake's payload rides the monitor-event card,",
 			"never this result.",
+			"New message-bus mail also wakes the wait — mail is checked internally every second, so no check loop is needed;",
+			"mail delivery follows on the turn the wait resolves into.",
 		].join(" "),
 		parameters: WaitParams,
 		execute: executeWait,
@@ -1135,6 +1218,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		}
 		killAllBashHandles(); // SIGTERM→grace→SIGKILL per child; grace timers clear on exit
 		armed.clear();
+		disarmBusTick(); // the mail tick dies with the session
 		if (unsubscribeTransition) {
 			unsubscribeTransition();
 			unsubscribeTransition = undefined;
