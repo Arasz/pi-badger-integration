@@ -230,7 +230,7 @@ describe("(1) rich /ask default", () => {
 		expect((searches[0]!.args as Record<string, unknown>)["limit"]).toBe(5);
 		expect((searches[0]!.args as Record<string, unknown>)["query"]).toBe(P1);
 		// One spawn with exact argv shape (tail: piInvocation may prefix the runner
-		// script, so pin the last 8 — the isolated child argv per spec).
+		// script, so pin the last 12 — the isolated child argv per spec).
 		expect(spawnCalls).toHaveLength(1);
 		const argv = spawnCalls[0]!.argv;
 		const tail = argv.slice(-12);
