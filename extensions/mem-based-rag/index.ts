@@ -514,6 +514,22 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 				});
 			}));
 
+	/** Outer settle bound: hung seams bypass prod timers, so race them (P1 lock hunt). */
+	const askSettle = <T>(promise: Promise<T>, ms: number, message: string): Promise<T> =>
+		new Promise<T>((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error(message)), ms);
+			promise.then(
+				(value) => {
+					clearTimeout(timer);
+					resolve(value);
+				},
+				(error) => {
+					clearTimeout(timer);
+					reject(error);
+				},
+			);
+		});
+
 	const getClient = async (bin: string): Promise<RaccoonClientLike> => {
 		if (!client) {
 			const fresh = createClient(bin);
@@ -531,7 +547,8 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 		args: Record<string, unknown>,
 		timeoutMs: number,
 	): Promise<string> => {
-		const run = (): Promise<string> => raccoon.call(tool, args, timeoutMs);
+		const run = (): Promise<string> =>
+			askSettle(raccoon.call(tool, args, timeoutMs), timeoutMs, `ai-raccoon ${tool} timed out after ${timeoutMs}ms`);
 		const next = searchFlight.then(run, run);
 		searchFlight = next.then(
 			() => undefined,
@@ -719,7 +736,11 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 		timeoutMs: number,
 	): Promise<{ value?: string; path?: string; chunk?: string }> {
 		try {
-			const text = await raccoon.call(tool, { projectId, hash: hit.hash }, Math.min(timeoutMs, 5000));
+			const text = await askSettle(
+				raccoon.call(tool, { projectId, hash: hit.hash }, Math.min(timeoutMs, 5000)),
+				Math.min(timeoutMs, 5000),
+				`ai-raccoon ${tool} timed out after ${Math.min(timeoutMs, 5000)}ms`,
+			);
 			const data = (JSON.parse(text) as { data?: Record<string, unknown> }).data ?? {};
 			const value = typeof data.value === "string" ? data.value : typeof data.content === "string" ? data.content : undefined;
 			const path = typeof data.path === "string" ? data.path : undefined;
@@ -829,7 +850,11 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 				let code: MemoryHit[];
 				let raccoon: RaccoonClientLike;
 				try {
-					raccoon = await getClient(config.bin);
+					raccoon = await askSettle(
+						getClient(config.bin),
+						config.timeoutMs,
+						`ask client timed out after ${config.timeoutMs}ms`,
+					);
 					const searchText = await searchCall(
 						raccoon,
 						"memory_search",
@@ -905,10 +930,14 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 				askAbort = myAbort;
 				try {
 					const result = await Promise.race([
-						spawnAsk(invocation.command, invocation.args, {
-							cwd: ctx.cwd,
-							timeoutMs: ASK_CHILD_TIMEOUT_MS,
-						}),
+						askSettle(
+							spawnAsk(invocation.command, invocation.args, {
+								cwd: ctx.cwd,
+								timeoutMs: ASK_CHILD_TIMEOUT_MS,
+							}),
+							config.timeoutMs,
+							`ask child timed out after ${config.timeoutMs}ms`,
+						),
 						abortPromise,
 					]);
 					if (askAbort === myAbort) askAbort = null;
