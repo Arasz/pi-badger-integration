@@ -51,6 +51,7 @@ const RAG_KEYS = [
 	"PI_BADGER_MEM_RAG_MIN_WORDS",
 	"PI_BADGER_MEM_RAG_MIN_CHARS",
 	"PI_BADGER_MEM_RAG_TIMEOUT_MS",
+	"PI_BADGER_MEM_RAG_ASK_CHILD_TIMEOUT_MS",
 	"PI_BADGER_MEM_RAG_SNIPPET_CHARS",
 	"PI_BADGER_MEM_RAG_BIN",
 	"AI_BADGER_PROJECT_ID",
@@ -439,8 +440,8 @@ describe("P2 AC3/H4 immediate ack", () => {
 		clearRagEnv();
 		process.env["AI_BADGER_PROJECT_ID"] = "proj-p2-h4";
 		// SHOULD-1 needs a sleepable budget: 500ms (P1 precedent) instead of the
-		// 20s default, so the post-shutdown stray-emission wait stays ~1s.
-		process.env["PI_BADGER_MEM_RAG_TIMEOUT_MS"] = "500";
+		// 90s child default, so the post-shutdown stray-emission wait stays ~1s.
+		process.env["PI_BADGER_MEM_RAG_ASK_CHILD_TIMEOUT_MS"] = "500";
 		const { pi, spawnCalls } = installAsk({ spawn: async (): Promise<SpawnResult> => never() });
 		const notes: Notify[] = [];
 		const pending = fireAsk(pi, P1, makeAskCtx("/tmp/p2-h4", "sess-p2-h4", notes));

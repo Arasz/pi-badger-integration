@@ -50,6 +50,7 @@ export const MEM_RAG_MODE_ENV = "PI_BADGER_MEM_RAG_MODE";
 export const MEM_RAG_MIN_WORDS_ENV = "PI_BADGER_MEM_RAG_MIN_WORDS";
 export const MEM_RAG_MIN_CHARS_ENV = "PI_BADGER_MEM_RAG_MIN_CHARS";
 export const MEM_RAG_TIMEOUT_ENV = "PI_BADGER_MEM_RAG_TIMEOUT_MS";
+export const MEM_RAG_ASK_CHILD_TIMEOUT_ENV = "PI_BADGER_MEM_RAG_ASK_CHILD_TIMEOUT_MS";
 export const MEM_RAG_SNIPPET_ENV = "PI_BADGER_MEM_RAG_SNIPPET_CHARS";
 export const MEM_RAG_BIN_ENV = "PI_BADGER_MEM_RAG_BIN";
 
@@ -89,6 +90,7 @@ interface PromptContextConfig {
 	minWords: number;
 	minChars: number;
 	timeoutMs: number;
+	askChildTimeoutMs: number;
 	snippetChars: number;
 	bin: string;
 }
@@ -110,6 +112,7 @@ function readConfig(sessionMode: PromptContextMode | "off" | undefined): PromptC
 		minWords: numEnv(MEM_RAG_MIN_WORDS_ENV, 6, 1, 100),
 		minChars: numEnv(MEM_RAG_MIN_CHARS_ENV, 20, 0, 10000),
 		timeoutMs: numEnv(MEM_RAG_TIMEOUT_ENV, 20000, 500, 60000),
+		askChildTimeoutMs: numEnv(MEM_RAG_ASK_CHILD_TIMEOUT_ENV, ASK_CHILD_TIMEOUT_MS, 500, 600000),
 		snippetChars: numEnv(MEM_RAG_SNIPPET_ENV, 300, 50, 2000),
 		bin: process.env[MEM_RAG_BIN_ENV]?.trim() || join(homedir(), ".dotnet", "tools", "ai-raccoon"),
 	};
@@ -840,7 +843,7 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 					`mem-based-rag: ${config.enabled ? `on (${config.mode})` : "off"} — enriched ${enriched}, skipped ${skipped}, last: ${lastReason}. ` +
 						`Ask: asked ${asked}, skippedAsk ${skippedAsk}, last: ${lastAskReason}. ` +
 						`Project: ${project}, child: ${isChildAlive(client) ? "alive" : "idle"}. ` +
-						`Floors: ≥${config.minWords} unique words (≥3 chars ex-noise), ≥${config.minChars} chars, timeout ${config.timeoutMs}ms. ` +
+						`Floors: ≥${config.minWords} unique words (≥3 chars ex-noise), ≥${config.minChars} chars, timeout ${config.timeoutMs}ms, child ${config.askChildTimeoutMs}ms. ` +
 						`Auto-enrich: skill calls only (/skill:<id> <text>); all other turns skip.`,
 					"info",
 				);
@@ -906,7 +909,7 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 				}
 				// P2 H4 ack: an accepted query announces itself BEFORE the first
 				// await — names the query + the outer settle budget.
-				notify(`mem-based-rag /ask: searching for "${decision.query}" (budget ${config.timeoutMs}ms).`, "info");
+				notify(`mem-based-rag /ask: searching for "${decision.query}" (child budget ${config.askChildTimeoutMs}ms).`, "info");
 				// P2 terminal finish: every post-acceptance outcome notifies AND
 				// cards (thin-skip/mode-off/no-id above stay notify-only, no ack).
 				const finish = (
@@ -987,6 +990,10 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 					"--mode",
 					"json",
 					"--no-session",
+					"--no-tools",
+					"--no-skills",
+					"--no-extensions",
+					"--no-prompt-templates",
 					"--exclude-tools",
 					ASK_CHILD_EXCLUDED_TOOLS,
 					"--",
@@ -1010,10 +1017,10 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 						askSettle(
 							spawnAsk(invocation.command, invocation.args, {
 								cwd: ctx.cwd,
-								timeoutMs: ASK_CHILD_TIMEOUT_MS,
+								timeoutMs: config.askChildTimeoutMs,
 							}),
-							config.timeoutMs,
-							`ask child timed out after ${config.timeoutMs}ms`,
+							config.askChildTimeoutMs,
+							`ask child timed out after ${config.askChildTimeoutMs}ms`,
 						),
 						abortPromise,
 					]);
