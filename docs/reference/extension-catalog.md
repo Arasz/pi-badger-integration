@@ -105,7 +105,7 @@ directly (command-position pattern with env/sudo/nohup/npx/timeout/path prefixes
 record. Help/version reads (`pi --help`, `-h`, `--version`, `-v`, including
 `pi <subcommand> --help`) stay silent — documentation, not delegation skips.
 Blocking with fail-open on predicate crash (a record failure still blocks);
-kill switch `PI_BADGER_DELEGATION_SKIP_GUARD=0`. Spawning through wrappers
+there is intentionally no env kill switch — the guard always enforces. Spawning through wrappers
 (`sh -c`, `pnpm dlx`) is a known silent gap.
 
 

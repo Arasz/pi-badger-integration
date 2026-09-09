@@ -6,12 +6,13 @@
  * `--version`, `-v`, including `pi <subcommand> --help`) stay silent — they are
  * documentation reads, not delegation skips.
  *
- * Fail-open: predicate/kill-switch crashes return `undefined` (allow), because pi
+ * Fail-open: predicate crashes return `undefined` (allow), because pi
  * core RETHROWS handler errors (`beforeToolCall` catch → "Extension failed,
  * blocking execution") — an unguarded throw would block with a confusing message.
  * A RECORD failure still blocks (the block is intentional; the record is audit).
- * Kill switch: `PI_BADGER_DELEGATION_SKIP_GUARD=0` (read per call;
- * unset/invalid → enabled), mirroring `PI_BADGER_WAIT_GUARD`.
+ * There is intentionally no env kill switch: agents set
+ * `PI_BADGER_DELEGATION_SKIP_GUARD=0` on every call to dodge the guard,
+ * so the guard always enforces — use `delegate` instead.
  *
  * The runner's own children never reach this guard: delegation-runner.ts spawns
  * pi via `node:child_process`, never through the `bash` TOOL, so no bash
@@ -20,15 +21,12 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-/** Env kill switch: `"0"` disables the guard; unset or any other value → enabled. */
-export const DELEGATION_SKIP_GUARD_ENV = "PI_BADGER_DELEGATION_SKIP_GUARD";
-
 /** Session-transcript entry type for recorded skips — queryable, no new table. */
 export const DELEGATION_SKIP_ENTRY_TYPE = "delegation-skip";
 
-/** The block reason: names the preferred surface and the bypass. */
+/** The block reason: names the preferred surface. */
 export const SKIP_BLOCK_MESSAGE =
-  "ai-badger: spawning pi directly is blocked — use `delegate` instead (PI_BADGER_DELEGATION_SKIP_GUARD=0 to bypass)";
+  "ai-badger: spawning pi directly is blocked — use `delegate` instead";
 
 /**
  * Command-position `pi`-spawn predicate (spike §AC2, measured 33/33: 15/15
@@ -96,12 +94,6 @@ export function piSpawnDecision(command: string | undefined): PiSpawnDecision {
   return { action: "block", reason: SKIP_BLOCK_MESSAGE };
 }
 
-/** The kill switch reads PER CALL: only `"0"` disables; unset/invalid → enabled. */
-function guardEnabled(): boolean {
-  const raw = process.env[DELEGATION_SKIP_GUARD_ENV];
-  return raw === undefined || raw.trim() !== "0";
-}
-
 /**
  * Wire the guard onto the `tool_call` seam (bash/powershell `input.command`,
  * the monitor `shellCommandOf` precedent). A prompt-like `pi` spawn returns
@@ -114,7 +106,6 @@ function guardEnabled(): boolean {
 export function registerDelegationSkipGuard(pi: ExtensionAPI): void {
   pi.on("tool_call", (event, _ctx) => {
     try {
-      if (!guardEnabled()) return undefined;
       const call = event as { toolName?: string; input?: { command?: unknown } } | undefined;
       if (call?.toolName === undefined || !/^(bash|powershell)$/i.test(call.toolName)) return undefined;
       const command = call.input?.command;

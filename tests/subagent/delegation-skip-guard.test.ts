@@ -6,7 +6,7 @@
  * Help/version reads (`pi --help`, `-h`, `--version`, `-v`) stay silent.
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,12 +19,6 @@ import {
 } from "../../extensions/subagent/delegation-skip-guard.ts";
 import subagentFactory from "../../extensions/subagent/index.ts";
 import { createFakePi, type FakePi } from "../helpers/fake-pi.ts";
-
-const KILL_SWITCH = "PI_BADGER_DELEGATION_SKIP_GUARD";
-
-afterEach(() => {
-  delete process.env[KILL_SWITCH];
-});
 
 // ------------------------------------------------------------------ harness
 
@@ -283,7 +277,7 @@ describe("D-S4: non-shell tools and non-string commands never reach the predicat
   });
 });
 
-describe("D-S5: recorder failure still blocks; predicate crash fails open; kill switch silences", () => {
+describe("D-S5: recorder failure still blocks; predicate crash fails open; no env bypass", () => {
   test("throwing appendEntry still blocks — the block is intentional, the record is audit", () => {
     const { pi, ctxFor } = makeHarness();
     pi.appendEntry = () => {
@@ -295,15 +289,19 @@ describe("D-S5: recorder failure still blocks; predicate crash fails open; kill 
     expect(results).toEqual([{ block: true, reason: SKIP_BLOCK_MESSAGE }]);
   });
 
-  test("kill switch PI_BADGER_DELEGATION_SKIP_GUARD=0 silences a detected spawn", () => {
-    process.env[KILL_SWITCH] = "0";
-    const { pi, notified, ctxFor } = makeHarness();
+  test("no env bypass: PI_BADGER_DELEGATION_SKIP_GUARD=0 still blocks a detected spawn", () => {
+    process.env.PI_BADGER_DELEGATION_SKIP_GUARD = "0";
+    try {
+      const { pi, notified, ctxFor } = makeHarness();
 
-    const results = fireToolCall(pi, "bash", { command: "pi run --task x" }, ctxFor());
+      const results = fireToolCall(pi, "bash", { command: "pi run --task x" }, ctxFor());
 
-    expect(results).toEqual([undefined]);
-    expect(notified).toHaveLength(0);
-    expect(entriesOf(pi, "delegation-skip")).toHaveLength(0);
+      expect(results).toEqual([{ block: true, reason: SKIP_BLOCK_MESSAGE }]);
+      expect(notified).toHaveLength(0);
+      expect(entriesOf(pi, "delegation-skip")).toHaveLength(1);
+    } finally {
+      delete process.env.PI_BADGER_DELEGATION_SKIP_GUARD;
+    }
   });
 });
 
