@@ -151,13 +151,18 @@ describe("bash timeout, escalation and orphans", () => {
 		// (a child.kill-only fallback kills bash while sleep leaks reparented). Track the
 		// grandchild via a pid file and assert IT is unrecyclable after the kill.
 		//
-		// Flake autopsy (CI 2026-09-09, 52 ms duration): the old shape raced a 50 ms
-		// timeout against bash's fork of `sleep` — under load SIGTERM won before
-		// `echo $! > pidfile` ran, so the pid file never existed. The kill under
-		// test is now driven explicitly AFTER the grandchild provably exists: poll
-		// for the pid file (generous deadline), then handle.kill(). The timeout leg
-		// keeps a budget it can never hit first. Group-kill intent unchanged — a
-		// child.kill-only fallback would still leak the reparented sleeper.
+		// Flake autopsy (CI 2026-09-09 — two variants, same race family):
+		//  (a) 52 ms duration: the 50 ms timeout fired before bash forked `sleep`,
+		//      so the pid file never existed.
+		//  (b) 12 ms duration (line 193 ESRCH-false): the pid file existed and bash
+		//      died on the group SIGTERM, but `sleep` was still in fork's blocked-
+		//      signal window, so the instant ESRCH sampled it alive-but-doomed.
+		// Hence both polls: wait for the grandchild to provably EXIST before
+		// killing, and after `done` (which resolves at bash's exit, possibly with
+		// the grace SIGKILL still in flight) poll to a deadline for it to be
+		// REAPED. A true leak fails loudly at the deadline instead of flaking.
+		// Group-kill intent unchanged — a child.kill-only fallback would still
+		// leak the reparented sleeper past any deadline.
 		if (process.platform === "win32") return; // POSIX process groups only
 		const dir = mkdtempSync(join(tmpdir(), "monitor-orphan-"));
 		const pidFile = join(dir, "sleeper.pid");
@@ -184,11 +189,22 @@ describe("bash timeout, escalation and orphans", () => {
 			expect(outcome.kind).toBe("error");
 			const sleeperPid = Number(readFileSync(pidFile, "utf8").trim());
 			expect(Number.isInteger(sleeperPid) && sleeperPid > 0).toBe(true);
+			// Settle poll (autopsy variant b): `done` resolves at bash's exit while
+			// the grandchild may still be settling — never assert ESRCH instantly.
+			const esrchDeadline = Date.now() + 10000;
 			let esrch = false;
-			try {
-				process.kill(sleeperPid, 0);
-			} catch (err) {
-				esrch = (err as NodeJS.ErrnoException).code === "ESRCH";
+			for (;;) {
+				try {
+					process.kill(sleeperPid, 0);
+				} catch (err) {
+					if ((err as NodeJS.ErrnoException).code === "ESRCH") {
+						esrch = true;
+						break;
+					}
+					throw err; // EPERM et al. is a real surprise — fail loudly
+				}
+				if (Date.now() > esrchDeadline) break;
+				await sleep(10);
 			}
 			expect(esrch).toBe(true); // grandchild reaped by the group kill
 		} finally {
