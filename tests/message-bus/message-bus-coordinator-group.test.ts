@@ -3,10 +3,10 @@ import {
 	buildChannelCache,
 	defaultGroupKey,
 	groupByScope,
-	snapshotVersion,
 	type ChannelCache,
 	type RegistrySnapshot,
 } from "../../extensions/message-bus/coordinator-group.ts";
+import { registryVersion } from "../../extensions/message-bus/message-bus-core.ts";
 import type { BusMessage } from "../../extensions/message-bus/message-bus-core.ts";
 
 const msg = (over: Partial<BusMessage> & { id: number }): BusMessage => ({
@@ -74,23 +74,40 @@ describe("groupByScope", () => {
 	});
 });
 
-describe("snapshotVersion", () => {
-	test("version is max(lastSeenMs)+count hash", () => {
-		expect(snapshotVersion([entry({ lastSeenMs: 100 }), entry({ lastSeenMs: 300 }), entry({ lastSeenMs: 200 })])).toBe("300:3");
+describe("registryVersion", () => {
+	test("SWAP-PIN: membership swap with same max+count must move the version (else the channel cache aliases)", () => {
+		const a = [entry({ sessionId: "s-1", lastSeenMs: 1000 })];
+		const b = [entry({ sessionId: "s-2", lastSeenMs: 1000 })];
+		expect(registryVersion(b)).not.toBe(registryVersion(a));
+		let calls = 0;
+		const prev = buildChannelCache(null, { version: registryVersion(a) }, () => {
+			calls++;
+			return {};
+		});
+		const next = buildChannelCache(prev, { version: registryVersion(b) }, () => {
+			calls++;
+			return {};
+		});
+		expect(next).not.toBe(prev);
+		expect(calls).toBe(2);
+	});
+
+	test("version is max(lastSeenMs):count:identity-hash", () => {
+		expect(registryVersion([entry({ lastSeenMs: 100 }), entry({ lastSeenMs: 300 }), entry({ lastSeenMs: 200 })])).toMatch(/^300:3:[0-9a-f]{8}$/);
 	});
 
 	test("empty snapshot versions as zero", () => {
-		expect(snapshotVersion([])).toBe("0:0");
+		expect(registryVersion([])).toMatch(/^0:0:[0-9a-f]{8}$/);
 	});
 
 	test("count change alone bumps the version", () => {
-		expect(snapshotVersion([entry()])).not.toBe(snapshotVersion([entry(), entry({ sessionId: "s-2" })]));
+		expect(registryVersion([entry()])).not.toBe(registryVersion([entry(), entry({ sessionId: "s-2" })]));
 	});
 });
 
 describe("buildChannelCache", () => {
 	test("AC3: same snapshot version returns identical cached object with no recompute; bumped version recomputes", () => {
-		const snapshot: RegistrySnapshot = { entries: [entry()], version: snapshotVersion([entry()]) };
+		const snapshot: RegistrySnapshot = { entries: [entry()], version: registryVersion([entry()]) };
 		let calls = 0;
 		const compute = () => {
 			calls++;
@@ -103,7 +120,7 @@ describe("buildChannelCache", () => {
 		expect(calls).toBe(1);
 		const bumped: RegistrySnapshot = {
 			entries: [entry(), entry({ sessionId: "s-2", lastSeenMs: 2000 })],
-			version: snapshotVersion([entry(), entry({ sessionId: "s-2", lastSeenMs: 2000 })]),
+			version: registryVersion([entry(), entry({ sessionId: "s-2", lastSeenMs: 2000 })]),
 		};
 		expect(bumped.version).not.toBe(snapshot.version);
 		const third: ChannelCache = buildChannelCache(second, bumped, compute);

@@ -10,35 +10,28 @@
  * Fail-open: every per-target read failure becomes an `errors` entry, never
  * a throw — one sick session must not blind the rest of the tick.
  *
- * Single-flight: overlapping ticks collapse onto the in-flight run, so
- * concurrent callers share one store pass (max concurrency 1).
+ * Single-flight keyed by snapshot version + budget: same-key overlapping ticks
+ * collapse onto the in-flight run, so concurrent callers share one store pass;
+ * different versions never alias onto each other's pass.
  *
  * Rotation: ticks serve the registry round-robin in snapshot order, `budget`
  * entries per tick; `truncated` says whether unserved fresh entries remain in
- * this pass. A new snapshot `version` restarts the rotation.
+ * this pass. A new snapshot `version` restarts the rotation from the head
+ * (staleness note: a churning registry re-serves the head; the tail still
+ * drains once versions settle — pinned by the mid-rotation bump test).
  *
  * Kill-switch: `PI_BADGER_MESSAGE_BUS === "0"` returns `{ disabled: true }`
  * before touching the store at all.
  */
 
-/** Registry freshness window (s): entries unseen longer than this are skipped. MEASUREMENT-TODO (V6): validate 300 against real idle-session lifetimes. */
-export const REGISTRY_TTL_S = 300;
+import { MESSAGE_BUS_ENV, REGISTRY_TTL_S, type RegistryEntry, type RegistrySnapshot } from "./message-bus-core.ts";
+
+/** Re-exported from core (single-source pin): the tick shares the registry
+ * TTL and snapshot types without importing pi wiring. */
+export { REGISTRY_TTL_S, type RegistryEntry, type RegistrySnapshot };
 
 /** Default and max sessions served per tick. MEASUREMENT-TODO (V6): validate 25 against real registry sizes and peek latency. */
 export const MAX_TICK_SESSIONS = 25;
-
-/** One registry row: who the session is and when it was last seen. */
-export interface CoordinatorRegistryEntry {
-	sessionId: string;
-	projectId: string | null;
-	lastSeenMs: number;
-}
-
-/** The registry view one tick rotates over. */
-export interface RegistrySnapshot {
-	entries: CoordinatorRegistryEntry[];
-	version: string;
-}
 
 /** Tick knobs: `budget` caps sessions served (default/max MAX_TICK_SESSIONS). */
 export interface CoordinatorTickOptions {
@@ -68,10 +61,13 @@ export interface CoordinatorStore {
 	getCursor?(sessionId: string): number | Promise<number>;
 }
 
-const KILL_SWITCH = "PI_BADGER_MESSAGE_BUS";
+/** Clamp a tick budget to (0, MAX_TICK_SESSIONS] (default/max MAX_TICK_SESSIONS). */
+function normalizeBudget(budget: number | undefined): number {
+	return typeof budget === "number" && Number.isInteger(budget) && budget > 0 ? Math.min(budget, MAX_TICK_SESSIONS) : MAX_TICK_SESSIONS;
+}
 
-/** Overlapping ticks collapse onto this run; cleared on settle. */
-let inFlight: Promise<CoordinatorTickResult> | null = null;
+/** Overlapping same-key ticks collapse onto this run; cleared on settle. */
+let inFlight: { key: string; run: Promise<CoordinatorTickResult> } | null = null;
 
 /** Rotation state: where the next tick resumes, and which registry view it was for. */
 let lastVersion: string | null = null;
@@ -80,20 +76,26 @@ let roundRobinOffset = 0;
 /** Wake-only tick: compute who has pending mail. Read-only, fail-open, single-flight. */
 export function tickCoordinator(store: CoordinatorStore, snapshot: RegistrySnapshot, opts: CoordinatorTickOptions): Promise<CoordinatorTickResult> {
 	const env = opts.env ?? process.env;
-	if (env[KILL_SWITCH] === "0") return Promise.resolve({ woke: [], errors: [], truncated: false, disabled: true });
-	if (inFlight) return inFlight;
-	const run = runTick(store, snapshot, opts);
-	inFlight = run;
+	if (env[MESSAGE_BUS_ENV] === "0") return Promise.resolve({ woke: [], errors: [], truncated: false, disabled: true });
+	const limit = normalizeBudget(opts.budget);
+	const key = `${snapshot.version}:${limit}`;
+	if (inFlight && inFlight.key === key) return inFlight.run;
+	const run = runTick(store, snapshot, opts, limit);
+	inFlight = { key, run };
 	const clear = (): void => {
-		if (inFlight === run) inFlight = null;
+		if (inFlight?.run === run) inFlight = null;
 	};
 	run.then(clear, clear);
 	return run;
 }
 
-async function runTick(store: CoordinatorStore, snapshot: RegistrySnapshot, opts: CoordinatorTickOptions): Promise<CoordinatorTickResult> {
-	const limit =
-		typeof opts.budget === "number" && Number.isInteger(opts.budget) && opts.budget > 0 ? Math.min(opts.budget, MAX_TICK_SESSIONS) : MAX_TICK_SESSIONS;
+async function runTick(store: CoordinatorStore, snapshot: RegistrySnapshot, opts: CoordinatorTickOptions, limit: number): Promise<CoordinatorTickResult> {
+	// Rotation assumption (pinned by the mid-rotation version-bump test): a new
+	// snapshot version restarts the pass from the head instead of resuming — the
+	// head may be served twice across the bump, but no entry is ever skipped, so
+	// every live session is eventually served (no loss, no starvation).
+	// MEASUREMENT-TODO (V6): if the registry churns faster than a full pass, the
+	// head re-serves every tick and the tail waits — watch truncated=true streaks.
 	if (lastVersion !== snapshot.version) {
 		lastVersion = snapshot.version;
 		roundRobinOffset = 0;
@@ -110,9 +112,10 @@ async function runTick(store: CoordinatorStore, snapshot: RegistrySnapshot, opts
 	const canFallback = typeof store.listForSession === "function" && typeof store.getCursor === "function";
 	const woke: string[] = [];
 	const errors: CoordinatorTickError[] = [];
-	// Sequential, one session at a time: a bare fan-out would let one
-	// rejection escape and blind the rest, so each target gets its own
-	// try/catch and the tick degrades per-target instead of failing whole.
+	// Sequential, one session at a time: parallel peeks contend on the same
+	// sqlite store (database-is-locked under fan-out), so the tick serialises
+	// reads in snapshot order; each target keeps its own try/catch so one sick
+	// session degrades per-target instead of failing whole.
 	for (const entry of slice) {
 		try {
 			let pending: boolean;

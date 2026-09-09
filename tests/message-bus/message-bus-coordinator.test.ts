@@ -87,6 +87,10 @@ function newState(inbox: Record<string, number[]> = {}): PeekState {
 	};
 }
 
+// Convention: every test uses a UNIQUE snapshot version string — rotation state
+// (lastVersion/roundRobinOffset) and the single-flight slot are module-global,
+// so a reused version would resume another test's pass (or collapse onto its
+// run) instead of starting fresh.
 const snapshot = (ids: string[], version: string): RegistrySnapshot => ({
 	version,
 	entries: ids.map((sessionId) => ({ sessionId, projectId: "p1", lastSeenMs: NOW })),
@@ -108,6 +112,8 @@ describe("coordinator tick (wake-only, read-only)", () => {
 		for (const token of ["deliverForSession", "deliverDirectForSession", "sendMessage", "appendEntry", ".send("]) {
 			expect(source, `forbidden write-path token: ${token}`).not.toContain(token);
 		}
+		expect(source, "coordinator.ts must import only from core, never from index.ts").not.toContain("./index");
+		expect(source, "coordinator.ts shares TTL/types/version via core").toContain("message-bus-core");
 	});
 
 	test("AC2: per-target fail-open — B throws, A/C still decided, no throw", async () => {
@@ -132,6 +138,32 @@ describe("coordinator tick (wake-only, read-only)", () => {
 		expect(state.peekCalls).toEqual(["A", "B"]);
 		expect(r2).toEqual(r1);
 		expect(r3).toEqual(r1);
+	});
+
+	test("single-flight is keyed by snapshot version (+budget): concurrent different-version ticks do not alias", async () => {
+		const state = newState({ A: [1], B: [2] });
+		state.delayMs = 15;
+		const store = trackingStore(state);
+		const snapA: RegistrySnapshot = { version: "sf-v1", entries: [{ sessionId: "A", projectId: "p1", lastSeenMs: NOW }] };
+		const snapB: RegistrySnapshot = { version: "sf-v2", entries: [{ sessionId: "B", projectId: "p1", lastSeenMs: NOW }] };
+		const [r1, r2] = await Promise.all([
+			tickCoordinator(store, snapA, { now: NOW, env: {} }),
+			tickCoordinator(store, snapB, { now: NOW, env: {} }),
+		]);
+		expect(r1.woke).toEqual(["A"]);
+		expect(r2.woke).toEqual(["B"]);
+	});
+
+	test("single-flight key includes budget: same version with different budgets does not collapse", async () => {
+		const state = newState({ A: [1], B: [2] });
+		state.delayMs = 15;
+		const store = trackingStore(state);
+		const snap = snapshot(["A", "B"], "sf-budget");
+		const p1 = tickCoordinator(store, snap, { now: NOW, env: {}, budget: 1 });
+		const p2 = tickCoordinator(store, snap, { now: NOW, env: {}, budget: 2 });
+		const collapsed = (p2 as unknown) === (p1 as unknown);
+		await Promise.all([p1, p2]);
+		expect(collapsed, "same version with different budgets must not collapse onto one run").toBe(false);
 	});
 
 	test("AC4: kill-switch → disabled with zero store calls", async () => {
@@ -170,6 +202,30 @@ describe("coordinator tick (wake-only, read-only)", () => {
 		expect(r2.woke).toEqual(ids.slice(10, 20));
 		expect(r3.woke).toEqual(ids.slice(20, 30));
 		expect([...r1.woke, ...r2.woke, ...r3.woke].sort()).toEqual([...ids].sort());
+	});
+
+	test("version bump mid-rotation restarts the pass: every session eventually served, none starved", async () => {
+		const ids = Array.from({ length: 10 }, (_, i) => `rot-${i}`);
+		const inbox: Record<string, number[]> = Object.fromEntries(ids.map((id, i) => [id, [2000 + i]]));
+		const state = newState(inbox);
+		const store = trackingStore(state);
+		const opts = { now: NOW, env: {} };
+		// First pass starts, then the registry is rewritten (new version) mid-rotation.
+		const r1 = await tickCoordinator(store, snapshot(ids, "rot-a"), { ...opts, budget: 4 });
+		expect(r1.woke).toEqual(ids.slice(0, 4));
+		expect(r1.truncated).toBe(true);
+		// The bump restarts from the head instead of resuming — head re-served,
+		// nothing skipped; the new pass then drains to the tail.
+		const r2 = await tickCoordinator(store, snapshot(ids, "rot-b"), { ...opts, budget: 4 });
+		expect(r2.woke).toEqual(ids.slice(0, 4));
+		expect(r2.truncated).toBe(true);
+		const r3 = await tickCoordinator(store, snapshot(ids, "rot-b"), { ...opts, budget: 4 });
+		expect(r3.woke).toEqual(ids.slice(4, 8));
+		expect(r3.truncated).toBe(true);
+		const r4 = await tickCoordinator(store, snapshot(ids, "rot-b"), { ...opts, budget: 4 });
+		expect(r4.woke).toEqual(ids.slice(8, 10));
+		expect(r4.truncated).toBe(false);
+		expect([...r2.woke, ...r3.woke, ...r4.woke].sort()).toEqual([...ids].sort());
 	});
 
 	test("AC6: no-ack-write at ROW level after tick over mail-bearing temp-DB sqlite", async () => {

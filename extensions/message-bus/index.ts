@@ -54,12 +54,21 @@ import {
 	formatList,
 	isAck,
 	isValidBusId,
+	MESSAGE_BUS_ENV,
 	normalizeSendTargets,
+	REGISTRY_TTL_S,
+	registryVersion,
 	selfSendWarning,
 	type BusMessage,
+	type RegistryEntry,
+	type RegistrySnapshot,
 	type StartupDropStats,
 	unknownTargetWarning,
 } from "./message-bus-core.ts";
+/** Re-exported from core (single-source pin): the registry TTL, snapshot
+ * types and kill-switch name live in core — this module stamps snapshots
+ * with them but never redefines them. */
+export { MESSAGE_BUS_ENV, REGISTRY_TTL_S, type RegistryEntry, type RegistrySnapshot } from "./message-bus-core.ts";
 import { tickCoordinator } from "./coordinator.ts";
 import { buildChannelCache, groupByScope, type ChannelCache } from "./coordinator-group.ts";
 
@@ -86,9 +95,6 @@ export const MESSAGE_BUS_TOOL_NAME = "message-bus";
 /** The human command. */
 export const MESSAGE_BUS_COMMAND_NAME = "messages";
 
-/** Kill-switch: the literal string "0" disables the delivery hooks (tools stay). */
-export const MESSAGE_BUS_ENV = "PI_BADGER_MESSAGE_BUS";
-
 /** First-read history gate (mirrors deliver_for_session's 30-minute window). */
 export const FIRST_READ_WINDOW_MS = 30 * 60_000;
 
@@ -109,36 +115,8 @@ export interface MessageBusDeps {
 // registry heartbeat (PKG-1): read-side staleness + throttled touch
 // ---------------------------------------------------------------------------
 
-/** Registry entry TTL in seconds — MEASUREMENT-TODO: 300 is a placeholder,
- * not a measured lease; tune from observed session lifetimes. Read-side only:
- * stale rows are filtered by readRegistrySnapshot, never deleted, so old DBs
- * keep working with zero DDL change (bus_identities already exists). */
-export const REGISTRY_TTL_S = 300;
-
 /** Touch throttle: at most one registry write per session per TTL/4. */
 export const REGISTRY_TOUCH_INTERVAL_MS = (REGISTRY_TTL_S * 1000) / 4;
-
-/** One live-registry row: who was last seen, where, and when (ms since epoch). */
-export interface RegistryEntry {
-	sessionId: string;
-	projectId: string | null;
-	lastSeenMs: number;
-}
-
-/** Read-side snapshot: live entries only, plus a version pin of
- * max(lastSeenMs):count:snapshot-hash for cheap change detection. */
-export interface RegistrySnapshot {
-	entries: RegistryEntry[];
-	version: string;
-}
-
-function registryVersion(entries: RegistryEntry[]): string {
-	const max = entries.length > 0 ? Math.max(...entries.map((e) => e.lastSeenMs)) : 0;
-	const canonical = entries.map((e) => `${e.sessionId}|${e.projectId ?? ""}|${e.lastSeenMs}`).join("\n");
-	let hash = 5381;
-	for (let i = 0; i < canonical.length; i++) hash = ((hash << 5) + hash + canonical.charCodeAt(i)) >>> 0;
-	return `${max}:${entries.length}:${hash.toString(16).padStart(8, "0")}`;
-}
 
 /** Live-registry read: rows newer than REGISTRY_TTL_S, stably ordered, with a
  * version pin. Fail-open (D31): a store without the read seam — or an
@@ -535,6 +513,7 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 	const lastRegistryTouch = new Map<string, number>();
 	const touchRegistry = (store: BusStore, sessionId: string, projectId: string | null, force = false): void => {
 		if (!sessionId) return;
+		if (env[MESSAGE_BUS_ENV] === "0") return; // kill-switch: hooks AND registry writes stop, tools stay
 		const t = now();
 		if (!force) {
 			const last = lastRegistryTouch.get(sessionId);
@@ -787,11 +766,16 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		if (hooksDisabled()) return undefined;
 		// P3 registry-lite: record our own session id best-effort so future
 		// direct senders get silence instead of an unknown-target warning.
-		// Never blocks delivery — a registry failure just logs.
-		try {
-			touchRegistry(storeFor(ctx.cwd), resolveSid(ctx), resolvePid(ctx), true);
-		} catch (error) {
-		console.error("ai-badger message-bus: identity upsert failed — fail-open", error);
+		// Never blocks delivery — a registry failure just logs. The sid guard
+		// keeps an empty identity from opening the store for a write that
+		// touchRegistry would then discard (no spurious fail-open line).
+		const sid = resolveSid(ctx);
+		if (sid) {
+			try {
+				touchRegistry(storeFor(ctx.cwd), sid, resolvePid(ctx), true);
+			} catch (error) {
+			console.error("ai-badger message-bus: identity upsert failed — fail-open", error);
+			}
 		}
 		try {
 			await runDirectStart(ctx);
@@ -839,11 +823,16 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 			// Read-only like the tick; its failure never breaks the wake set.
 			let channelSummary = "n/a";
 			try {
-				const preview =
-					typeof store.peekForSession === "function"
-						? store.peekForSession(sessionId, projectId)
-						: { messages: store.listForSession(sessionId, projectId).filter((m) => m.id > store.getCursor(sessionId)) };
-				coordinatorChannels = buildChannelCache(coordinatorChannels, snapshot, () => groupByScope(preview.messages, projectId));
+				// Lazy preview: the peek runs INSIDE the compute closure, so it
+				// executes only on a cache miss — steady-state cache hits cost
+				// zero store reads. Still fail-open via the wrapper below.
+				coordinatorChannels = buildChannelCache(coordinatorChannels, snapshot, () => {
+					const preview =
+						typeof store.peekForSession === "function"
+							? store.peekForSession(sessionId, projectId)
+							: { messages: store.listForSession(sessionId, projectId).filter((m) => m.id > store.getCursor(sessionId)) };
+					return groupByScope(preview.messages, projectId);
+				});
 				channelSummary = Object.entries(coordinatorChannels.channels)
 					.map(([key, rows]) => `${key}:${rows.length}`)
 					.join(",");
