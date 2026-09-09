@@ -1,7 +1,18 @@
 {
-  "lastUpdated": "2026-09-09T19:45:00Z",
+  "lastUpdated": "2026-09-09T20:35:00Z",
   "next": null,
   "completedTasks": [
+    {
+      "taskId": "pbi-wait-tick-shared-cursor-race",
+      "title": "Fix wait mail-tick losing shared-cursor race with adapter",
+      "finishedAt": "2026-09-09T20:35:00Z",
+      "summary": "Live test (2nd session) proved the cursor-based tick slept through R1 (WAKE deliverable 90s, timeout) while R3 hit in 251ms: the adapter poll consumes at sighting, displays at turn boundary, sharing one cursor. Fix: per-wait private high-water mark (readMailMark at start, defaultBusMailSince wakes on ids above mark, cursor-independent) + optional indexed hasNewSince seam (list fallback) + guarded mark read. 287 touched tests green incl. two-consumer regression (RED pre-fix) + mark-window/null-mark/stranger/fallback pins (2 lethal-verified live); tsc clean outside pre-existing pi-mcp-tools gap; full suite only pre-existing pi-mcp-tools reds; merged FF, published. Research record gains MEASURED F7/F8 + READ F9 + repaired Still-open closure. Low-effort: in-session plan + code-reviewer SHIP (1 fold: guarded mark read) + qa GATE-WITH-NITS (3 should-fix folded). User must /reload running sessions.",
+      "decisions": [
+        "Private mark over shared cursor: adapter cadence no longer matters to wake reliability; peek helper replaced (not kept alongside)",
+        "Undelivered-at-start mail no longer wakes (mark=max); accepted + disclosed (check-then-wait contract), snapshot deferred as 15-line follow-up",
+        "Deferred: MAX pushdown (wait-start cost only), probe regrouping (N~1), timer-handle naming (order loudly pinned), bus-store module split"
+      ]
+    },
     {
       "taskId": "pbi-wait-check-loop-bus-mail",
       "title": "Short wait plus message-bus check loop, close wake research still-open",
