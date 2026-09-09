@@ -55,14 +55,17 @@ afterEach(() => {
 	while (tempDirs.length) rmSync(tempDirs.pop()!, { recursive: true, force: true });
 });
 
-function makeHarness(busProbe?: (ctx: unknown, sinceId: number | null) => boolean, mark: number | null = 0): { pi: FakePi; scheduler: Scheduler } {
+function makeHarness(
+	busProbe?: (ctx: unknown, sinceId: number | null) => boolean,
+	mark: number | null | (() => number | null) = 0,
+): { pi: FakePi; scheduler: Scheduler } {
 	const pi = createFakePi();
 	const scheduler = manualScheduler();
 	monitor(pi as never, {
 		now: () => pi.clock.now,
 		scheduler,
 		...(busProbe ? { busProbe } : {}),
-		readMailMark: () => mark,
+		readMailMark: typeof mark === "function" ? mark : () => mark,
 	});
 	return { pi, scheduler };
 }
@@ -314,6 +317,75 @@ describe("wait internal mail tick", () => {
 // ------------------------------------------------------------------ shared-cursor race (live-test R1 repro)
 
 describe("shared-cursor race with the adapter", () => {
+	test("mail landing between mark-read and subscribe still wakes", async () => {
+		const dir = tempDir("aib-bus-race-window-");
+		const dbPath = join(dir, "ai-badger.db");
+		writeFileSync(dbPath, "");
+		const waiterStore = createSqliteStore(dbPath);
+		const adapterStore = createSqliteStore(dbPath);
+		const env = { AI_BADGER_USER_ROOT: "." };
+		const ctx = { ...makeCtx(), cwd: dir, sessionManager: { getSessionId: () => "s-me" } };
+		const m1 = waiterStore.send({ senderSession: "s-other", senderProject: "p1", content: "before", targetSession: "s-me", targetProject: null });
+		adapterStore.deliverForSession("s-me", null);
+		// The WAKE lands inside the mark-read itself (the production comment's window):
+		// the wait must still wake, via the liveness re-check or the first tick.
+		const { pi, scheduler } = makeHarness(
+			(c, sinceId) => defaultBusMailSince(c, env, sinceId),
+			() => {
+				waiterStore.send({ senderSession: "s-other", senderProject: "p1", content: "WAKE", targetSession: "s-me", targetProject: null });
+				return m1;
+			},
+		);
+		startSession(pi);
+		pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running"));
+		const pending = waitTool(pi)("tc-wait", {}, undefined, undefined, ctx);
+		const result = await pending;
+		expect(result.details).toMatchObject({ observed: "mail" });
+		expect(scheduler.timers.size).toBe(0);
+	});
+
+	test("a throwing mark stub degrades to mail-off, wait still works", async () => {
+		const { pi, scheduler } = makeHarness(() => true, () => {
+			throw new Error("mark unreadable (injected)");
+		});
+		startSession(pi);
+		pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running"));
+		let settled = false;
+		const pending = waitTool(pi)("tc-wait", {}, undefined, undefined, makeCtx()).then((r) => {
+			settled = true;
+			return r;
+		});
+		await tick();
+		fireTick(scheduler);
+		await tick();
+		expect(settled).toBe(false); // guarded read: null mark, probe never consulted
+		for (const [handle, timer] of scheduler.timers) {
+			if (timer.ms !== BUS_MAIL_TICK_MS) scheduler.fire(handle);
+		}
+		const result = await pending;
+		expect(result.details).toMatchObject({ observed: "timeout" });
+	});
+
+	test("a null mark disables mail wake but nothing else", async () => {
+		const { pi, scheduler } = makeHarness(() => true, null); // probe true, mark unreadable
+		startSession(pi);
+		pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running"));
+		let settled = false;
+		const pending = waitTool(pi)("tc-wait", {}, undefined, undefined, makeCtx()).then((r) => {
+			settled = true;
+			return r;
+		});
+		await tick();
+		fireTick(scheduler);
+		await tick();
+		expect(settled).toBe(false); // the null-mark wait skips the probe entirely
+		for (const [handle, timer] of scheduler.timers) {
+			if (timer.ms !== BUS_MAIL_TICK_MS) scheduler.fire(handle);
+		}
+		const result = await pending;
+		expect(result.details).toMatchObject({ observed: "timeout" }); // other sources intact
+	});
+
 	test("mail consumed out-of-band mid-wait still wakes the tick", async () => {
 		const dir = tempDir("aib-bus-race-");
 		const dbPath = join(dir, "ai-badger.db");
@@ -416,13 +488,17 @@ describe("defaultBusMailSince", () => {
 		const dbPath = join(dir, "ai-badger.db");
 		writeFileSync(dbPath, "");
 		const store = createSqliteStore(dbPath);
+		const mine = store.send({ senderSession: "s-other", senderProject: "p1", content: "for me", targetSession: "s-me", targetProject: null });
 		store.send({ senderSession: "s-other", senderProject: "p1", content: "for stranger", targetSession: "s-stranger", targetProject: null });
 		const ctx = { cwd: dir, sessionManager: { getSessionId: () => "s-me" } };
-		expect(defaultBusMailSince(ctx, { AI_BADGER_USER_ROOT: "." }, 0)).toBe(false);
+		const env = { AI_BADGER_USER_ROOT: "." };
+		expect(defaultBusMailSince(ctx, env, 0)).toBe(true); // sanity: own mail visible
+		expect(defaultBusMailSince(ctx, env, mine)).toBe(false); // past my own mail: silent
+		const strangerOnly = { cwd: dir, sessionManager: { getSessionId: () => "s-nobody" } };
+		expect(defaultBusMailSince(strangerOnly, env, 0)).toBe(false); // stranger mail invisible to others
 	});
 
-	test("stores without the hasNewSince seam fall back to list filtering", () => {
-		const legacy = {
+	test("stores without the hasNewSince seam fall back to list filtering", () => {		const legacy = {
 			listForSession: () => [
 				{ id: 41, senderSession: "s-other", senderProject: "p1", targetSession: "s-me", targetProject: null, content: "hi", timestamp: "2026-09-09T00:00:00.000Z" },
 			],
@@ -430,5 +506,6 @@ describe("defaultBusMailSince", () => {
 		const ctx = { cwd: "/p", sessionManager: { getSessionId: () => "s-me" } };
 		expect(defaultBusMailSince(ctx, {}, 40, legacy as never)).toBe(true); // 41 > 40 via list
 		expect(defaultBusMailSince(ctx, {}, 41, legacy as never)).toBe(false); // at-mark: silent
+		expect(defaultBusMailSince(ctx, {}, null, legacy as never)).toBe(false); // null mark: off, even on the fallback path
 	});
 });

@@ -697,15 +697,22 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		if (signal?.aborted) return waitResult("aborted", startedAt);
 
 		return await new Promise<ToolResult>((resolve) => {
+			// Private high-water mark BEFORE subscribing: mail landing between the mark
+			// and the liveness re-check still reads above it (at most one tick late).
+			// Null (store unreadable) disables mail wake for this wait, nothing else.
+			// The read itself is guarded: a throwing stub degrades to mail-off, never rejects.
+			let mailMark: number | null;
+			try {
+				mailMark = (deps.readMailMark ?? readMailMark)(ctx);
+			} catch {
+				mailMark = null;
+			}
 			const wait: PendingWait = {
 				...(ids.length > 0 ? { ids } : {}),
 				startedAt,
 				settled: false,
 				ctx,
-				// Private high-water mark BEFORE subscribing: mail landing between the mark
-				// and the liveness re-check still reads above it (at most one tick late).
-				// Null (store unreadable) disables mail wake for this wait, nothing else.
-				mailMark: (deps.readMailMark ?? readMailMark)(ctx),
+				mailMark,
 				settle: () => {},
 				unsubscribe: () => {},
 			};
