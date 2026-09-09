@@ -5,15 +5,15 @@
  * reaches a wait-held turn cross-process; the loop therefore lives INSIDE the wait tool —
  * from the agent's perspective `wait` just works. These pins cover: the tool-description
  * pointers, the tick mechanics (fixed 1 s cadence, resolve-once, fail-open probe,
- * disarm-with-last-wait), and the default SQLite probe (deliverable mail true, consumed
- * or absent mail false, never throws).
+ * disarm-with-last-wait), the private high-water mark (race-free vs the adapter's shared
+ * cursor — live-test R1 repro), and the default SQLite mark/since probe (never throws).
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import monitor, { BUS_MAIL_TICK_MS, defaultBusMailProbe } from "../extensions/monitor/index.ts";
+import monitor, { BUS_MAIL_TICK_MS, defaultBusMailSince, readMailMark } from "../extensions/monitor/index.ts";
 import makeMessageBus, { createSqliteStore } from "../extensions/message-bus/index.ts";
 import { TRANSITION_CHANNEL } from "../extensions/subagent/index.ts";
 import { createFakePi, type FakePi } from "./helpers/fake-pi.ts";
@@ -55,10 +55,15 @@ afterEach(() => {
 	while (tempDirs.length) rmSync(tempDirs.pop()!, { recursive: true, force: true });
 });
 
-function makeHarness(busProbe?: (ctx: unknown) => boolean): { pi: FakePi; scheduler: Scheduler } {
+function makeHarness(busProbe?: (ctx: unknown, sinceId: number | null) => boolean, mark: number | null = 0): { pi: FakePi; scheduler: Scheduler } {
 	const pi = createFakePi();
 	const scheduler = manualScheduler();
-	monitor(pi as never, { now: () => pi.clock.now, scheduler, ...(busProbe ? { busProbe } : {}) });
+	monitor(pi as never, {
+		now: () => pi.clock.now,
+		scheduler,
+		...(busProbe ? { busProbe } : {}),
+		readMailMark: () => mark,
+	});
 	return { pi, scheduler };
 }
 
@@ -306,32 +311,93 @@ describe("wait internal mail tick", () => {
 	});
 });
 
-// ------------------------------------------------------------------ default probe
+// ------------------------------------------------------------------ shared-cursor race (live-test R1 repro)
 
-describe("defaultBusMailProbe", () => {
-	test("false with no session identity and false when the bus is disabled", () => {
-		expect(defaultBusMailProbe({})).toBe(false);
-		expect(defaultBusMailProbe({ cwd: "/p" })).toBe(false);
-		expect(defaultBusMailProbe({ cwd: "/p", sessionManager: { getSessionId: () => "s-me" } }, { PI_BADGER_MESSAGE_BUS: "0" })).toBe(false);
+describe("shared-cursor race with the adapter", () => {
+	test("mail consumed out-of-band mid-wait still wakes the tick", async () => {
+		const dir = tempDir("aib-bus-race-");
+		const dbPath = join(dir, "ai-badger.db");
+		writeFileSync(dbPath, ""); // an existing file lets the store run its DDL
+		const waiterStore = createSqliteStore(dbPath);
+		const adapterStore = createSqliteStore(dbPath); // second handle: the adapter's poll
+		const env = { AI_BADGER_USER_ROOT: "." };
+		const ctx = { ...makeCtx(), cwd: dir, sessionManager: { getSessionId: () => "s-me" } };
+		const m1 = waiterStore.send({ senderSession: "s-other", senderProject: "p1", content: "before", targetSession: "s-me", targetProject: null });
+		adapterStore.deliverForSession("s-me", null); // consumed before the wait starts
+		// The wait's mark is m1: only strictly-newer mail may wake it, whatever the cursor does.
+		const { pi, scheduler } = makeHarness((c, sinceId) => defaultBusMailSince(c, env, sinceId), m1);
+		startSession(pi);
+		pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running"));
+		let settled = false;
+		const pending = waitTool(pi)("tc-wait", {}, undefined, undefined, ctx).then((r) => {
+			settled = true;
+			return r;
+		});
+		await tick();
+		expect(settled).toBe(false);
+		// the WAKE lands mid-wait and the adapter's poll consumes it out-of-band
+		// (cursor advance now, display at the turn boundary — invisible to the waiter)
+		waiterStore.send({ senderSession: "s-other", senderProject: "p1", content: "WAKE", targetSession: "s-me", targetProject: null });
+		adapterStore.deliverForSession("s-me", null);
+		fireTick(scheduler);
+		await tick();
+		expect(settled).toBe(true); // the tick saw the WAKE despite the moved cursor
+		const result = await pending;
+		expect(result.details).toMatchObject({ observed: "mail" });
+	});
+});
+
+describe("readMailMark", () => {
+	test("null with no session identity or cwd (fail-open, never throws)", () => {
+		expect(readMailMark({})).toBeNull();
+		expect(readMailMark({ cwd: "/p" })).toBeNull();
+	});
+
+	test("null when the user DB is missing (fail-open, never throws)", () => {
+		const dir = tempDir("aib-bus-probe-missing-");
+		const ctx = { cwd: dir, sessionManager: { getSessionId: () => "s-me" } };
+		expect(readMailMark(ctx, { AI_BADGER_USER_ROOT: "." })).toBeNull();
+	});
+
+	test("0 on an empty inbox, max addressed id otherwise", () => {
+		const dir = tempDir("aib-bus-probe-mark-");
+		const dbPath = join(dir, "ai-badger.db");
+		writeFileSync(dbPath, "");
+		const store = createSqliteStore(dbPath);
+		const ctx = { cwd: dir, sessionManager: { getSessionId: () => "s-me" } };
+		const env = { AI_BADGER_USER_ROOT: "." };
+		expect(readMailMark(ctx, env)).toBe(0);
+		const m1 = store.send({ senderSession: "s-other", senderProject: "p1", content: "hi", targetSession: "s-me", targetProject: null });
+		store.send({ senderSession: "s-other", senderProject: "p1", content: "not mine", targetSession: "s-stranger", targetProject: null });
+		expect(readMailMark(ctx, env)).toBe(m1); // stranger mail does not move my mark
+	});
+});
+
+describe("defaultBusMailSince", () => {
+	test("false on a null mark, with no identity, with no cwd, or when the bus is disabled", () => {
+		const ctx = { cwd: "/p", sessionManager: { getSessionId: () => "s-me" } };
+		expect(defaultBusMailSince(ctx, {}, null)).toBe(false);
+		expect(defaultBusMailSince({}, {}, 0)).toBe(false);
+		expect(defaultBusMailSince({ cwd: "/p" }, {}, 0)).toBe(false);
+		expect(defaultBusMailSince(ctx, { PI_BADGER_MESSAGE_BUS: "0" }, 0)).toBe(false);
 	});
 
 	test("false when the user DB is missing (fail-open, never throws)", () => {
 		const dir = tempDir("aib-bus-probe-missing-");
 		const ctx = { cwd: dir, sessionManager: { getSessionId: () => "s-me" } };
-		expect(defaultBusMailProbe(ctx, { AI_BADGER_USER_ROOT: "." })).toBe(false);
+		expect(defaultBusMailSince(ctx, { AI_BADGER_USER_ROOT: "." }, 0)).toBe(false);
 	});
 
-	test("true while deliverable mail waits, false after it is delivered", () => {
+	test("true only for ids strictly above the mark", () => {
 		const dir = tempDir("aib-bus-probe-mail-");
 		const dbPath = join(dir, "ai-badger.db");
-		writeFileSync(dbPath, ""); // an existing file lets the store run its DDL
+		writeFileSync(dbPath, "");
 		const store = createSqliteStore(dbPath);
-		store.send({ senderSession: "s-other", senderProject: "p1", content: "hello", targetSession: "s-me", targetProject: null });
+		const m1 = store.send({ senderSession: "s-other", senderProject: "p1", content: "hello", targetSession: "s-me", targetProject: null });
 		const ctx = { cwd: dir, sessionManager: { getSessionId: () => "s-me" } };
 		const env = { AI_BADGER_USER_ROOT: "." };
-		expect(defaultBusMailProbe(ctx, env)).toBe(true);
-		store.deliverForSession("s-me", null); // the hook's own read advances past it
-		expect(defaultBusMailProbe(ctx, env)).toBe(false);
+		expect(defaultBusMailSince(ctx, env, 0)).toBe(true);
+		expect(defaultBusMailSince(ctx, env, m1)).toBe(false); // at-or-below the mark: silent
 	});
 
 	test("the kill switch wins even with mail waiting", () => {
@@ -341,8 +407,8 @@ describe("defaultBusMailProbe", () => {
 		const store = createSqliteStore(dbPath);
 		store.send({ senderSession: "s-other", senderProject: "p1", content: "hello", targetSession: "s-me", targetProject: null });
 		const ctx = { cwd: dir, sessionManager: { getSessionId: () => "s-me" } };
-		expect(defaultBusMailProbe(ctx, { AI_BADGER_USER_ROOT: "." })).toBe(true); // sanity: mail is visible
-		expect(defaultBusMailProbe(ctx, { AI_BADGER_USER_ROOT: ".", PI_BADGER_MESSAGE_BUS: "0" })).toBe(false);
+		expect(defaultBusMailSince(ctx, { AI_BADGER_USER_ROOT: "." }, 0)).toBe(true); // sanity
+		expect(defaultBusMailSince(ctx, { AI_BADGER_USER_ROOT: ".", PI_BADGER_MESSAGE_BUS: "0" }, 0)).toBe(false);
 	});
 
 	test("mail for another session does not read as mine", () => {
@@ -352,6 +418,17 @@ describe("defaultBusMailProbe", () => {
 		const store = createSqliteStore(dbPath);
 		store.send({ senderSession: "s-other", senderProject: "p1", content: "for stranger", targetSession: "s-stranger", targetProject: null });
 		const ctx = { cwd: dir, sessionManager: { getSessionId: () => "s-me" } };
-		expect(defaultBusMailProbe(ctx, { AI_BADGER_USER_ROOT: "." })).toBe(false);
+		expect(defaultBusMailSince(ctx, { AI_BADGER_USER_ROOT: "." }, 0)).toBe(false);
+	});
+
+	test("stores without the hasNewSince seam fall back to list filtering", () => {
+		const legacy = {
+			listForSession: () => [
+				{ id: 41, senderSession: "s-other", senderProject: "p1", targetSession: "s-me", targetProject: null, content: "hi", timestamp: "2026-09-09T00:00:00.000Z" },
+			],
+		};
+		const ctx = { cwd: "/p", sessionManager: { getSessionId: () => "s-me" } };
+		expect(defaultBusMailSince(ctx, {}, 40, legacy as never)).toBe(true); // 41 > 40 via list
+		expect(defaultBusMailSince(ctx, {}, 41, legacy as never)).toBe(false); // at-mark: silent
 	});
 });

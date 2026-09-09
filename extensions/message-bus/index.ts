@@ -128,6 +128,11 @@ export interface BusStore {
 	/** Hook-path read for startup (A1): the deliverDirectForSession selection
 	 * WITHOUT the cursor write. Same optional-with-fallback contract. */
 	peekDirectForSession?(sessionId: string, projectId: string | null): { messages: BusMessage[]; cursor: number; droppedDirects?: number; droppedBroadcasts?: number };
+	/** Wait-tick probe (OPTIONAL with fallback): true iff mail addressed to this session
+	 * exists above afterId, WITHOUT touching the cursor — so a sibling consumer (the
+	 * adapter poll) advancing the shared cursor cannot blind the tick. Same address
+	 * selection as listForSession; stores without it fall back to list filtering. */
+	hasNewSince?(sessionId: string, projectId: string | null, afterId: number): boolean;
 	getCursor(sessionId: string): number;
 	/** Identity registry (P3, OPTIONAL with fallback): extension-owned
 	 * `bus_identities` rows written best-effort at session_start. Absent on
@@ -419,6 +424,25 @@ export function createSqliteStore(dbPath: string, now: () => number = Date.now):
 		},
 		peekForSession(sessionId, projectId) {
 			return withDb((db) => selectBatch(db, sessionId, projectId));
+		},
+		hasNewSince(sessionId, projectId, afterId) {
+			return withDb((db) => {
+				// Same address selection as readAddressed, but an indexed existence probe:
+				// id is the PK, so this stays O(log n) no matter how long the inbox grows.
+				const shapes = ["target_session = ?"];
+				const params: unknown[] = [sessionId];
+				if (projectId) {
+					shapes.push("(target_session IS NULL AND target_project = ?)");
+					shapes.push("(target_session IS NULL AND target_project IS NULL)");
+					params.push(projectId);
+				}
+				const clauses = [`(${shapes.join(" OR ")})`, "id > ?", "sender_session <> ?"];
+				params.push(afterId, sessionId);
+				const row = db
+					.prepare(`SELECT 1 AS one FROM messages WHERE ${clauses.join(" AND ")} LIMIT 1`)
+					.get(...params) as { one?: unknown } | null | undefined;
+				return row !== null && row !== undefined;
+			});
 		},
 		deliverDirectForSession(sessionId, projectId) {
 			return withDb((db) => {

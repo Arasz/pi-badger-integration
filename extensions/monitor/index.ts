@@ -35,7 +35,7 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { TRANSITION_CHANNEL } from "../subagent/index.ts";
-import { MESSAGE_BUS_ENV, createSqliteStore, resolveProjectId, resolveSessionId, userDbPath } from "../message-bus/index.ts";
+import { MESSAGE_BUS_ENV, createSqliteStore, resolveProjectId, resolveSessionId, userDbPath, type BusStore } from "../message-bus/index.ts";
 import { DEFAULT_POLL_MAX, DEFAULT_POLL_WINDOW_MS, MONITOR_TIMEOUT_DEFAULT_MS, clampMonitorCap, clampMonitorTimeoutMs, compilePredicate, composeMonitorEvent, evaluateMonitor, formatMonitorLifetime, manualWaitDecision, normalizePredicate, pollingDecision, type DelegationView, type MonitorSnapshot } from "./monitor-core.ts";
 import { BASH_COMPILE_TIMEOUT_MS, BASH_PREDICATE_GRACE_MS, BASH_PREDICATE_TIMEOUT_MS, compileBashPredicate, serializeBashSnapshot, startBashPredicate, type BashHandle } from "./bash-predicate.ts";
 
@@ -102,10 +102,16 @@ export interface MonitorDeps {
 	bashTimeoutMs?: number;
 	bashGraceMs?: number;
 	bashCompileTimeoutMs?: number;
-	/** Wait mail-tick seam: true means deliverable message-bus mail is waiting for this
-	 * session. Defaults to the real SQLite peek (defaultBusMailProbe); tests inject
-	 * true/false/throwing fakes. A throwing probe never resolves the wait (fail-open). */
-	busProbe?: (ctx: unknown) => boolean;
+	/** Wait mail-tick seams (live-test R1: the shared cursor is consumed out-of-band by the
+	 * adapter poll, so the tick tracks a private high-water mark per wait instead).
+	 * busProbe(ctx, sinceId): true means mail addressed to this session exists above sinceId.
+	 * Defaults to the real SQLite read (defaultBusMailSince); tests inject
+	 * true/false/throwing fakes. A throwing probe never resolves the wait (fail-open).
+	 * readMailMark(ctx): the mark a new wait starts from (max addressed id, 0 when the
+	 * inbox is empty, null when the store is unreadable — a null mark disables mail wake
+	 * for that wait, other sources intact). */
+	busProbe?: (ctx: unknown, sinceId: number | null) => boolean;
+	readMailMark?: (ctx: unknown) => number | null;
 }
 
 /** Structural mirror of the subagent's transition payload — the monitor depends on the
@@ -163,6 +169,8 @@ interface PendingWait {
 	settled: boolean;
 	/** The tool-call ctx, carried so the mail tick can probe this session's bus. */
 	ctx: unknown;
+	/** Private mail high-water mark read at wait start (null = store unreadable, mail wake off). */
+	mailMark: number | null;
 	/** W-A7: the idle fleet's auto-armed wait-timer monitor, disarmed silently with the wait. */
 	timerMonitorId?: string;
 	settle(observed: "delegation" | "monitor" | "input" | "timeout" | "empty" | "aborted" | "mail", records?: DelegationView[]): void;
@@ -198,13 +206,46 @@ function isTerminalState(state: string): boolean {
 }
 
 /**
- * Default wait mail-tick probe: true iff message-bus mail is deliverable for this session
- * right now. Read-only (peek, never advances the cursor — the turn_start hook still
- * delivers after the wait resolves), fail-open (missing DB, missing identity, a locked
- * backend, or PI_BADGER_MESSAGE_BUS=0 all read as "no mail", never throw).
+ * Wait mail-tick mark: the max message id addressed to this session right now (0 when the
+ * inbox is empty). A new wait wakes on ids ABOVE its start mark — cursor-independent, so
+ * a sibling consumer (the adapter poll) advancing the shared cursor cannot blind the tick.
+ * Null when the store is unreadable (missing DB, missing identity): a null mark disables
+ * mail wake for that wait, other sources intact (fail-open).
  */
-export function defaultBusMailProbe(ctx: unknown, env: Record<string, string | undefined> = process.env): boolean {
+export function readMailMark(ctx: unknown, env: Record<string, string | undefined> = process.env): number | null {
 	try {
+		const context = ctx as ExtensionContext;
+		const cwd = typeof context?.cwd === "string" ? context.cwd : undefined;
+		if (!cwd) return null;
+		const sessionId = resolveSessionId(context);
+		if (!sessionId) return null;
+		const projectId = resolveProjectId(cwd, env);
+		const store = createSqliteStore(userDbPath(env, cwd));
+		let max = 0;
+		for (const m of store.listForSession(sessionId, projectId)) {
+			if (m.id > max) max = m.id;
+		}
+		return max;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Default wait mail-tick probe: true iff mail addressed to this session exists above
+ * sinceId. Read-only (never advances the cursor — delivery still flows through the
+ * turn_start hook exactly once), fail-open (null mark, bus-off, missing DB/identity,
+ * locked backend, or a throwing store all read as "no mail", never throw). Prefers the
+ * indexed hasNewSince seam; stores without it fall back to list filtering.
+ */
+export function defaultBusMailSince(
+	ctx: unknown,
+	env: Record<string, string | undefined>,
+	sinceId: number | null,
+	store?: BusStore,
+): boolean {
+	try {
+		if (sinceId === null) return false;
 		if (env[MESSAGE_BUS_ENV] === "0") return false;
 		const context = ctx as ExtensionContext;
 		const cwd = typeof context?.cwd === "string" ? context.cwd : undefined;
@@ -212,15 +253,11 @@ export function defaultBusMailProbe(ctx: unknown, env: Record<string, string | u
 		const sessionId = resolveSessionId(context);
 		if (!sessionId) return false;
 		const projectId = resolveProjectId(cwd, env);
-		const store = createSqliteStore(userDbPath(env, cwd));
-		if (typeof store.peekForSession === "function") {
-			return store.peekForSession(sessionId, projectId).messages.length > 0;
+		const bus = store ?? createSqliteStore(userDbPath(env, cwd));
+		if (typeof bus.hasNewSince === "function") {
+			return bus.hasNewSince(sessionId, projectId, sinceId);
 		}
-		// Legacy stores without the peek seam: id-past-cursor over the full list. This skips
-		// the first-read window/cap the peek path honors, but only fake stores lack peek —
-		// the real store always takes the branch above.
-		const cursor = store.getCursor(sessionId);
-		return store.listForSession(sessionId, projectId).some((m) => m.id > cursor);
+		return bus.listForSession(sessionId, projectId).some((m) => m.id > sinceId);
 	} catch {
 		return false;
 	}
@@ -564,32 +601,25 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 	};
 
 	/** One shared mail-tick timer for every pending wait (the internal message loop — from
-	 * the agent's perspective `wait` just wakes with observed "mail"). One probe per distinct
-	 * ctx per tick; a positive probe settles only that ctx's waits. The timer lives only
-	 * while waits are pending. */
+	 * the agent's perspective `wait` just wakes with observed "mail"). Each pending wait
+	 * carries its own start mark, so concurrent waits never steal each other's wake. The
+	 * timer lives only while waits are pending. */
 	let busTimer: unknown | undefined;
 
 	const pollBusMail = (): boolean => {
 		if (pendingWaits.size === 0) return false;
-		const probe = deps.busProbe ?? defaultBusMailProbe;
-		// Group by ctx (usually one): concurrent waits for different sessions/projects never
-		// steal each other's wake — a spurious cross-ctx wake would cost an empty check loop.
-		const groups = new Map<unknown, PendingWait[]>();
-		for (const wait of pendingWaits) {
-			const list = groups.get(wait.ctx) ?? [];
-			list.push(wait);
-			groups.set(wait.ctx, list);
-		}
+		const probe = deps.busProbe ?? ((ctx: unknown, sinceId: number | null) => defaultBusMailSince(ctx, process.env, sinceId));
 		let woke = false;
-		for (const [ctx, waits] of groups) {
+		for (const wait of [...pendingWaits]) {
+			if (wait.mailMark === null) continue; // store was unreadable at start: mail wake off
 			let mail = false;
 			try {
-				mail = ctx !== undefined && probe(ctx);
+				mail = wait.ctx !== undefined && probe(wait.ctx, wait.mailMark);
 			} catch {
 				mail = false; // fail-open: a throwing probe never resolves the wait
 			}
 			if (!mail) continue;
-			for (const wait of waits) wait.settle("mail");
+			wait.settle("mail");
 			woke = true;
 		}
 		return woke;
@@ -672,6 +702,10 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 				startedAt,
 				settled: false,
 				ctx,
+				// Private high-water mark BEFORE subscribing: mail landing between the mark
+				// and the liveness re-check still reads above it (at most one tick late).
+				// Null (store unreadable) disables mail wake for this wait, nothing else.
+				mailMark: (deps.readMailMark ?? readMailMark)(ctx),
 				settle: () => {},
 				unsubscribe: () => {},
 			};
