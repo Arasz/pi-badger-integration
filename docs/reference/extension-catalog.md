@@ -48,7 +48,8 @@ token usage, log path — the structured result rides the message's `details.res
 wakes the agent; completions arriving inside a 2 s coalesce
 window share one batched message (lead card immediate, up to 6 cards per batch). Results
 arrive on their own — **never poll** for them (repeated `delegations list`/`log` polling is
-blocked by the monitor's enforcement). To keep a strict order, queue work with the
+blocked by the monitor's enforcement; `delegations peek` is the sanctioned live-check
+and is not counted). To keep a strict order, queue work with the
 **`queue` tool**: `add` (serial group — members run one at a time, in order),
 `add-parallel` (members run concurrently once they all fit), `clear` (cancel every queued
 task; running ones untouched), `list` (the queued groups with live positions). The whole
@@ -159,7 +160,7 @@ monitor-event card and is never duplicated. A turn abort or session shutdown res
 wait as `observed: "aborted"`; nothing sends after shutdown.
 
 The monitor extension also enforces the no-polling rule: a `tool_call` observer counts
-`delegations list`/`log`/`results` calls (nothing else — `wait`, `abort`, `queue` and `monitor`
+`delegations list`/`log`/`results` calls (nothing else — `wait`, `abort`, `peek`, `queue` and `monitor`
 calls are exempt) and blocks the 4th call inside a sliding 120 s window with guidance to
 use `wait` or a monitor instead; blocked attempts count too. `PI_BADGER_MONITOR_POLL_MAX`
 is read per call and `0` disables the guard; state resets on session shutdown. The same
