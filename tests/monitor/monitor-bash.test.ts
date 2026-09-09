@@ -150,14 +150,36 @@ describe("bash timeout, escalation and orphans", () => {
 		// The sleep GRANDCHILD shares bash's group: own-pid ESRCH alone cannot prove it died
 		// (a child.kill-only fallback kills bash while sleep leaks reparented). Track the
 		// grandchild via a pid file and assert IT is unrecyclable after the kill.
+		//
+		// Flake autopsy (CI 2026-09-09, 52 ms duration): the old shape raced a 50 ms
+		// timeout against bash's fork of `sleep` — under load SIGTERM won before
+		// `echo $! > pidfile` ran, so the pid file never existed. The kill under
+		// test is now driven explicitly AFTER the grandchild provably exists: poll
+		// for the pid file (generous deadline), then handle.kill(). The timeout leg
+		// keeps a budget it can never hit first. Group-kill intent unchanged — a
+		// child.kill-only fallback would still leak the reparented sleeper.
 		if (process.platform === "win32") return; // POSIX process groups only
 		const dir = mkdtempSync(join(tmpdir(), "monitor-orphan-"));
 		const pidFile = join(dir, "sleeper.pid");
 		try {
 			const handle = startBashPredicate(`sleep 30 & echo $! > '${pidFile}'; wait`, `{}`, {
-				timeoutMs: 50,
+				timeoutMs: 15000,
 				graceMs: 50,
 			});
+			// Prove the grandchild is born before killing: without this, the kill
+			// races the fork and the test asserts on a never-existing pid.
+			const deadline = Date.now() + 10000;
+			for (;;) {
+				try {
+					const probe = Number(readFileSync(pidFile, "utf8").trim());
+					if (Number.isInteger(probe) && probe > 0) break;
+				} catch {
+					// not written yet — keep polling
+				}
+				if (Date.now() > deadline) throw new Error("timed out waiting for the sleeper pid file");
+				await sleep(10);
+			}
+			handle.kill();
 			const outcome = await handle.done;
 			expect(outcome.kind).toBe("error");
 			const sleeperPid = Number(readFileSync(pidFile, "utf8").trim());
