@@ -1,7 +1,18 @@
 {
-  "lastUpdated": "2026-09-09T21:00:00Z",
+  "lastUpdated": "2026-09-09T21:20:00Z",
   "next": null,
   "completedTasks": [
+    {
+      "taskId": "pbi-wait-mail-text-list-fallback",
+      "title": "Live-test findings: mail text list-fallback and record",
+      "finishedAt": "2026-09-09T21:20:00Z",
+      "summary": "Ack-gated live retest (fresh session 01a087f3): W1 mail@44s SAW WAKE-A, W2 mail@43s SAW WAKE-B (no re-fire), W3 timeout@40s silence; protocol cost ~5-9s/round vs 150s+ blind leads. Delivered: mail result text names message-bus list fallback (their post-wake checks read empty while list showed the WAKEs), pinned by /message-bus list/i (RED-first, qa nit tightened); research record F10 + method note, renderer clean. 287 touched tests green, tsc clean outside pre-existing pi-mcp-tools gap, full suite only pre-existing reds; code-reviewer SHIP clean + qa GATE-WITH-NITS (1 nit folded). Merged FF, published. Also repaired state.json brace dropped by sibling footer-task commit. Low-effort, in-session plan/review. User must /reload running sessions.",
+      "decisions": [
+        "Ack-gated protocol (READY per window) over blind leads for future live tests; my-side sub-60s timing imprecise, keep 30s+ margins with READY labels",
+        "Text-only change: no live retest needed beyond the run that motivated it; unit pins suffice",
+        "Merged locally, not via PR: github extension activated mid-task after work was reviewed; next task runs full PR flow from branch start"
+      ]
+    },
     {
       "taskId": "pbi-footer-shows-all-cron-jobs",
       "title": "Footer reflects all cron jobs, not just cron.json",
@@ -13,6 +24,7 @@
         "Sync execFileSync with 2s timeout inside handlers only (never top-level); injected exec in tests, never real binary"
       ]
     },
+    {
       "taskId": "pbi-wait-tick-shared-cursor-race",
       "title": "Fix wait mail-tick losing shared-cursor race with adapter",
       "finishedAt": "2026-09-09T20:35:00Z",
