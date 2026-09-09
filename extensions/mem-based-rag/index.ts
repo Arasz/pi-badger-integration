@@ -8,11 +8,14 @@
  * "Prompt context:" block as a message. The prompt itself is never rewritten.
  *
  * Transport: pi extensions cannot invoke MCP tools, so this extension speaks
- * MCP itself — a persistent `ai-raccoon --transport stdio` child (JSON-RPC,
- * line-delimited) spawned lazily on the first enrichable prompt and reaped at
- * session boundaries. Measured 2026-09-06: spawn+init ~0.3 s (amortized), first
- * search ~4.5 s (model warm-up), steady ~0.4–0.5 s. Every search is bounded by
- * a timeout and fail-open: a slow or dead bank skips enrichment, never the turn.
+ * MCP itself — a persistent bare `ai-raccoon` child (default proxy transport:
+ * thin stdio JSON-RPC, line-delimited, forwarded to the single shared `serve`
+ * on 7721) spawned lazily on the first enrichable prompt and reaped at session
+ * boundaries. No per-session full server: the bank and embedding models live in
+ * serve, so spawn+init stays ~0.3 s amortized and steady searches ~0.4–0.5 s.
+ * Every search is bounded by a timeout and fail-open: a slow or dead bank skips
+ * enrichment, never the turn. Do NOT pass `--transport stdio` here — that full
+ * in-process server mode is slated for removal; the proxy is the transport.
  *
  * Agent memory is untouched: same server, separate call site — the agent keeps
  * its own memory_search tool; this only enriches the user prompt.
@@ -238,7 +241,7 @@ interface PendingCall {
 }
 
 /**
- * Minimal MCP client over a stdio child: initialize once (memoized, dropped on
+ * Minimal MCP client over a stdio pipe to a thin proxy child: initialize once (memoized, dropped on
  * any restart so the next call re-initializes), tools/call per search.
  * Concurrent in-flight ids are safe — each request is one synchronous stdin
  * write and replies demux via the pending map — so expanded-mode gets fan out
@@ -255,7 +258,7 @@ export class RaccoonClient {
 
 	constructor(private readonly bin: string) {}
 
-	/** True while the stdio child handle is held (diagnostics for /rag status). */
+	/** True while the proxy child handle is held (diagnostics for /rag status). */
 	isAlive(): boolean {
 		return this.proc !== null && this.proc.exitCode === null;
 	}
@@ -270,7 +273,10 @@ export class RaccoonClient {
 
 	private ensureStarted(): void {
 		if (this.proc) return;
-		const proc = spawn(this.bin, ["--transport", "stdio"], {
+		// Bare binary = default proxy transport: thin stdio→HTTP forward to the
+		// shared serve. Never add `--transport stdio` (full in-process server,
+		// slated for removal) — see the header comment.
+		const proc = spawn(this.bin, [], {
 			stdio: ["pipe", "pipe", "ignore"],
 		});
 		this.proc = proc;
@@ -998,10 +1004,9 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 
 	// Factory-closure state (queues, counters, mode override, client) survives
 	// new/resume/reload in-process — reset it on both session boundaries.
-	// The reset on start is followed by an eager warm-up: a cold stdio child
-	// pays spawn+init plus model warm-up on its first search (~14s measured
-	// 2026-09-08, over the default timeout), so handshaking now moves
-	// spawn+init off the first turn's critical path. Fire-and-forget and
+	// The reset on start is followed by an eager warm-up: a cold proxy child
+	// still pays handshake plus first-search model warm-up inside serve, so
+	// handshaking now moves spawn+init off the first turn's critical path. Fire-and-forget and
 	// fail-open — session start must never throw because of RAG warm-up, and
 	// the turn-time path reuses the in-flight handshake or retries lazily.
 	const warmClient = (): void => {

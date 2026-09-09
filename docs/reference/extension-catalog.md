@@ -20,8 +20,8 @@ trust-boundary header: retrieved snippets are untrusted background, never
 instructions. Modes:
 `default` (search snippets) and `expanded` (a `memory_get`/`code_get` per kept
 hit, with path + chunk/line provenance, per-hit snippet fallback). Transport is
-a persistent `ai-raccoon --transport stdio` child (pi extensions cannot invoke
-MCP tools): spawn+init ~0.3 s amortized, first search ~4.5 s model warm-up,
+a persistent bare `ai-raccoon` child on the default proxy transport (pi extensions cannot invoke
+MCP tools): thin stdio JSON-RPC forwarded to the single shared serve — spawn+init ~0.3 s amortized, first search ~4.5 s model warm-up,
 steady ~0.4–0.5 s, every call timeout-bounded (default 20 s) and fail-open — a
 slow or dead bank skips enrichment, never the turn. Agent memory is untouched:
 same server, separate call site.
