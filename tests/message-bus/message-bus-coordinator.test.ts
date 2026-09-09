@@ -261,6 +261,15 @@ describe("coordinator tick (wake-only, read-only)", () => {
 		expect(state.writeCalls).toEqual([]);
 	});
 
+	test("F4: neither-seam store (no peek, no list+cursor pair) records an error entry, never throws", async () => {
+		const halfSeam = { getCursor: async (_sessionId: string) => 0 } as unknown as CoordinatorStore;
+		const result = await tickCoordinator(halfSeam, snapshot(["A"], "f4-neither-seam"), { now: NOW, env: {} });
+		expect(result.woke).toEqual([]);
+		expect(result.errors).toHaveLength(1);
+		expect(result.errors[0]).toMatchObject({ sessionId: "A" });
+		expect(result.errors[0]?.error).toContain("no read seam");
+	});
+
 	test("stale registry entries (older than REGISTRY_TTL_S) are skipped, not truncated", async () => {
 		const state = newState({ fresh: [1], stale: [2] });
 		const store = trackingStore(state);

@@ -215,7 +215,7 @@ describe("AC3 kill-switch no-ops the coordinator block (tools stay)", () => {
 });
 
 describe("INT-(i) cursor never passes undelivered mail", () => {
-	test("deliver tracks the last delivered id; interleaved sends are never skipped", () => {
+	test("first-read consumes pre-window mail via cursor landing past MAX; later batches exact", () => {
 		const path = tempDb();
 		seed(path, [
 			{ at: T0 - 60 * MIN, to: "s-v", body: "old-v0" },
@@ -338,8 +338,14 @@ describe("INT-(iii) no ack row is a receipt for any other row; no retry literal 
 	});
 
 	test("no setTimeout/setInterval/retry literal drives delivery (grep pin over the composition sources)", () => {
-		for (const file of ["../../extensions/message-bus/coordinator.ts", "../../extensions/message-bus/coordinator-group.ts", "../../extensions/message-bus/index.ts"]) {
+		const pins: Array<[string, string]> = [
+			["../../extensions/message-bus/coordinator.ts", "tickCoordinator"],
+			["../../extensions/message-bus/coordinator-group.ts", "groupByScope"],
+			["../../extensions/message-bus/index.ts", "readRegistrySnapshot"],
+		];
+		for (const [file, pin] of pins) {
 			const source = readFileSync(new URL(file, import.meta.url), "utf8");
+			expect(source, `${file} presence pin: empty or wrong file passes vacuously`).toContain(pin);
 			for (const token of ["setTimeout", "setInterval"]) expect(source, `${file} must not schedule delivery`).not.toContain(token);
 			expect(source, `${file} must not carry a retry literal`).not.toMatch(/retry/i);
 		}
@@ -416,9 +422,50 @@ describe("INT-(vi) failures fail-open with a held cursor", () => {
 		expect(((checked.content[0] as { text: string }).text as string)).toMatch(/failed|queued/);
 		expect(cursor).toBe(5);
 	});
+
+	test("F2 real-store held-cursor: sabotaged peek at the wrapper level holds the DB cursor and keeps mail peekable", async () => {
+		const path = tempDb();
+		seed(path, [
+			{ at: T0 - MIN, to: "s-held", body: "held-1" },
+			{ at: T0 - MIN, to: "s-held", body: "held-2" },
+		]);
+		recordLive(path, ["s-held"]);
+		const cursorBefore = createSqliteStore(path, () => T0).getCursor("s-held");
+		const inner = createSqliteStore(path, () => T0);
+		const flaky: BusStore = {
+			send: (a) => inner.send(a),
+			getMessage: (id) => inner.getMessage(id),
+			listForSession: (s, p) => inner.listForSession(s, p),
+			getCursor: (s) => inner.getCursor(s),
+			deliverForSession: (s, p) => inner.deliverForSession(s, p),
+			deliverDirectForSession: (s, p) => inner.deliverDirectForSession(s, p),
+			recordIdentity: (a) => inner.recordIdentity!(a),
+			hasIdentity: (s) => inner.hasIdentity!(s),
+			listIdentities: () => inner.listIdentities!(),
+			peekForSession: (s, p) => {
+				if (s === "s-held") throw new Error("peek boom (injected)");
+				return inner.peekForSession!(s, p);
+			},
+		};
+		const pi = createFakePi();
+		makeExtension(pi as never, { store: flaky as never, now: () => T0, sessionId: () => "s-held", projectId: () => "p1" });
+		const cap = captureDebug();
+		try {
+			await fire(pi, "turn_start", {}, turnCtx("s-held")); // must not throw
+		} finally {
+			cap.restore();
+		}
+		// hook fail-open: no delivery card, tick fail-open: the sick target reported, never thrown.
+		expect(pi.sent.length).toBe(0);
+		expect(cap.lines.join("\n")).toContain("errors=1");
+		// DB truth via a fresh reader: cursor row unchanged, mail still peekable.
+		const reader = createSqliteStore(path, () => T0);
+		expect(reader.getCursor("s-held")).toBe(cursorBefore);
+		expect(reader.peekForSession!("s-held", "p1").messages.map((m) => m.content)).toEqual(["held-1", "held-2"]);
+	});
 });
 
-	test("channel summary peek is lazy: a same-version second turn issues zero summary reads", async () => {
+test("channel summary peek is lazy: a same-version second turn issues zero summary reads", async () => {
 		// Per-turn peek budget: hook preview (1) + tick wake-set (1 per live entry)
 		// every turn; the channel-summary preview ONLY on a cache miss (first turn).
 		const pi = createFakePi();
@@ -449,7 +496,7 @@ describe("INT-(vi) failures fail-open with a held cursor", () => {
 		expect(peeks - firstTurnPeeks).toBe(2); // hook preview + tick only — the summary hit costs zero reads
 	});
 
-	describe("INT-(vii) contention smoke (heartbeat writes included, pragma pinned)", () => {
+describe("INT-(vii) contention smoke (heartbeat writes included, pragma pinned)", () => {
 	test("busy_timeout pinned at 5000 via openBusDb", () => {
 		expect(BUS_BUSY_TIMEOUT_MS).toBe(5000);
 		const path = tempDb();

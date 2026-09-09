@@ -173,4 +173,89 @@ describe("PKG-1 registry heartbeat", () => {
 		expect(store.writes).toBe(before + 1);
 		expect(readRegistrySnapshot(store, now).entries).toHaveLength(1);
 	});
+
+	test("F1: store without listIdentities reads as empty, never throws (old-store fallback)", () => {
+		const oldStore = {} as unknown as BusStore;
+		const snap = readRegistrySnapshot(oldStore, () => 1_780_000_000_000);
+		expect(snap.entries).toEqual([]);
+		expect(snap.version).toMatch(/^0:0:/);
+	});
+
+	test("F1: throwing listIdentities reads as empty with exactly one console line, never throws", () => {
+		const sickStore = {
+			listIdentities: () => {
+				throw new Error("db gone (injected)");
+			},
+		} as unknown as BusStore;
+		const errors: unknown[][] = [];
+		const orig = console.error;
+		console.error = (...a: unknown[]) => {
+			errors.push(a);
+		};
+		try {
+			const snap = readRegistrySnapshot(sickStore, () => 1_780_000_000_000);
+			expect(snap.entries).toEqual([]);
+			expect(snap.version).toMatch(/^0:0:/);
+		} finally {
+			console.error = orig;
+		}
+		expect(errors.length).toBe(1);
+	});
+
+	test("F5: touch failure retries next turn (stamp moves only on success)", async () => {
+		const pi = createFakePi();
+		const now = () => pi.clock.now;
+		const rows = new Map<string, { projectId: string | null; lastSeenMs: number }>();
+		let attempts = 0;
+		let writes = 0;
+		const flaky = {
+			send: () => 101,
+			getMessage: () => null,
+			listForSession: () => [],
+			getCursor: () => 0,
+			deliverForSession: () => ({ messages: [], cursor: 0 }),
+			deliverDirectForSession: () => ({ messages: [], cursor: 0 }),
+			peekForSession: () => ({ messages: [], cursor: 0 }),
+			peekDirectForSession: () => ({ messages: [], cursor: 0 }),
+			recordIdentity: (args: { sessionId: string; projectId: string | null }) => {
+				attempts += 1;
+				if (attempts === 1) throw new Error("registry locked (injected)");
+				writes += 1;
+				rows.set(args.sessionId, { projectId: args.projectId, lastSeenMs: now() });
+			},
+			hasIdentity: (id: string) => rows.has(id),
+			listIdentities: () => [...rows.entries()].map(([sessionId, v]) => ({ sessionId, projectId: v.projectId, lastSeenMs: v.lastSeenMs })),
+		};
+		makeExtension(pi as never, { store: flaky as never, now, projectId: () => PID });
+		const errors: unknown[][] = [];
+		const orig = console.error;
+		console.error = (...a: unknown[]) => {
+			errors.push(a);
+		};
+		try {
+			await fire(pi, "session_start", {}, hookCtx()); // force-touch throws → fail-open, stamp NOT set
+			expect(writes).toBe(0);
+			await fire(pi, "turn_start", {}, hookCtx()); // same clock, stamp unset → retries, lands
+			expect(writes).toBe(1);
+			expect(readRegistrySnapshot(flaky as unknown as BusStore, now).entries).toHaveLength(1);
+		} finally {
+			console.error = orig;
+		}
+		expect(errors.length).toBe(1);
+	});
+
+	test("F5: exact-boundary touch (t - last === INTERVAL) writes; one ms earlier does not", async () => {
+		const pi = createFakePi();
+		const now = () => pi.clock.now;
+		const store = makeRegistryStore(now);
+		makeExtension(pi as never, { store: store as never, now, projectId: () => PID });
+		await fire(pi, "session_start", {}, hookCtx());
+		expect(store.writes).toBe(1);
+		pi.clock.advance(REGISTRY_TOUCH_INTERVAL_MS - 1);
+		await fire(pi, "turn_start", {}, hookCtx());
+		expect(store.writes).toBe(1); // throttled: 1ms short of the boundary
+		pi.clock.advance(1); // t - last === INTERVAL exactly
+		await fire(pi, "turn_start", {}, hookCtx());
+		expect(store.writes).toBe(2);
+	});
 });
