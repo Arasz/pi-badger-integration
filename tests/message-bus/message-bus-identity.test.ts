@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createFakePi } from "../helpers/fake-pi.ts";
-import makeExtension, { type BusStore } from "../../extensions/message-bus/index.ts";
+import { fire } from "../router-fallback/helpers.ts";
+import makeExtension, { FOREIGN_SESSION_ENVS, PI_SESSION_ENV, type BusStore } from "../../extensions/message-bus/index.ts";
 import { formatIdentityHeader } from "../../extensions/message-bus/message-bus-core.ts";
 import type { BusMessage } from "../../extensions/message-bus/message-bus-core.ts";
 
@@ -56,12 +57,23 @@ describe("C-P2-1 formatIdentityHeader", () => {
 });
 
 describe("E-P2-1 whoami resolves through deps seams", () => {
-	test("sessionId + projectId + cursor", async () => {
+	test("sessionId + projectId + cursor (content echoes FULL ids — explicit pull)", async () => {
 		const pi = createFakePi();
 		makeExtension(pi as never, { store: makeStore() as never, sessionId: () => SID, projectId: () => PID });
 		const result = await callTool(pi, { action: "whoami" });
 		expect(result.details).toMatchObject({ sessionId: SID, projectId: PID, cursor: 7 });
-		expect((result.content[0] as { text: string }).text).toContain(SID8);
+		const text = (result.content[0] as { text: string }).text;
+		expect(text.split("\n")[0]).toContain(SID8); // first line stays the truncated header
+		expect(text).toContain(SID); // explicit pull: full session echoed
+		expect(text).toContain(PID); // explicit pull: full project echoed
+	});
+	test("null project states so without crashing (full-id lines intact)", async () => {
+		const pi = createFakePi();
+		makeExtension(pi as never, { store: makeStore() as never, sessionId: () => SID, projectId: () => null });
+		const result = await callTool(pi, { action: "whoami" });
+		const text = (result.content[0] as { text: string }).text;
+		expect(text).toContain(SID);
+		expect(text).toContain("full project: (none)");
 	});
 	test("empty identity fail-open (result, never a throw)", async () => {
 		const pi = createFakePi();
@@ -69,12 +81,45 @@ describe("E-P2-1 whoami resolves through deps seams", () => {
 		const result = await callTool(pi, { action: "whoami" }, "");
 		expect((result.content[0] as { text: string }).text).toMatch(/unavailable|no session/i);
 	});
-	test("dep sessionId wins over ctx sid (seam proof: dep ≠ ctx)", async () => {
+	test("dep sessionId wins over ctx sid (seam proof: dep ≠ ctx), full id in content", async () => {
 		const pi = createFakePi();
 		makeExtension(pi as never, { store: makeStore() as never, sessionId: () => SID, projectId: () => PID });
 		const result = await callTool(pi, { action: "whoami" }, "s-ctx-other");
 		expect(result.details).toMatchObject({ sessionId: SID });
-		expect((result.content[0] as { text: string }).text).toContain(SID8);
+		const text = (result.content[0] as { text: string }).text;
+		expect(text).toContain(SID8);
+		expect(text).toContain(SID);
+	});
+});
+
+describe("E-P0 session_start pins process identity (prose-beats-wire fix)", () => {
+	const startCtx = { sessionManager: { getSessionId: () => SID }, cwd: "/tmp/proj" };
+	test("PI_SESSION_ID pinned to live sid; stale foreign vars cleared", async () => {
+		const pi = createFakePi();
+		const env: Record<string, string | undefined> = {
+			[PI_SESSION_ENV]: "stale-pi-id",
+			CLAUDE_CODE_SESSION_ID: "stale-claude-id",
+			HERMES_SESSION_ID: "stale-hermes-id",
+		};
+		makeExtension(pi as never, { store: makeStore() as never, sessionId: () => SID, projectId: () => PID, env });
+		await fire(pi, "session_start", {}, startCtx);
+		expect(env[PI_SESSION_ENV]).toBe(SID);
+		for (const foreign of FOREIGN_SESSION_ENVS) expect(env[foreign]).toBeUndefined();
+	});
+	test("foreign var already equal to sid is kept (shared-id edge)", async () => {
+		const pi = createFakePi();
+		const env: Record<string, string | undefined> = { CLAUDE_CODE_SESSION_ID: SID };
+		makeExtension(pi as never, { store: makeStore() as never, sessionId: () => SID, projectId: () => PID, env });
+		await fire(pi, "session_start", {}, startCtx);
+		expect(env[PI_SESSION_ENV]).toBe(SID);
+		expect(env.CLAUDE_CODE_SESSION_ID).toBe(SID);
+	});
+	test("empty sid leaves env untouched (fail-open, never wipes identity)", async () => {
+		const pi = createFakePi();
+		const env: Record<string, string | undefined> = { [PI_SESSION_ENV]: "keep-me" };
+		makeExtension(pi as never, { store: makeStore() as never, sessionId: () => "", projectId: () => PID, env });
+		await fire(pi, "session_start", {}, { sessionManager: { getSessionId: () => "" }, cwd: "/tmp/proj" });
+		expect(env[PI_SESSION_ENV]).toBe("keep-me");
 	});
 });
 

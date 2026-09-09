@@ -91,7 +91,9 @@ export function selfSendWarning(sessionId: string): string {
 
 /** Wire identity anchor (P2): every list/check/whoami output opens with this
  * line so the agent's own id is on the wire, never just in prose (F2).
- * Truncated to 8 chars — full ids never echo (anti-tautology pin). Lives in
+ * Truncated to 8 chars — full ids never echo here (anti-tautology pin). The
+ * whoami tool appends its own full-id lines separately (explicit pull); every
+ * other surface stays truncated. Lives in
  * the wiring OUTSIDE formatList (core list snapshots frozen). */
 export function formatIdentityHeader(sessionId: string, projectId: string | null): string {
 	const pid = projectId ? projectId.slice(0, 8) : "(none)";
