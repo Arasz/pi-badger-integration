@@ -176,6 +176,10 @@ export interface DelegationRecord {
    * start the child (exit 1 + model-startup stderr + no progress event) and the run retried
    * once on the fallback argv. The card names the rejection and the retry target. */
   modelFallback?: string;
+  /** P2 live answer preview: the capped in-memory tail of streamed assistant text
+   * (text_delta deltas + message_end text blocks), stamped by the runner per event while the
+   * run is live; `delegations peek` reads it. Absent until the first assistant text lands. */
+  answerPreview?: string;
 }
 
 // ------------------------------------------------------------------ per-run timeout clamp
@@ -882,6 +886,68 @@ export function extractAnswer(events: ChildEvent[], exitCode: number | null | un
     };
   }
   return { kind: "text", text: "" };
+}
+
+// ------------------------------------------------------------------ live answer preview + peek (P2)
+
+/** Live answer-preview cap, chars: the runner tail-keeps the streamed assistant text through
+ * the same drop-marker discipline as the note caps, so one runaway turn cannot grow the
+ * shared record without bound. */
+export const PEEK_PREVIEW_MAX_CHARS = 3000;
+
+/** `delegations peek` line count: clamp range and default (mirrors the log-tail clamp). */
+export const MIN_PEEK_LINES = 1;
+export const MAX_PEEK_LINES = 100;
+export const DEFAULT_PEEK_LINES = 20;
+
+/**
+ * Clamp a peek `lines` request (mirrors `clampLogTailBytes`): non-finite or absent means the
+ * 20-line default; any other value rounds and clamps to 1–100. Clamped, never rejected.
+ */
+export function clampPeekLines(lines: number | undefined): number {
+  const value = typeof lines === "number" && Number.isFinite(lines) ? Math.round(lines) : DEFAULT_PEEK_LINES;
+  return Math.min(MAX_PEEK_LINES, Math.max(MIN_PEEK_LINES, value));
+}
+
+/**
+ * The last `lines` lines of `text` (the peek tail discipline). A single trailing newline is
+ * not a line — previews end with one after every complete message. Within the bound the
+ * text is verbatim. `lines` must be >= 1; callers pass `clampPeekLines`.
+ */
+export function tailLines(text: string, lines: number): string {
+  const body = text.endsWith("\n") ? text.slice(0, -1) : text;
+  return body.split("\n").slice(-lines).join("\n");
+}
+
+/**
+ * The preview chunk one child event contributes (P2's live stamp source): a `text_delta`
+ * delta verbatim, or a `message_end`'s assistant text blocks joined exactly like
+ * `extractAnswer` (walking back over tool-only messages is the reader's job — per event this
+ * returns the message's text plus one newline separator) and newline-terminated so complete
+ * messages break lines. Thinking/toolcall deltas, non-assistant ends and empty text yield
+ * undefined — they never enter the preview. A complete message repeats its streamed deltas;
+ * the tail-keep makes the freshest content win, so the duplication costs cap space, not
+ * correctness.
+ */
+export function previewTextFromEvent(event: ChildEvent): string | undefined {
+  if (event.type === "message_update") {
+    const ame = event.assistantMessageEvent;
+    if (typeof ame === "object" && ame !== null) {
+      const { type, delta } = ame as { type?: unknown; delta?: unknown };
+      if (type === "text_delta" && typeof delta === "string" && delta !== "") return delta;
+    }
+    return undefined;
+  }
+  if (event.type === "message_end") {
+    const message = event.message;
+    if (!message || message.role !== "assistant") return undefined;
+    const text = (message.content ?? [])
+      .filter((part): part is { type: "text"; text: string } => part?.type === "text" && typeof part.text === "string")
+      .map((part) => part.text)
+      .join("\n");
+    return text !== "" ? `${text}\n` : undefined;
+  }
+  return undefined;
 }
 
 // ------------------------------------------------------------------ log-dir pruning
