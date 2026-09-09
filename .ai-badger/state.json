@@ -1,17 +1,29 @@
 {
-  "lastUpdated": "2026-09-09T18:30:00Z",
+  "lastUpdated": "2026-09-09T18:59:07Z",
   "next": null,
   "completedTasks": [
+    {
+      "taskId": "pbi-ask-child-budget-mcp-strip",
+      "title": "Strip /ask child boot stack + raise child budget",
+      "finishedAt": "2026-09-09T18:59:07Z",
+      "summary": "Measured /ask child boot 62.7s (5 project MCP incl. failing hermes + full extension stack incl. coordinator ticks) vs 1.8s stripped. Child argv gains --no-tools/--no-skills/--no-extensions/--no-prompt-templates (denylist kept, --model/--thinking/--offline/--no-context-files rejected); NEW PI_BADGER_MEM_RAG_ASK_CHILD_TIMEOUT_MS default 90s (500-600000) as askChildTimeoutMs, search budget untouched; ack/status name child budget (old substrings kept). RED-first: argv/tail pins (4 sites \u2192 slice(-12)), default/override/fallback, exact repoint split (spawn\u2192NEW, search/get/poison/bank stay), status/ack pins, RAG_KEYS hygiene. Review SHIP + 1 comment fix. 131 mem-based-rag green, tsc clean touched files, merged --no-ff (main had moved: #20 + 1.1.4), published + --check in sync, LIVE probe answers PONG in 1.7s. Low-effort: architect plan + code-reviewer READY-WITH-FOLDS (5 MUSTs) + api-engineer + code-reviewer SHIP. User must /reload running sessions.",
+      "decisions": [
+        "Strip flags implement the original tool-less-child design (only 5 tools were excluded before); denylist kept redundantly (pin + defense-in-depth)",
+        "Separate child env restores pre-P1 90s headroom without touching search fail-fast; P1 spawn-bound REDs repointed exactly (M2 split)",
+        "--no-context-files/--offline/--thinking rejected (unneeded for the win; quality/risk)",
+        "append-only card + triggerTurn:false from prior task unchanged and compatible"
+      ]
+    },
     {
       "taskId": "pbi-centralized-message-delivery-coordinator-rebuild",
       "title": "Refactor message delivery extension to centralized coordinator",
       "finishedAt": "2026-09-09T18:30:00Z",
-      "summary": "Waker-only central coordinator (D1=A 3/3 consensus; full delivery + 5s/3x + no-hooks deferred as evidenced). PKG-1 registry heartbeat (readRegistrySnapshot, REGISTRY_TTL_S=300 read-side, TTL/4 touch, listIdentities seam), PKG-2 pure grouping+channel cache (flat channels, version hash), PKG-3 read-only tick (zero deliver/send, fail-open, single-flight, MAX_TICK_SESSIONS=25), PKG-4A piggyback wire-in (new turn_start block, 0 hook-body deletions), INT 7 join gates. 161 message-bus tests green, tsc clean outside pre-existing pi-mcp-tools, CI pass, PR #18 squash-merged 6cff3d5 (--admin over REVIEW_REQUIRED per away-mode order). Spikes MEASURED: no durable-tick host in pi (TUI exits, pi -p settles) → piggyback only; RPC follow_up proven external seam; JSONL-append pickup DISPROVEN; delivery_state DDL named for 4B. User scope: message-bus published ours; mem-based-rag clobber by bare publish probe repaired + bus #811. High-effort: MoE plan + plan-review MoE + MoE impl-review (SHIP-WITH-FIXES folded) + QA GATE-WITH-NITS (F1-F7 backfilled). Follow-ups: 4B mailbox (S2 transcripts exist), D4 hook removal, durable host (launchd-class), main-checkout reconcile (sibling ahead-9) + scoped-publish flag.",
+      "summary": "Waker-only central coordinator (D1=A 3/3 consensus; full delivery + 5s/3x + no-hooks deferred as evidenced). PKG-1 registry heartbeat (readRegistrySnapshot, REGISTRY_TTL_S=300 read-side, TTL/4 touch, listIdentities seam), PKG-2 pure grouping+channel cache (flat channels, version hash), PKG-3 read-only tick (zero deliver/send, fail-open, single-flight, MAX_TICK_SESSIONS=25), PKG-4A piggyback wire-in (new turn_start block, 0 hook-body deletions), INT 7 join gates. 161 message-bus tests green, tsc clean outside pre-existing pi-mcp-tools, CI pass, PR #18 squash-merged 6cff3d5 (--admin over REVIEW_REQUIRED per away-mode order). Spikes MEASURED: no durable-tick host in pi (TUI exits, pi -p settles) \u2192 piggyback only; RPC follow_up proven external seam; JSONL-append pickup DISPROVEN; delivery_state DDL named for 4B. User scope: message-bus published ours; mem-based-rag clobber by bare publish probe repaired + bus #811. High-effort: MoE plan + plan-review MoE + MoE impl-review (SHIP-WITH-FIXES folded) + QA GATE-WITH-NITS (F1-F7 backfilled). Follow-ups: 4B mailbox (S2 transcripts exist), D4 hook removal, durable host (launchd-class), main-checkout reconcile (sibling ahead-9) + scoped-publish flag.",
       "decisions": [
-        "Waker-only (A) over mailbox-now (B): acks are stub broadcasts with no per-target identity (F4), no cross-session inject primitive (F5), ack numbers unevidenced (F8) — 3/3 reviewer consensus; user-ordered no-hooks/5s-3x documented as deferred divergence, not refusal",
+        "Waker-only (A) over mailbox-now (B): acks are stub broadcasts with no per-target identity (F4), no cross-session inject primitive (F5), ack numbers unevidenced (F8) \u2014 3/3 reviewer consensus; user-ordered no-hooks/5s-3x documented as deferred divergence, not refusal",
         "CoordinatorStore structural subset (write paths unnameable by type) over reusing BusStore; single-sourced TTL/type/version in message-bus-core.ts (pi-import-free kept); single-flight keyed by version:budget; lazy channel-summary peek",
         "touchRegistry kill-switch early-return (tool-check leak fixed); INT vii smoke-with-retry incl. heartbeat writes; rotation-churn pinned as limitation with MEASUREMENT-TODO, not prevented",
-        "Merge via --admin over REVIEW_REQUIRED (away-mode owner order); in-task MoE reviews + QA stand as review record; publish probe lesson: publish.ts has no --help — unknown flags run full publish; sibling file restored + bus-notified"
+        "Merge via --admin over REVIEW_REQUIRED (away-mode owner order); in-task MoE reviews + QA stand as review record; publish probe lesson: publish.ts has no --help \u2014 unknown flags run full publish; sibling file restored + bus-notified"
       ]
     },
     {
