@@ -915,6 +915,7 @@ export function clampPeekLines(lines: number | undefined): number {
  * text is verbatim. `lines` must be >= 1; callers pass `clampPeekLines`.
  */
 export function tailLines(text: string, lines: number): string {
+  if (!(lines >= 1)) return "";
   const body = text.endsWith("\n") ? text.slice(0, -1) : text;
   return body.split("\n").slice(-lines).join("\n");
 }

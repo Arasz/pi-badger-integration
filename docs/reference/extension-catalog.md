@@ -68,16 +68,21 @@ settles as `aborted (lost)`.
 
 Checking on delegations:
 
-- **`delegations` tool** (LLM-facing): `list` (state, elapsed, current activity, usage),
-  `log <id>` (bounded tail + full path), `abort <id|all>`, `results [id]` (the cached
+- **`delegations` tool** (LLM-facing): `list` (state, elapsed, current activity, usage,
+  trailing `session <id>` when known), `log <id>` (bounded tail + full path),
+  `peek <id> [--lines N]` (last N lines of the delegated task output, default 20, 1-100;
+  settled runs read the cached answer, live runs read the in-memory preview, queued runs
+  report position), `abort <id|all>`, `results [id]` (the cached
   structured result — `{parent_id, delegation_id, task_summary, persona, input, output,
   timestamp}` — of one delegation, or, without an id, every result this session parented;
   an in-memory cache of the LAST 8 results that dies with the session). Results also
   arrive on their own — never poll: to spend idle waiting time, use the monitor
   extension's `wait` tool (user input interrupts it) or register a monitor.
-- **`/delegations [log <id>] [abort <id|all>]`** (human-facing command).
+- **`/delegations [log <id>] [peek <id> [--lines N]] [abort <id|all>]`** (human-facing command).
 - **Widget** above the editor: one line per background running run (id, agent, elapsed,
-  current activity, usage) plus a queued count, cleared when the session's runs end.
+  current activity, usage, trailing `session <id>` when known) plus a queued count, cleared
+  when the session's runs end. Completion cards and delegate receipts likewise carry
+  `session <id>` when the delegating session is known.
 - **Logs**: every child's raw JSONL event stream is teed to
   `~/.pi/agent/subagent-logs/<runId>.jsonl` — a `run` header (runId, sessionId, persona,
   task, argv, cwd, pid, startedAt), the child's events verbatim, stderr as
