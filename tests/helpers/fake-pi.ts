@@ -37,17 +37,6 @@
  */
 
 import { EventEmitter } from "node:events";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
-// Hermetic default for the message-bus coordinator tick log: the tick file-logs
-// (console.* breaks the pi TUI), and extension tests that fire turn_start
-// without an explicit env dep would otherwise append to the developer's real
-// ~/.pi/agent log. Per-test `env: { PI_BADGER_MESSAGE_BUS_TICK_LOG: ... }`
-// deps still win (deps.env replaces process.env), so assertions can use
-// their own temp files. Other extensions ignore this variable.
-process.env.PI_BADGER_MESSAGE_BUS_TICK_LOG ??= join(mkdtempSync(join(tmpdir(), "mbus-tick-tests-")), "tick.log");
 
 export interface FakePiSentMessage {
   message: { customType?: string; content: unknown; display?: boolean; details?: Record<string, unknown> };

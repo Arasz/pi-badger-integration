@@ -33,44 +33,6 @@ export const ACK_CONTENT_CAP_CHARS = 2048;
 /** Default per-scope list depth for /messages (last 3 per group). */
 export const DEFAULT_LIST_DEPTH = 3;
 
-/** Kill-switch env var: the literal string "0" disables the delivery hooks
- * (tools stay). Single-sourced here so the wiring (`index.ts`) and the
- * coordinator tick share one name without the tick importing pi wiring. */
-export const MESSAGE_BUS_ENV = "PI_BADGER_MESSAGE_BUS";
-
-/** Registry freshness window (s): entries unseen longer than this are skipped.
- * MEASUREMENT-TODO (V6): validate 300 against real idle-session lifetimes.
- * Read-side only: stale rows are filtered by readRegistrySnapshot, never
- * deleted, so old DBs keep working with zero DDL change. */
-export const REGISTRY_TTL_S = 300;
-
-/** One live-registry row: who was last seen, where, and when (ms since epoch). */
-export interface RegistryEntry {
-	sessionId: string;
-	projectId: string | null;
-	lastSeenMs: number;
-}
-
-/** Read-side snapshot: live entries only, plus a version pin of
- * max(lastSeenMs):count:snapshot-hash for cheap change detection. */
-export interface RegistrySnapshot {
-	entries: RegistryEntry[];
-	version: string;
-}
-
-/** Snapshot version pin: max(lastSeenMs):count:identity-hash. The hash covers
- * session+project+stamp, so a membership swap with the same max and count
- * still moves the version — a bare max:count pin would let the channel cache
- * serve stale channels across the swap. Loop-form max (no spread). */
-export function registryVersion(entries: Array<Pick<RegistryEntry, "sessionId" | "projectId" | "lastSeenMs">>): string {
-	let max = 0;
-	for (const e of entries) if (e.lastSeenMs > max) max = e.lastSeenMs;
-	const canonical = entries.map((e) => `${e.sessionId}|${e.projectId ?? ""}|${e.lastSeenMs}`).join("\n");
-	let hash = 5381;
-	for (let i = 0; i < canonical.length; i++) hash = ((hash << 5) + hash + canonical.charCodeAt(i)) >>> 0;
-	return `${max}:${entries.length}:${hash.toString(16).padStart(8, "0")}`;
-}
-
 /** One bus row as the extension passes it (sender + addressing + body). */
 export interface BusMessage {
 	id: number;

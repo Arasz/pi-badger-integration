@@ -262,30 +262,10 @@ as a project broadcast, never reply to an ack, only ack what is in your inbox).
   also upserts the session into `bus_identities` (fail-open, never creates a missing DB).
   The idle-session wake
   stays with the adapter's poll timer — these hooks never arm their own.
-  `PI_BADGER_MESSAGE_BUS=0` disables the hooks, the registry heartbeat and the
-  coordinator tick below; tools stay. Every backend
+  `PI_BADGER_MESSAGE_BUS=0` disables the hooks; tools stay. Every backend
   failure is fail-open: an error result, a command notify, or a silent hook
   skip — a broken bus never breaks a session, and a missing DB file is never
   created as a side effect.
-
-- Coordinator (waker-only, read-only): a `turn_start`-piggyback tick
-  (`coordinator.ts`) computes WHO has pending mail from a registry snapshot —
-  live `bus_identities` rows newer than `REGISTRY_TTL_S` (300 s, read-side
-  filter, never deleted), version-pinned for change detection. The tick never
-  moves a cursor, never stores a row, never sends: per-target read failures
-  become `errors` entries, overlapping same-version ticks share one in-flight
-  run (single-flight), each tick serves at most `MAX_TICK_SESSIONS` (25)
-  sessions round-robin (`truncated` says more remain), and the result is
-  file-append observability only (`~/.pi/agent/message-bus-coordinator-tick.log`,
-  override with `PI_BADGER_MESSAGE_BUS_TICK_LOG`) — zero cards, zero wake. Pi's
-  extension API exposes no log sink and `console.*` breaks the TUI, hence the file. Inbox rows group
-  into channels (`coordinator-group.ts`: directs collect, machine broadcasts
-  collect, per-project dict; project-less reads keep directs only) behind a
-  cache that rebuilds only when the snapshot version moves. The heartbeat
-  reuses the `session_start` upsert — one touch per session per TTL/4 on
-  `turn_start`/`check`, best-effort and failure-silent. Idle-machine wake is
-  struck by design (no durable tick host): the tick only observes turns that
-  are starting anyway.
 
 
 ## The pi-mcp-tools extension: human cards, never raw JSON
