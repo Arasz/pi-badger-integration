@@ -334,6 +334,12 @@ describe("P1 H3 every-path-settles (hung seam = locked TUI)", () => {
 		expect(notes).toHaveLength(1);
 		expect(notes[0]!.message).toContain("searching for");
 		expect(pi.sent).toHaveLength(0);
+		// SHOULD-1: a delayed stray finish from the orphaned askSettle budget
+		// (500ms here) would land after the settle asserts — wait it out, then
+		// re-assert nothing further was emitted post-shutdown.
+		await new Promise((r) => setTimeout(r, 1200));
+		expect(notes).toHaveLength(1);
+		expect(pi.sent).toHaveLength(0);
 		const status = await ragStatus(pi, "/tmp/repro-abort", "sess-repro-abort");
 		expect(status).toContain("asked 0");
 		expect(status).toContain("skippedAsk 0");

@@ -863,11 +863,7 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 		description: "Ask the memory bank in isolation: retrieve context then answer in a tool-less child.",
 		async handler(args, ctx) {
 			const notify = (message: string, type: "info" | "warning" | "error"): void => {
-				try {
-					ctx.ui?.notify?.(message, type);
-				} catch {
-					// notify must never throw the turn
-				}
+				notifySafely(ctx, message, type);
 			};
 			// P2 outer-catch card query: a block-scoped `let` inside try is invisible
 			// to catch, so the carrier lives outside (empty = pre-acceptance throw).
@@ -1073,6 +1069,8 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 					lastAskReason = `ask failed (${detail})`;
 					const text = `mem-based-rag /ask: failed (${detail}).`;
 					notify(text, "warning");
+					// Pre-acceptance throws (e.g. shouldEnrich) reach here with query:"" —
+					// the card still goes out so failures always surface durably.
 					deliverAskCard(text, { kind: "failure" as AskCardKind, query: askQuery }, () => notify(text, "info"));
 				} catch {
 					// notify itself must never throw

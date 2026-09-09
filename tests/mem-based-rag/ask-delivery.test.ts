@@ -438,6 +438,9 @@ describe("P2 AC3/H4 immediate ack", () => {
 	test("accepted query emits ack notify naming query + budget BEFORE first await (hung spawn: ack present while result pending)", async () => {
 		clearRagEnv();
 		process.env["AI_BADGER_PROJECT_ID"] = "proj-p2-h4";
+		// SHOULD-1 needs a sleepable budget: 500ms (P1 precedent) instead of the
+		// 20s default, so the post-shutdown stray-emission wait stays ~1s.
+		process.env["PI_BADGER_MEM_RAG_TIMEOUT_MS"] = "500";
 		const { pi, spawnCalls } = installAsk({ spawn: async (): Promise<SpawnResult> => never() });
 		const notes: Notify[] = [];
 		const pending = fireAsk(pi, P1, makeAskCtx("/tmp/p2-h4", "sess-p2-h4", notes));
@@ -450,11 +453,16 @@ describe("P2 AC3/H4 immediate ack", () => {
 		expect(notes).toHaveLength(1);
 		expect(notes[0]!.type).toBe("info");
 		expect(notes[0]!.message).toContain(P1);
-		expect(notes[0]!.message).toContain("20000");
+		expect(notes[0]!.message).toContain("500");
 		expect(pi.sent).toHaveLength(0);
 		// Cleanup: shutdown settles the hung turn with no further emissions.
 		await fireSession(pi, "session_shutdown");
 		await pending;
+		expect(notes).toHaveLength(1);
+		expect(pi.sent).toHaveLength(0);
+		// SHOULD-1: outlive the orphaned askSettle budget (500ms) — a delayed
+		// stray finish would land here; re-assert post-shutdown silence.
+		await new Promise((r) => setTimeout(r, 1200));
 		expect(notes).toHaveLength(1);
 		expect(pi.sent).toHaveLength(0);
 	}, 10_000);
