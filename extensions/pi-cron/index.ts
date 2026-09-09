@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { CRON_CONFIG_PATH, loadCronConfig } from "./config.ts";
+import { formatCronStatus, readSystemCrontab, truncateCommand } from "./crontab.ts";
 
 // ---------------------------------------------------------------------------
 // Pure cron-config logic: which jobs are schedulable, how a five-field cron schedule becomes
@@ -342,11 +343,18 @@ export default async function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     for (const notice of notices) ctx.ui.notify(`ai-badger ${notice}`, "warning");
+    // Read here, per session, never at activation top-level: one sync crontab -l spawn
+    // per session is acceptable and keeps the footer fail-open when crontab is missing.
+    const sys = readSystemCrontab();
     ctx.ui.setStatus(
       "cron",
-      jobs.length === 0
-        ? `Cron: no jobs in ${CRON_CONFIG_PATH}`
-        : `Cron: ${registered.length}/${schedulableJobs(jobs).length} job(s) registered`,
+      formatCronStatus(
+        registered.length,
+        schedulableJobs(jobs).length,
+        sys.count,
+        sys.unavailable,
+        CRON_CONFIG_PATH,
+      ),
     );
   });
 
@@ -359,8 +367,28 @@ export default async function (pi: ExtensionAPI) {
         return `  ${job.title} [${state}] ${job.schedule} -> ${job.command}`;
       });
       const rung = bun ? "in-process Bun.cron" : "launchd agents";
+      // Fresh read per invocation (same per-session spawn note as session_start) and
+      // fail-open: launchd agents outside ai-badger pi-cron are explicitly out of scope.
+      let sysSection: string[];
+      try {
+        const sys = readSystemCrontab();
+        sysSection = sys.unavailable
+          ? ["system crontab: unavailable (fail-open)"]
+          : [
+              `system crontab (${sys.count}):`,
+              ...sys.jobs.map((job) => `  ${job.schedule} -> ${truncateCommand(job.command)}`),
+            ];
+      } catch {
+        sysSection = ["system crontab: unavailable (fail-open)"];
+      }
       ctx.ui.notify(
-        [`ai-badger cron (${rung}), from ${CRON_CONFIG_PATH}:`, ...lines, ...notices].join("\n"),
+        [
+          `ai-badger cron (${rung}), from ${CRON_CONFIG_PATH}:`,
+          ...lines,
+          ...notices,
+          ...sysSection,
+          "launchd agents outside ai-badger pi-cron are not listed (out of scope)",
+        ].join("\n"),
         notices.length ? "warning" : "info",
       );
     },
