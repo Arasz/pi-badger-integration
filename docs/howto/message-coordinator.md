@@ -4,7 +4,7 @@ Goal: understand the centralized wake-only coordinator that sits in front of the
 
 ## Big picture
 
-Delivery still happens the proven way: each session's `session_start` / `turn_start` hooks read that session's own mail (`peek-then-post-then-advance`) and the adapter poll timer wakes idle sessions. The coordinator adds one centralized, read-only pass per turn: it looks at **who is alive** (registry), **what mail is pending for whom** (peek per session), and logs the wake set to `console.debug`. It sends nothing, settles no cursors, writes no acks. Hooks remain the delivery leg; the coordinator is observability plus the seam a future delivery leg will plug into.
+Delivery still happens the proven way: each session's `session_start` / `turn_start` hooks read that session's own mail (`peek-then-post-then-advance`) and the adapter poll timer wakes idle sessions. The coordinator adds one centralized, read-only pass per turn: it looks at **who is alive** (registry), **what mail is pending for whom** (peek per session), and appends the wake set to the tick log file (`~/.pi/agent/message-bus-coordinator-tick.log`, override `PI_BADGER_MESSAGE_BUS_TICK_LOG`). It sends nothing, settles no cursors, writes no acks. Hooks remain the delivery leg; the coordinator is observability plus the seam a future delivery leg will plug into.
 
 Source: `extensions/message-bus/coordinator.ts` (tick), `coordinator-group.ts` (grouping + cache), `message-bus-core.ts` (shared constants/types), `index.ts` (registry block + wire-in block).
 
@@ -28,7 +28,7 @@ flowchart TD
     J --> L{more targets?}
     K --> L
     L -->|yes| G
-    L -->|no| M[console.debug wake set + channels<br/>zero sends, zero cursor writes]
+    L -->|no| M[tick log file: wake set + channels<br/>zero sends, zero cursor writes]
     M --> N[existing runHookCheck delivers S's own mail<br/>unchanged hook path]
 ```
 
@@ -53,7 +53,7 @@ Placeholders (measurement TODOs, not tuned): `REGISTRY_TTL_S=300`, `MAX_TICK_SES
 
 ## Observe it
 
-The tick logs one `console.debug` line per turn with the wake set and channel summary. To confirm it runs without affecting delivery, compare two turns: the debug names sessions with pending mail, while each session's cursor only moves through its own hook delivery (`/messages check`).
+The tick appends one line per turn to the tick log file with the wake set and channel summary. To confirm it runs without affecting delivery, compare two turns: the log names sessions with pending mail, while each session's cursor only moves through its own hook delivery (`/messages check`).
 
 ## Disable it
 

@@ -276,7 +276,9 @@ as a project broadcast, never reply to an ack, only ack what is in your inbox).
   become `errors` entries, overlapping same-version ticks share one in-flight
   run (single-flight), each tick serves at most `MAX_TICK_SESSIONS` (25)
   sessions round-robin (`truncated` says more remain), and the result is
-  `console.debug` observability only — zero cards, zero wake. Inbox rows group
+  file-append observability only (`~/.pi/agent/message-bus-coordinator-tick.log`,
+  override with `PI_BADGER_MESSAGE_BUS_TICK_LOG`) — zero cards, zero wake. Pi's
+  extension API exposes no log sink and `console.*` breaks the TUI, hence the file. Inbox rows group
   into channels (`coordinator-group.ts`: directs collect, machine broadcasts
   collect, per-project dict; project-less reads keep directs only) behind a
   cache that rebuilds only when the snapshot version moves. The heartbeat

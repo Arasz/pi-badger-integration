@@ -34,7 +34,7 @@
  * created as a side effect (the bus-store.ts ENOENT rule).
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Box, Text } from "@earendil-works/pi-tui";
@@ -490,6 +490,39 @@ function textResult(text: string, details: Record<string, unknown>): ToolResult 
 	return { content: [{ type: "text", text }], details };
 }
 
+// ---------------------------------------------------------------------------
+// coordinator tick log (file-append: console.* breaks the pi TUI)
+//
+// Pi's ExtensionAPI/Context expose no log sink (no logger on either surface —
+// verified against pi-coding-agent's extension types), so tick observability
+// appends one line per turn_start here instead of stdout. Override with
+// PI_BADGER_MESSAGE_BUS_TICK_LOG; empty string disables. Fail-open: a bad
+// path or full disk never breaks the turn.
+/** Env override for the coordinator tick log file; empty string disables it. */
+export const COORDINATOR_TICK_LOG_ENV = "PI_BADGER_MESSAGE_BUS_TICK_LOG";
+
+/** Coordinator tick log file (default: pi user-scope agent dir). */
+export function coordinatorTickLogPath(env: Record<string, string | undefined>): string {
+	const override = env[COORDINATOR_TICK_LOG_ENV];
+	if (typeof override === "string") {
+		if (!override.trim()) return "";
+		return override.trim();
+	}
+	return join(homedir(), ".pi", "agent", "message-bus-coordinator-tick.log");
+}
+
+/** Fail-open single-line append for the coordinator tick (never throws). */
+export function appendCoordinatorTickLog(env: Record<string, string | undefined>, line: string): void {
+	const path = coordinatorTickLogPath(env);
+	if (!path) return;
+	try {
+		mkdirSync(dirname(path), { recursive: true });
+		appendFileSync(path, `${new Date().toISOString()} ${line}\n`);
+	} catch {
+		// observability-only — a bad path or full disk must not break the turn
+	}
+}
+
 export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 	if (typeof pi?.registerTool !== "function") {
 		console.error(
@@ -799,8 +832,9 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 	//
 	// Composes PKG-1 (readRegistrySnapshot) → PKG-2 (groupByScope, version-gated
 	// buildChannelCache) → PKG-3 (tickCoordinator), read-only end to end: the
-	// tick only computes WHO has pending mail and the result is console.debug
-	// observability — zero cards, zero cursor writes, zero registry writes.
+	// tick only computes WHO has pending mail and the result is file-append
+	// observability (coordinator tick log — console.* breaks the pi TUI)
+	// — zero cards, zero cursor writes, zero registry writes.
 	// Fail-open per-tick catch: any failure logs one line and the turn proceeds.
 	// Idle-machine wake is struck by design (d-728: no pi host owns a durable
 	// tick) — this seam only observes turns that are starting anyway.
@@ -840,9 +874,9 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 				// grouping is observability-only — the wake set still computes
 			}
 			const result = await tickCoordinator(store, snapshot, { now: now(), env });
-			console.debug(
-				`ai-badger message-bus coordinator tick: woke=[${result.woke.join(",")}] errors=${result.errors.length} truncated=${result.truncated} channels={${channelSummary}}`,
-				{ kind: "coordinator-tick", woke: result.woke, errors: result.errors, truncated: result.truncated },
+			appendCoordinatorTickLog(
+				env,
+				`coordinator tick: woke=[${result.woke.join(",")}] errors=${result.errors.length} truncated=${result.truncated} channels={${channelSummary}}`,
 			);
 		} catch (error) {
 			console.error("ai-badger message-bus: coordinator tick failed — fail-open", error);

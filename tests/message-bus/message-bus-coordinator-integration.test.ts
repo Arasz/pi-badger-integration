@@ -19,8 +19,8 @@ import { unknownTargetWarning, type BusMessage } from "../../extensions/message-
  * The wire-in is ONE new `turn_start` block in extensions/message-bus/index.ts
  * (delimited by the PKG-4A markers — hook region bodies untouched) which runs
  * readRegistrySnapshot → groupByScope/buildChannelCache → tickCoordinator
- * read-only and console.debug-logs the wake set: zero sends, zero cursor
- * writes, fail-open per-tick catch.
+ * read-only and file-logs the wake set (tick log file — console.* breaks
+ * the pi TUI): zero sends, zero cursor writes, fail-open per-tick catch.
  *
  * Shared temp-DB real store, 2+ sessions, non-degenerate fixtures throughout
  * (multi-message inboxes, mixed ages, decoy rows the id-based paths ignore).
@@ -87,13 +87,11 @@ const callTool = async (pi: ReturnType<typeof createFakePi>, params: Record<stri
 	return tool.execute("t1", params, undefined, undefined, { sessionManager: { getSessionId: () => sid }, cwd: "/tmp/proj" });
 };
 
-function captureDebug(): { lines: string[]; restore: () => void } {
-	const lines: string[] = [];
-	const orig = console.debug;
-	console.debug = (...a: unknown[]) => {
-		lines.push(a.map(String).join(" "));
-	};
-	return { lines, restore: () => { console.debug = orig; } };
+/** Temp tick-log file: the coordinator tick file-logs (never stdout — the TUI),
+ * so tests point PI_BADGER_MESSAGE_BUS_TICK_LOG at a temp file and read it back. */
+function tempTickLog(): { path: string; env: Record<string, string>; read: () => string } {
+	const path = join(mkdtempSync(join(tmpdir(), "mbus-tick-")), "tick.log");
+	return { path, env: { PI_BADGER_MESSAGE_BUS_TICK_LOG: path }, read: () => readFileSync(path, "utf8") };
 }
 
 /** Delegating wrapper with a per-method call counter (kill-switch + failure gates). */
@@ -130,24 +128,24 @@ async function withBusyRetry<T>(fn: () => T, tries = 30): Promise<T> {
 }
 
 describe("PKG-4A composition pin (block exists, read-only, all three modules named)", () => {
-	test("wire-in block present between markers; names PKG-1..3 seams + debug; no write path inside", () => {
+	test("wire-in block present between markers; names PKG-1..3 seams + file log; no write path inside", () => {
 		const source = readFileSync(new URL("../../extensions/message-bus/index.ts", import.meta.url), "utf8");
 		const start = source.indexOf(BLOCK_START);
 		expect(start, "PKG-4A wire-in block missing — composition not wired").toBeGreaterThanOrEqual(0);
 		const end = source.indexOf(BLOCK_END, start);
 		expect(end, "PKG-4A end marker missing").toBeGreaterThan(start);
 		const block = source.slice(start, end);
-		for (const token of ["readRegistrySnapshot", "groupByScope", "buildChannelCache", "tickCoordinator", "console.debug"]) {
+		for (const token of ["readRegistrySnapshot", "groupByScope", "buildChannelCache", "tickCoordinator", "appendCoordinatorTickLog"]) {
 			expect(block, `composition must name ${token}`).toContain(token);
 		}
-		for (const token of ["sendCard", "sendMessage", "deliverForSession", "deliverDirectForSession", "recordIdentity", "appendEntry", ".send("]) {
+		for (const token of ["sendCard", "sendMessage", "deliverForSession", "deliverDirectForSession", "recordIdentity", "appendEntry", ".send(", "console.debug", "console.log"]) {
 			expect(block, `forbidden write-path token in wire-in block: ${token}`).not.toContain(token);
 		}
 	});
 });
 
 describe("AC2 turn fires with pending mail for a second session (wire-in runs, read-only)", () => {
-	test("coordinator debug names s-b; s-b cursor held with mail still queued; zero coordinator sends", async () => {
+	test("coordinator file log names s-b; s-b cursor held with mail still queued; zero coordinator sends", async () => {
 		const path = tempDb();
 		seed(path, [
 			{ at: T0 - 60 * MIN, to: "s-a", body: "old-direct-a (decoy age)" },
@@ -162,17 +160,13 @@ describe("AC2 turn fires with pending mail for a second session (wire-in runs, r
 		const cursorBBefore = probe.getCursor("s-b");
 
 		const pi = createFakePi();
-		makeExtension(pi as never, { dbPath: path, now: () => T0, sessionId: () => "s-a", projectId: () => "p1" });
-		const cap = captureDebug();
-		try {
-			await fire(pi, "turn_start", {}, turnCtx("s-a"));
-		} finally {
-			cap.restore();
-		}
+		const tick = tempTickLog();
+		makeExtension(pi as never, { dbPath: path, now: () => T0, sessionId: () => "s-a", projectId: () => "p1", env: tick.env });
+		await fire(pi, "turn_start", {}, turnCtx("s-a"));
 
 		// coordinator path ran: the wake set names the mail-bearing second session.
-		const debug = cap.lines.join("\n");
-		expect(debug, "coordinator tick must console.debug-log the wake set").toContain("coordinator tick");
+		const debug = tick.read();
+		expect(debug, "coordinator tick must file-log the wake set").toContain("coordinator tick");
 		expect(debug).toContain("s-b");
 		// s-b untouched: cursor held AND its mail still queued (peek, never deliver).
 		// The in-scope project broadcast rides along (addressed to s-b's project)
@@ -308,15 +302,10 @@ describe("INT-(ii) one target's failure never blocks another", () => {
 			},
 		};
 		const pi = createFakePi();
-		makeExtension(pi as never, { store: flaky as never, now: () => T0, sessionId: () => "s-a", projectId: () => "p1" });
-		const cap = captureDebug();
-		try {
-			await fire(pi, "turn_start", {}, turnCtx("s-a")); // must not throw
-		} finally {
-			cap.restore();
-		}
-		const debug = cap.lines.join("\n");
-		expect(debug).toContain("s-c");
+		const tick = tempTickLog();
+		makeExtension(pi as never, { store: flaky as never, now: () => T0, sessionId: () => "s-a", projectId: () => "p1", env: tick.env });
+		await fire(pi, "turn_start", {}, turnCtx("s-a")); // must not throw
+		expect(tick.read()).toContain("s-c");
 		// s-sick's mail is still queued behind the held cursor (fail-open, never lost).
 		expect(inner.peekForSession!("s-sick", "p1").messages.map((m) => m.content)).toEqual(["mail-sick"]);
 	});
@@ -448,16 +437,12 @@ describe("INT-(vi) failures fail-open with a held cursor", () => {
 			},
 		};
 		const pi = createFakePi();
-		makeExtension(pi as never, { store: flaky as never, now: () => T0, sessionId: () => "s-held", projectId: () => "p1" });
-		const cap = captureDebug();
-		try {
-			await fire(pi, "turn_start", {}, turnCtx("s-held")); // must not throw
-		} finally {
-			cap.restore();
-		}
+		const tick = tempTickLog();
+		makeExtension(pi as never, { store: flaky as never, now: () => T0, sessionId: () => "s-held", projectId: () => "p1", env: tick.env });
+		await fire(pi, "turn_start", {}, turnCtx("s-held")); // must not throw
 		// hook fail-open: no delivery card, tick fail-open: the sick target reported, never thrown.
 		expect(pi.sent.length).toBe(0);
-		expect(cap.lines.join("\n")).toContain("errors=1");
+		expect(tick.read()).toContain("errors=1");
 		// DB truth via a fresh reader: cursor row unchanged, mail still peekable.
 		const reader = createSqliteStore(path, () => T0);
 		expect(reader.getCursor("s-held")).toBe(cursorBefore);
@@ -469,6 +454,7 @@ test("channel summary peek is lazy: a same-version second turn issues zero summa
 		// Per-turn peek budget: hook preview (1) + tick wake-set (1 per live entry)
 		// every turn; the channel-summary preview ONLY on a cache miss (first turn).
 		const pi = createFakePi();
+		const tick = tempTickLog();
 		let peeks = 0;
 		const lazyStore = {
 			send: () => 1,
@@ -486,7 +472,7 @@ test("channel summary peek is lazy: a same-version second turn issues zero summa
 			hasIdentity: () => true,
 			listIdentities: () => [{ sessionId: "s-lazy", projectId: "p1", lastSeenMs: T0 }],
 		};
-		makeExtension(pi as never, { store: lazyStore as never, now: () => T0, sessionId: () => "s-lazy", projectId: () => "p1" });
+		makeExtension(pi as never, { store: lazyStore as never, now: () => T0, sessionId: () => "s-lazy", projectId: () => "p1", env: tick.env });
 		await fire(pi, "session_start", {}, turnCtx("s-lazy"));
 		expect(peeks).toBe(0); // startup reads via peekDirect, never peek
 		await fire(pi, "turn_start", {}, turnCtx("s-lazy"));
