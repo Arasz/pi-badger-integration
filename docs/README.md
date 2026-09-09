@@ -7,6 +7,7 @@ Map of the documentation in this repo. Plans and research records live alongside
 - [Install extensions](howto/install-extensions.md), install, verify, update, remove.
 - [Configure provider keys](howto/configure-provider-keys.md), Groq, Gemini, and OpenRouter keys for the router-fallback chain.
 - [Update integrations](howto/update-integrations.md), release notices and the update path.
+- [How the message coordinator works](howto/message-coordinator.md), wake-only tick flow, invariants, observe/disable.
 
 ## Explanation (why it is shaped this way)
 
