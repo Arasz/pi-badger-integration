@@ -36,11 +36,13 @@ import {
   MAX_LOG_TAIL_BYTES,
   MIN_LOG_TAIL_BYTES,
   probePid,
+  describeRecord,
   registerDelegationStatus,
   widgetLines,
   type PidLiveness,
 } from "../extensions/subagent/delegation-status.ts";
 import { DelegationResultCache, type DelegationResultEntry } from "../extensions/subagent/result-cache.ts";
+import { PEEK_PREVIEW_MAX_CHARS } from "../extensions/subagent/delegation-core.ts";
 import {
   default as sessionSignals,
   parseToolNames,
@@ -701,10 +703,16 @@ describe("T78: the /delegations command shares the registry path with the tool",
 
 		const completions = fx.harness.commands.get("delegations")!.getArgumentCompletions!;
 		const first = completions("") as Array<{ value: string }>;
-		expect(first.map((item) => item.value)).toEqual(["log", "abort"]);
+		expect(first.map((item) => item.value)).toEqual(["log", "abort", "peek"]);
 
 		const ids = completions("abort d") as Array<{ value: string }>;
 		expect(ids.map((item) => item.value)).toEqual(["d-2", "d-0"]); // live ids only — terminal d-1 excluded
+
+		const peekIds = completions("peek d") as Array<{ value: string }>;
+		expect(peekIds.map((item) => item.value)).toEqual(["d-2", "d-0"]); // peek completes live ids, same filter as log/abort
+
+		const peekVerb = completions("p") as Array<{ value: string }>;
+		expect(peekVerb.map((item) => item.value)).toEqual(["peek"]);
 
 		expect(completions("bogus")).toBeNull();
 	});
@@ -842,3 +850,259 @@ describe("T123 — probePid's EPERM branch witnessed directly (d-52 NIT-3)", () 
 });
 
 
+
+// ------------------------------------------------------------------ P1: conditional session segment on list + widget lines
+
+describe("P1 — session segment on list (describeRecord) and widget lines", () => {
+  const record = {
+    id: "d-1",
+    agent: "architect",
+    task: "do the thing",
+    toolCallId: "tc-1",
+    state: "running" as const,
+    startedAt: NOW,
+    usage: { input: 1, output: 7, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+  };
+
+  test("P1-A1: list line with sessionId contains a trailing `session <id>` segment", () => {
+    expect(describeRecord({ ...record, sessionId: "sess-test" }, NOW)).toBe(
+      "d-1 architect — 0s — ↑1 ↓7 — task: do the thing — session sess-test",
+    );
+  });
+
+  test("P1-A1: list line without sessionId is byte-identical to today", () => {
+    expect(describeRecord(record, NOW)).toBe("d-1 architect — 0s — ↑1 ↓7 — task: do the thing");
+  });
+
+  test("P1-A2: widget line with sessionId contains a trailing `session <id>` segment", () => {
+    expect(widgetLines([{ ...record, sessionId: "sess-test" }], new Set(), NOW)).toEqual([
+      "d-1 architect — 0s — ↑1 ↓7 — session sess-test",
+    ]);
+  });
+
+  test("P1-A2: widget line without sessionId is byte-identical to today", () => {
+    expect(widgetLines([record], new Set(), NOW)).toEqual(["d-1 architect — 0s — ↑1 ↓7"]);
+  });
+});
+
+// ------------------------------------------------------------------ P2: delegations peek
+
+describe("P2 — delegations peek (live preview first, cached tail when settled)", () => {
+  const answerLines = (n: number, prefix: string): string =>
+    Array.from({ length: n }, (_, i) => `${prefix} ${i + 1}`).join("\n");
+  const assistantEnd = (text: string): Record<string, unknown> => ({
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text }] },
+  });
+
+  test("P2-A1: live run emitting assistant text → peek returns the last-20-lines tail", async () => {
+    const fx = makeFixture();
+    await startBackground(fx, "d-1");
+    fx.children[0]!.emitEvent(assistantEnd(answerLines(30, "live")));
+
+    const result = await delegationsTool(fx).execute({ action: "peek", id: "d-1" });
+
+    expect(result.details).toEqual({ id: "d-1", lines: 20, source: "live" });
+    expect(result.content[0]!.text).toBe(answerLines(30, "live").split("\n").slice(-20).join("\n"));
+  });
+
+  test("P2-A1: a second peek after more output is fresher (no timer)", async () => {
+    const fx = makeFixture();
+    await startBackground(fx, "d-1");
+    fx.children[0]!.emitEvent(assistantEnd(answerLines(10, "batch1")));
+    fx.children[0]!.emitEvent(assistantEnd(answerLines(10, "batch2")));
+
+    const first = await delegationsTool(fx).execute({ action: "peek", id: "d-1" });
+    expect(first.content[0]!.text).toContain("batch2 10");
+    expect(first.content[0]!.text).toContain("batch1 1");
+
+    fx.children[0]!.emitEvent(assistantEnd(answerLines(10, "batch3"))); // 30 lines live → tail drops batch1
+    const second = await delegationsTool(fx).execute({ action: "peek", id: "d-1" });
+    expect(second.content[0]!.text).toContain("batch3 10");
+    expect(second.content[0]!.text).not.toContain("batch1");
+  });
+
+  test("P2-A2: --lines is respected and clamped (2 → 2 lines; 1000 → 100; -5 → 1; 2.6 → 3; NaN → 20)", async () => {
+    const fx = makeFixture();
+    await startBackground(fx, "d-1");
+    fx.children[0]!.emitEvent(assistantEnd(answerLines(120, "row")));
+
+    const two = await delegationsTool(fx).execute({ action: "peek", id: "d-1", lines: 2 });
+    expect(two.details).toEqual({ id: "d-1", lines: 2, source: "live" });
+    expect(two.content[0]!.text).toBe("row 119\nrow 120");
+
+    const huge = await delegationsTool(fx).execute({ action: "peek", id: "d-1", lines: 1000 });
+    expect((huge.details as { lines: number }).lines).toBe(100);
+    expect(huge.content[0]!.text).toBe(answerLines(120, "row").split("\n").slice(-100).join("\n"));
+
+    const one = await delegationsTool(fx).execute({ action: "peek", id: "d-1", lines: -5 });
+    expect((one.details as { lines: number }).lines).toBe(1);
+    expect(one.content[0]!.text).toBe("row 120");
+
+    const rounded = await delegationsTool(fx).execute({ action: "peek", id: "d-1", lines: 2.6 });
+    expect((rounded.details as { lines: number }).lines).toBe(3);
+
+    const fallback = await delegationsTool(fx).execute({ action: "peek", id: "d-1", lines: Number.NaN });
+    expect((fallback.details as { lines: number }).lines).toBe(20);
+  });
+
+  test("P2-A2: a non-numeric lines value is a usage error, not a silent default", async () => {
+    const fx = makeFixture();
+    await startBackground(fx, "d-1");
+    await expect(delegationsTool(fx).execute({ action: "peek", id: "d-1", lines: "many" })).rejects.toThrow(
+      /needs lines as a number/,
+    );
+  });
+
+  test("P2-A2: unknown id errors loudly (unknownIdError)", async () => {
+    const fx = makeFixture();
+    await expect(delegationsTool(fx).execute({ action: "peek", id: "d-nope" })).rejects.toThrow(
+      /unknown delegation id "d-nope"/,
+    );
+  });
+
+  test("P2-A2: peek without an id is a usage error", async () => {
+    const fx = makeFixture();
+    await expect(delegationsTool(fx).execute({ action: "peek" })).rejects.toThrow(/peek needs a run id/);
+  });
+
+  test("P2-A2: live run with no assistant text yet answers plainly", async () => {
+    const fx = makeFixture();
+    await startBackground(fx, "d-1"); // running, nothing streamed
+
+    const result = await delegationsTool(fx).execute({ action: "peek", id: "d-1" });
+    expect(result.content[0]!.text).toBe("delegation d-1: running, no output yet");
+    expect(result.details).toEqual({ id: "d-1", lines: 20, source: "live" });
+  });
+
+  test("P2-A2: queued run answers plainly with its position", async () => {
+    const fx = makeFixture({ cap: 1, queueCap: 16 });
+    await startBackground(fx, "d-1");
+    await startBackground(fx, "d-2"); // queued behind d-1
+
+    const result = await delegationsTool(fx).execute({ action: "peek", id: "d-2" });
+    expect(result.content[0]!.text).toBe("delegation d-2: queued (position 1)");
+    expect(result.details).toEqual({ id: "d-2", lines: 20, source: "queued", queuePosition: 1 });
+  });
+
+  test("P2-A3: settled run → peek returns the cached answer tail (cache wins over the live preview)", async () => {
+    const fx = makeFixture();
+    await startBackground(fx, "d-1");
+    fx.children[0]!.emitEvent(assistantEnd("live text"));
+    fx.children[0]!.exit(0);
+    // deliverNote's cache entry (production fills it at delivery; the surface only reads it back).
+    fx.cache.put({ id: "d-1", agent: "architect", task: "do the thing", answer: answerLines(30, "cached") }, { now: () => NOW });
+
+    const result = await delegationsTool(fx).execute({ action: "peek", id: "d-1" });
+    expect(result.details).toEqual({ id: "d-1", lines: 20, source: "cache" });
+    expect(result.content[0]!.text).toBe(answerLines(30, "cached").split("\n").slice(-20).join("\n"));
+  });
+
+  test("P2-A3: settled + ring-evicted → unknownIdError single behavior (M1, registry still lists the run)", async () => {
+    const fx = makeFixture();
+    await startBackground(fx, "d-1");
+    fx.children[0]!.exit(0);
+    fx.cache.put({ id: "d-1", agent: "architect", task: "do the thing", answer: "old answer" }, { now: () => NOW });
+    for (let i = 2; i <= 9; i++) {
+      fx.cache.put({ id: `d-${i}`, agent: "architect", task: "t", answer: `answer ${i}` }, { now: () => NOW + i });
+    }
+    expect(fx.registry.get("d-1")?.state).toBe("completed"); // still listed — yet unpeekable
+
+    await expect(delegationsTool(fx).execute({ action: "peek", id: "d-1" })).rejects.toThrow(
+      /unknown delegation id "d-1"/,
+    );
+  });
+
+  test("P2-A3: settled run that never reached the cache → unknownIdError (double-miss terminal)", async () => {
+    const fx = makeFixture();
+    await startBackground(fx, "d-1");
+    fx.children[0]!.exit(0); // settled, nothing cached (cache died or the window moved on)
+
+    await expect(delegationsTool(fx).execute({ action: "peek", id: "d-1" })).rejects.toThrow(
+      /unknown delegation id "d-1"/,
+    );
+  });
+
+  test("P2-A3: cached-but-empty output answers plainly instead of an empty message", async () => {
+    const fx = makeFixture();
+    await startBackground(fx, "d-1");
+    fx.children[0]!.exit(1); // failed with no assistant text; deliverNote still caches the note
+    fx.cache.put({ id: "d-1", agent: "architect", task: "do the thing", answer: "" }, { now: () => NOW });
+
+    const result = await delegationsTool(fx).execute({ action: "peek", id: "d-1" });
+    expect(result.content[0]!.text).toBe("delegation d-1: no cached output");
+    expect(result.details).toEqual({ id: "d-1", lines: 20, source: "cache" });
+  });
+
+  test("P2-A4: tool and /delegations peek agree byte-for-byte (live tail + cached tail + lines)", async () => {
+    const fx = makeFixture();
+    await startBackground(fx, "d-1");
+    fx.children[0]!.emitEvent(assistantEnd(answerLines(30, "live")));
+    const command = fx.harness.commands.get("delegations")!;
+
+    const liveTool = await delegationsTool(fx).execute({ action: "peek", id: "d-1" });
+    await command.handler("peek d-1", fx.ctx);
+    expect(lastNotification(fx).message).toBe(liveTool.content[0]!.text);
+    expect(lastNotification(fx).type).toBe("info");
+
+    const linesTool = await delegationsTool(fx).execute({ action: "peek", id: "d-1", lines: 2 });
+    await command.handler("peek d-1 --lines 2", fx.ctx);
+    expect(lastNotification(fx).message).toBe(linesTool.content[0]!.text);
+
+    fx.children[0]!.exit(0);
+    fx.cache.put({ id: "d-1", agent: "architect", task: "do the thing", answer: answerLines(25, "cached") }, { now: () => NOW });
+    const cachedTool = await delegationsTool(fx).execute({ action: "peek", id: "d-1" });
+    await command.handler("peek d-1", fx.ctx);
+    expect(lastNotification(fx).message).toBe(cachedTool.content[0]!.text);
+  });
+
+  test("P2-A4: /delegations peek parity on the plain answers (no-output live, queued, unknown id)", async () => {
+    const fx = makeFixture({ cap: 1, queueCap: 16 });
+    await startBackground(fx, "d-1"); // running, nothing streamed
+    await startBackground(fx, "d-2"); // queued
+    const command = fx.harness.commands.get("delegations")!;
+
+    const liveTool = await delegationsTool(fx).execute({ action: "peek", id: "d-1" });
+    await command.handler("peek d-1", fx.ctx);
+    expect(lastNotification(fx).message).toBe(liveTool.content[0]!.text);
+
+    const queuedTool = await delegationsTool(fx).execute({ action: "peek", id: "d-2" });
+    await command.handler("peek d-2", fx.ctx);
+    expect(lastNotification(fx).message).toBe(queuedTool.content[0]!.text);
+
+    await command.handler("peek d-nope", fx.ctx); // unknown id → loud error, same wording as the tool
+    expect(lastNotification(fx).type).toBe("error");
+    expect(lastNotification(fx).message).toContain('unknown delegation id "d-nope"');
+  });
+
+  test("P2-A4: /delegations peek --lines with a non-numeric value is a usage error", async () => {
+    const fx = makeFixture();
+    await startBackground(fx, "d-1");
+
+    await fx.harness.commands.get("delegations")!.handler("peek d-1 --lines many", fx.ctx);
+    expect(lastNotification(fx).type).toBe("warning");
+    expect(lastNotification(fx).message).toContain('--lines needs a number (got "many")');
+    expect(lastNotification(fx).message).toContain("usage: /delegations");
+  });
+
+  test("P2-A4: the live preview stays bounded — a 5000-char turn keeps answerPreview at the cap", async () => {
+    const fx = makeFixture();
+    await startBackground(fx, "d-1");
+    fx.children[0]!.emitEvent({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "y".repeat(5000) },
+    });
+
+    const preview = fx.registry.get("d-1")!.answerPreview!; // zero new seams: it rides get/list
+    expect(preview.length).toBeLessThanOrEqual(PEEK_PREVIEW_MAX_CHARS + 100);
+    const peeked = await delegationsTool(fx).execute({ action: "peek", id: "d-1", lines: 5 });
+    expect((peeked.details as { lines: number }).lines).toBe(5);
+    expect(peeked.content[0]!.text.length).toBeLessThan(5000);
+  });
+
+  test("P2: peek with no id on the command answers with usage", async () => {
+    const fx = makeFixture();
+    await fx.harness.commands.get("delegations")!.handler("peek", fx.ctx);
+    expect(lastNotification(fx).message).toContain("usage: /delegations");
+  });
+});

@@ -12,6 +12,7 @@
 import { describe, expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { FakeChild } from "./helpers/fake-child.ts";
+import { PEEK_PREVIEW_MAX_CHARS } from "../extensions/subagent/delegation-core.ts";
 import {
   DelegationRegistry,
   type DelegationDeps,
@@ -1008,4 +1009,67 @@ describe("wait and timeout interplay (T103, deferral pkg P4)", () => {
     expect(second[0]!.state).toBe("running");
     h.children[1]!.exit(0); // hygiene
   }, 20_000);
+});
+
+// ------------------------------------------------------------------ P2: live answerPreview stamping
+
+describe("P2 — the runner stamps record.answerPreview live per assistant event", () => {
+  const textDelta = (delta: string): Record<string, unknown> => ({
+    type: "message_update",
+    assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta },
+  });
+
+  test("text_delta + message_end stamp the shared record before close (no timer, no settle)", () => {
+    const h = makeRunner();
+    const handle = h.runner.run(runRequest());
+
+    expect(handle.record.answerPreview).toBeUndefined(); // nothing streamed yet
+    h.children[0]!.emitEvent(textDelta("partial "));
+    expect(handle.record.answerPreview).toBe("partial "); // live — the child never closed
+    h.children[0]!.emitEvent(assistantEnd("first line\nsecond line"));
+    expect(handle.record.answerPreview).toContain("partial ");
+    expect(handle.record.answerPreview).toContain("first line\nsecond line\n");
+    expect(h.notes).toHaveLength(0); // stamping never settles
+  });
+
+  test("later output freshens the preview: the tail wins, bounded at PEEK_PREVIEW_MAX_CHARS", () => {
+    const h = makeRunner();
+    const handle = h.runner.run(runRequest());
+
+    h.children[0]!.emitEvent(textDelta("x".repeat(5000))); // over the 3000-char cap
+    const preview = handle.record.answerPreview!;
+    expect(preview.length).toBeLessThanOrEqual(PEEK_PREVIEW_MAX_CHARS + 100); // tail-kept: cap + drop marker
+    expect(preview).toContain("earlier characters dropped"); // tail-kept with the marker
+
+    h.children[0]!.emitEvent(assistantEnd("fresh tail"));
+    expect(handle.record.answerPreview!.endsWith("fresh tail\n")).toBe(true); // fresher
+    expect(handle.record.answerPreview!.length).toBeLessThanOrEqual(PEEK_PREVIEW_MAX_CHARS + 200);
+  });
+
+  test("thinking/toolcall deltas never enter the preview", () => {
+    const h = makeRunner();
+    const handle = h.runner.run(runRequest());
+
+    h.children[0]!.emitEvent({
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "secret plan" },
+    });
+    h.children[0]!.emitEvent({ type: "tool_execution_start", toolName: "bash" });
+    expect(handle.record.answerPreview).toBeUndefined();
+  });
+
+  test("stamping touches neither settle nor notify: the note and progress carry no preview", () => {
+    const h = makeRunner();
+    h.runner.run(runRequest());
+
+    h.children[0]!.emitEvent(textDelta("live text "));
+    expect(h.updates.length).toBeGreaterThanOrEqual(1);
+    for (const update of h.updates) expect(update).not.toHaveProperty("answerPreview");
+    h.children[0]!.emitEvent(assistantEnd("final answer"));
+    h.children[0]!.exit(0);
+
+    expect(h.notes).toHaveLength(1);
+    expect(h.notes[0]).not.toHaveProperty("answerPreview");
+    expect(h.notes[0]!.answer).toBe("final answer"); // the settled answer path is unchanged
+  });
 });

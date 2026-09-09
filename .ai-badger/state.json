@@ -1,14 +1,50 @@
 {
-  "lastUpdated": "2026-09-08T18:55:30Z",
+  "lastUpdated": "2026-09-09T16:25:08Z",
   "next": null,
   "completedTasks": [
+    {
+      "taskId": "pbi-delegation-session-peek-output",
+      "title": "Delegation surfaces: session id + peek output",
+      "finishedAt": "2026-09-09T16:25:08Z",
+      "summary": "P1 conditional session <id> trailing segment on list/widget/panel/receipt/card (absent\u2192byte-identical; DelegationStatusRun.sessionId? additive) + P2 delegations peek <id> [--lines N] (default 20, 1-100) + /delegations peek twin with cache\u2192live\u2192queued\u2192unknownIdError precedence + runner live answerPreview (PEEK_PREVIEW_MAX_CHARS 3000, text_delta+message_end only, stamped before onUpdate) + tailLines/clampPeekLines pure + catalog docs + tailLines(<1)\u2192'' guard. 293 pass touched surfaces, full suite 1350 pass + 5 pre-existing pi-mcp-tools parity fails (main also fails), tsc zero subagent errors. Merged FF a3c16b8+950d22f+8f55e16. Low-effort: architect plan + code-reviewer READY-WITH-FOLDS (6 MUSTs folded) + 2 api-engineer lanes + code-reviewer SHIP-WITH-FIXES (4 SHOULDs, 2 applied). Follow-ups: ring-evicted wording disambiguation, empty-string sessionId airtight gate.",
+      "decisions": [
+        "Live peek rides in-memory record.answerPreview, not log parse (tee close-only verified); settled peek reuses result-cache byId output",
+        "Double-miss (registry+cache) single behavior unknownIdError covering never-existed + evicted (documented); queue-tool receipt sessionId deferred with reason",
+        "Session segment trailing conditional on !==undefined across all five surfaces; receipt/ card meta [usage?,session?,logFile?]; footer (session-signals) deferred (no registry wire)",
+        "PEEK_PREVIEW_MAX_CHARS 3000 tail-kept; sources text_delta+message_end assistant only, never thinking/toolcall; DelegationProgress/onUpdate unchanged; serial P1\u2192P2\u2192fixes"
+      ]
+    },
+    {
+      "taskId": "pbi-monitor-register-bash-predicate",
+      "title": "Monitor register accepts bash predicates alongside JS expressions",
+      "finishedAt": "2026-09-08T20:30:00Z",
+      "summary": "predicateKind js|bash (default js) reusing predicate string; bash reads snapshot JSON on stdin, exit 0->fired (stdout head-capped 1KB, empty->true) / 1->idle / >=2-signal-timeout-spawn->error+disarm; 5s timeout SIGTERM->SIGKILL 500ms group kill + in-flight set; async drain (JS sync first, bash Promise.all one frozen snapshot, idle re-drain once); expiry/shutdown/cancel kills + suppression; wait-timer pinned js; ADR docs/work/2026-09-08-monitor-bash-predicate-adr.md + catalog. 153 monitor tests green, tsc clean, CI green. PR #16 squash-merged as 37ce04f (--admin over branch policy per owner order). Low-effort: architect plan + code-reviewer plan-review READY-WITH-FOLDS (8 MUSTs) + api-engineer impl + code-reviewer impl-review SHIP-WITH-FIXES + qa review-tests BLOCKED->fixed (escalation/error-disarm/group-orphan pins) + in-session CI-only M6 portability fix (bash3.2 exits 1 vs bash5 >=2 on bare return). Tracker skipped (stale claude-source cwd-fallback claims foreign session). Follow-ups: bashExecutable wiring seam (C-3), epoch-bump observability (#4), wall-clock margins (#8).",
+      "decisions": [
+        "stdin over env (ARG_MAX/ps-leak; jq-native); 0/1/other exit mapping (jq -e dialect, loud-disarm typos); predicateKind discriminator over second field (one string/cap/receipt path)",
+        "Coalescing fix (i) re-drain-once over documented-drop: preserves evaluates-on-every-transition receipt promise",
+        "M6 return-0 probe asserts registration-verbatim only; exit-1->idle stays pinned by stable exit-1 probe (shell-version landmine documented in-test)",
+        "JS fired cards carry no value (keeps JS renders byte-identical); no VERSION touch (auto-bump owns it)"
+      ]
+    },
+    {
+      "taskId": "pbi-rag-skill-precondition-ask-command",
+      "title": "RAG skill-gated precondition + /ask isolated command",
+      "finishedAt": "2026-09-08T20:24:00Z",
+      "summary": "PKG-1 skill-only auto-enrich (non-skill turns skip as non-skill-call, zero searches; bare calls keep bare-skill-call) + PKG-2 /ask isolated RAG command (floors + memory_search limit 5 + tool-less pi child, 90s kill, 8KB cap, fail-open, shutdown kills in-flight). 104 mem-based-rag tests green, full suite + tsc only pre-existing pi-mcp-tools reds, CI green. PR #17 squash-merged as 76ac786 (--admin over REVIEW_REQUIRED per owner order). Low-effort: code-reviewer impl-review SHIP (stripped-Question + stderr-log + pure-function folds applied) + qa review-tests GATE (no-hits + counter pins added). Follow-up: default-spawn-seam integration test (known blind spot).",
+      "decisions": [
+        "Stripped decision.query (not raw args) in both bank search and child Question: \u2014 bank-query/child-prompt contract parity",
+        "isSkillCall stays exported+tested contract helper (prefix vs body presence); wiring intentionally keys on hasSkillPrefix so bare calls keep their reason \u2014 no production churn",
+        "Single-slot askAbort race under concurrent /ask documented as known edge (commands sequential in practice)",
+        "Default real-spawn seam untested (all /ask tests inject the seam) \u2014 filed as follow-up, not a gate-blocker"
+      ]
+    },
     {
       "taskId": "pbi-delivery-cursor-duplicate-missing-fix",
       "title": "Delivery late-card + missing-cursor anomalies",
       "finishedAt": "2026-09-08T18:54:39Z",
-      "summary": "A1 late card → IMPL-BUG fixed: hook-path peek-then-post-then-advance (optional peek seam, reject-holds-redeliver, old stores byte-identical) + 11-row visibility suite, all mutant-proven. A2 missing cursor → NO-FAULT-FOUND (write path proven 15/15 white-box; disappearance has no in-repo cause). 154 tests green, tsc clean outside pre-existing pi-mcp-tools, impl-review SHIP, review-tests unblocked (confirm-yes/no, empty-preview, broadcasts/empty settle rows). PR #11 squash-merged; manual bump PR #12 (auto-bump bot still PR-blocked) cut v1.1.1; published, check in sync. Low-effort: architect plan + code-reviewer review (READY-WITH-FOLDS) + api-engineer investigation + api-engineer fix + code-reviewer gate (SHIP) + qa review-tests (BLOCKED→fixed).",
+      "summary": "A1 late card \u2192 IMPL-BUG fixed: hook-path peek-then-post-then-advance (optional peek seam, reject-holds-redeliver, old stores byte-identical) + 11-row visibility suite, all mutant-proven. A2 missing cursor \u2192 NO-FAULT-FOUND (write path proven 15/15 white-box; disappearance has no in-repo cause). 154 tests green, tsc clean outside pre-existing pi-mcp-tools, impl-review SHIP, review-tests unblocked (confirm-yes/no, empty-preview, broadcasts/empty settle rows). PR #11 squash-merged; manual bump PR #12 (auto-bump bot still PR-blocked) cut v1.1.1; published, check in sync. Low-effort: architect plan + code-reviewer review (READY-WITH-FOLDS) + api-engineer investigation + api-engineer fix + code-reviewer gate (SHIP) + qa review-tests (BLOCKED\u2192fixed).",
       "decisions": [
-        "Peek-then-post-then-advance over await-card (sendMessage returns void, hooks return void — acceptance ordering is the only implementable shape); reject-holds-redeliver gives hook-path at-least-once",
+        "Peek-then-post-then-advance over await-card (sendMessage returns void, hooks return void \u2014 acceptance ordering is the only implementable shape); reject-holds-redeliver gives hook-path at-least-once",
         "Targeted cursor-write rejected as bigger shape; peek-settle micro-race documented in-code as bounded synchronous window, intentionally untested (no deterministic cross-process row possible)",
         "A2 filed NO-FAULT-FOUND not exonerated-lightly: 15/15 repro + zero DELETE paths + twin control correct; per-process DB-path/external-surgery stay hypotheses with named boundary",
         "QA confirm/empty/broadcasts rows added post-BLOCKED with per-mutant kills; old-store row passes pre/post by design as preservation pin",
@@ -19,9 +55,9 @@
       "taskId": "pbi-bus-identity-delegation-skip-fix",
       "title": "Bus identity and delegation-skip fixes P1-P5 + F7 ack stub",
       "finishedAt": "2026-09-08T15:37:11Z",
-      "summary": "P1 reply-by-id, P2 whoami+identity header, P3 bus_identities fail-open validation (shape/self/unknown) incl /messages send-to parity, P4 startup consumed-counts, P5 advisory pi-spawn guard, INT-6 cross-package rows, F7 metadata-only ack stub, catalog+README docs. 141 tests (message-bus+subagent) green, tsc clean outside pre-existing pi-mcp-tools, QA GATE. Branch task/pbi-bus-identity-delegation-skip-fix-impl pushed (15 commits), NOT merged — owner merges (F7 parenthetical deviation needs ratification). High-effort: MoE plan (3) + plan-review MoE (READY-WITH-FOLDS/NOT-READY→folds) + impl + P5 spike (IMPLEMENTABLE) + INT-6 + impl-review MoE (SHIP/SHIP/SHIP-WITH-FIXES→fixed) + QA GATE + F7 stub lane.",
+      "summary": "P1 reply-by-id, P2 whoami+identity header, P3 bus_identities fail-open validation (shape/self/unknown) incl /messages send-to parity, P4 startup consumed-counts, P5 advisory pi-spawn guard, INT-6 cross-package rows, F7 metadata-only ack stub, catalog+README docs. 141 tests (message-bus+subagent) green, tsc clean outside pre-existing pi-mcp-tools, QA GATE. Branch task/pbi-bus-identity-delegation-skip-fix-impl pushed (15 commits), NOT merged \u2014 owner merges (F7 parenthetical deviation needs ratification). High-effort: MoE plan (3) + plan-review MoE (READY-WITH-FOLDS/NOT-READY\u2192folds) + impl + P5 spike (IMPLEMENTABLE) + INT-6 + impl-review MoE (SHIP/SHIP/SHIP-WITH-FIXES\u2192fixed) + QA GATE + F7 stub lane.",
       "decisions": [
-        "Ack stub metadata-only `ack: #id — terminal, no reply expected`, dropped owner (<title prefix>) parenthetical: leading excerpts can open with the imperative (please review…) so any body bytes reintroduce F7; correlation by #id via list; one-liner to restore, needs owner ratification",
+        "Ack stub metadata-only `ack: #id \u2014 terminal, no reply expected`, dropped owner (<title prefix>) parenthetical: leading excerpts can open with the imperative (please review\u2026) so any body bytes reintroduce F7; correlation by #id via list; one-liner to restore, needs owner ratification",
         "Reply-to-ack stays refused (reviewers MUST) despite collaborator note that reply-with-content to ack is legitimate: behavior change mid-gate rejected; filed as follow-up now that stub acks are contentless",
         "/messages send-to routed through P3 gate (api-engineer MUST over code-reviewer SHOULD): receipt claimed success for never-deliverable self-send, same #672 class; 3 MUST rows RED-first",
         "P3 3A+3B folded single package (delegator MUST: 3A alone unshippable); S-labels re-anchored to real lines; gates re-scoped to green baseline (full tsc/test red in pi-mcp-tools pre-existing, exempted)",
@@ -38,7 +74,7 @@
       "summary": "mem-based-rag live at user scope (default-on): v1 filter (any-/ skip, minWords 6, noise-dict >=3, no-hits skip), trust-header blocks, session-keyed FIFO capture, stdio client fixes (re-init, reject-all, shared-deadline expanded gets), fail-open hardening. 61 tests (core 32 + wiring 29), tsc clean, red-proofs on trust-header + no-hits, 10/10 live acceptance vs real bank, PR #6 squash-merged (557f957), publish --check in sync. Low-effort: MoE spec review + architect plan + plan review (READY-WITH-FOLDS) + 2 api-engineer lanes + test-engineer P6 + code-reviewer gate (SHIP-WITH-FIXES).",
       "decisions": [
         "AND + >=3 + noise-dict over OR-floors/>2-counting (precision first; recall ladder documented)",
-        "minWords 8→6 (calibrated jsaa probes); owner veto recorded",
+        "minWords 8\u21926 (calibrated jsaa probes); owner veto recorded",
         "Inject-don't-rewrite + stdio child + automatic (MoE-unanimous; HTTP/LLM-tool deferred)",
         "Timeout stays 8000 (covers first-search warm-up); display:true with documented history cost",
         "Live-found onData handshake bug fixed (non-envelope results resolve raw)"
@@ -73,7 +109,7 @@
       "taskId": "pbi-bus-lock-busy-timeout-fix",
       "title": "message-bus busy_timeout hardening + CI/release-chain fixes",
       "finishedAt": "2026-09-05T21:55:00Z",
-      "summary": "Fixed database-is-locked (SQLITE_BUSY_SNAPSHOT on DDL write): openBusDb helper applies PRAGMA busy_timeout=5000 (python parity), pinned by read-back test. Full suite 1029 pass, tsc clean, published. Also stood up CI/release (VERSION 1.0.1, ci/auto-bump/release workflows): fixed fresh-clone ext-deps gap, global-pi gap (reproduced with empty HOME), token-push trigger gap (tag+release in bump job), GH_TOKEN env gap. Chain proven: ci green, auto-bump cut v1.0.4 tag+release. Low-effort, in-session plan/review — reduced rigor noted; read-only opens deferred as follow-up.",
+      "summary": "Fixed database-is-locked (SQLITE_BUSY_SNAPSHOT on DDL write): openBusDb helper applies PRAGMA busy_timeout=5000 (python parity), pinned by read-back test. Full suite 1029 pass, tsc clean, published. Also stood up CI/release (VERSION 1.0.1, ci/auto-bump/release workflows): fixed fresh-clone ext-deps gap, global-pi gap (reproduced with empty HOME), token-push trigger gap (tag+release in bump job), GH_TOKEN env gap. Chain proven: ci green, auto-bump cut v1.0.4 tag+release. Low-effort, in-session plan/review \u2014 reduced rigor noted; read-only opens deferred as follow-up.",
       "decisions": [
         "busy_timeout over retry loops: SQLite serialises waiters itself; 5s matches python store",
         "Deterministic pragma read-back test instead of flaky contention test",
@@ -86,7 +122,7 @@
       "taskId": "pbi-message-bus-send-check-list",
       "title": "Message-bus pi extension (send/check/list + ack + cards)",
       "finishedAt": "2026-09-05T20:20:10Z",
-      "summary": "New message-bus pi extension (extensions/message-bus/: pure core + sqlite wiring + manifest; publish.ts one-liner; README + catalog): message-bus tool (send/list/check/ack), /messages command (list|check|ack/send/send-to), session_start+turn_start delivery hooks, message-bus-event card renderer, all on ai-badger user-DB backend (D3/C2/R2 parity, 30min/16-cap first read). 36 extension tests (RED-first incl. node:sqlite null-vs-undefined fix + ack-inbox-membership), full suite 1004 pass/6 skip, tsc clean, published to user scope, check in sync. Low-effort: 3 delegations went off-track (ran publish, no plan/review) — in-session plan+review, reduced rigor noted.",
+      "summary": "New message-bus pi extension (extensions/message-bus/: pure core + sqlite wiring + manifest; publish.ts one-liner; README + catalog): message-bus tool (send/list/check/ack), /messages command (list|check|ack/send/send-to), session_start+turn_start delivery hooks, message-bus-event card renderer, all on ai-badger user-DB backend (D3/C2/R2 parity, 30min/16-cap first read). 36 extension tests (RED-first incl. node:sqlite null-vs-undefined fix + ack-inbox-membership), full suite 1004 pass/6 skip, tsc clean, published to user scope, check in sync. Low-effort: 3 delegations went off-track (ran publish, no plan/review) \u2014 in-session plan+review, reduced rigor noted.",
       "decisions": [
         "node:sqlite direct over pi.exec python: self-contained, no python dep; missing DB never created (ENOENT rule)",
         "No new push timer: idle wake stays with adapter poll; hooks are turn-boundary seam only",
@@ -152,17 +188,17 @@
       "summary": "New router-fallback pi extension (extensions/router-fallback/: core matcher + provider registry + wiring + manifest; publish.ts one-liner; README; /fallback command): detects billing/auth/model-unavailable failures via folded errorMessage (substring+status-prefix, never exact JSON) and session-only switches Groq llama-3.3-70b-versatile -> Gemini gemini-3.1-flash-lite -> OpenRouter :free chain (glm-5.2/laguna-s-2.1/m3/inkling-small), once per episode + cooldowns, configurable ordered providers, S-cut (no live /models fetch, pinned+find-filter). 138 extension tests (RED-first incl. J5 stub-fetch probe fixtures), full suite 949 green, tsc clean, published to user scope, check exit 0. High-effort: 3-lane research, MoE plan, MoE plan-review (J1-J8 + M1-M12 folds), 4 implementation lanes (A,B,C,E), MoE impl-review + QA GATE, 1 fix lane. H8 closed (0.84.4 shapes identical); H7/H9 live-generation BLOCKED (no valid key), flagged.",
       "decisions": [
         "Throttle holds SILENTLY (F7): plan F2/M2 specifies hold, so reviewer-demanded live selector routing was declined in favor of docs honesty + pinning test; wait branch stays unit-tested policy, not a live path",
-        "No registerProvider for built-in defaults (groq/google/openrouter all KnownProvider) — registration reserved for custom/keyless overlays; Gemini via native built-in, zero knobs",
+        "No registerProvider for built-in defaults (groq/google/openrouter all KnownProvider) \u2014 registration reserved for custom/keyless overlays; Gemini via native built-in, zero knobs",
         "W9 503-substitution: literal-500 classifies throttle (never switches), so the hold-then-switch twin uses 503 (model-unavailable) + literal-500-holds-both twin; spec text amended, not the code",
-        "Token ledger convention: run-cumulative agent_end usage, cache-excluded; subagent-log tee-elision can orphan usage (d-488/d-489 listed lost) — reports survive via results cache; delegation token lookup refuses honestly, manual log-backed recording it is",
-        "Full-suite count reconciled by scratch-worktree rerun at base (947, not E-reported 941) +2 fix-lane tests = 949 — E number was stale, not a ghost"
+        "Token ledger convention: run-cumulative agent_end usage, cache-excluded; subagent-log tee-elision can orphan usage (d-488/d-489 listed lost) \u2014 reports survive via results cache; delegation token lookup refuses honestly, manual log-backed recording it is",
+        "Full-suite count reconciled by scratch-worktree rerun at base (947, not E-reported 941) +2 fix-lane tests = 949 \u2014 E number was stale, not a ghost"
       ]
     },
     {
       "taskId": "pbi-queue-admission-monitors-results-cache",
       "title": "Queue-only admission, /monitors command, structured delegation results + result cache",
       "finishedAt": "2026-09-02T11:06:46Z",
-      "summary": "Delegate admission repaired to the ruled run-now rule (registry.start -> admitRequest: one-element serial group in the ONE queue; admits iff a slot is free and the queue head is not slot-blocked — cap full, mid-flight serial heads, unfittable parallel heads queue; delegations wait tool action REMOVED, the monitor wait tool is the only waiting surface; stale wait-verb text driven to zero incl. grep-invisible docstring). Monitor: /monitors command (armed panel id/name/excerpt/age/time-left, cancel <id> via gate-skipping internals, headless silent no-op, completions) and the poll guard now counts the delegations results action (list|log|results). Subagent: in-memory result cache (ring of last 8, dual-indexed by delegation_id and parent_id, eviction/duplicate/parent-omission hygiene, injected-clock timestamps, char caps 120/2000/6000 with head/tail markers) wired at the deliverNote entry before the 2s batch window; structured results ride every card (details.result single, details.notes[i].result batched); delegations results [id] action with registry-disambiguated misses. Versions subagent 1.2.0, monitor 1.1.0. High-effort: plan-review MoE (2 experts, READY-WITH-FOLDS, 9 musts folded), two disjoint lanes (A subagent / B monitor) merged clean, implementation MoE (3 experts, triple SHIP, zero musts), QA review-tests GATE: BLOCKED cleared (mutation-proven aborted-note wiring row + rejection-redirect pins). 771 tests green (765 pass, 6 gated skips), typecheck clean."
+      "summary": "Delegate admission repaired to the ruled run-now rule (registry.start -> admitRequest: one-element serial group in the ONE queue; admits iff a slot is free and the queue head is not slot-blocked \u2014 cap full, mid-flight serial heads, unfittable parallel heads queue; delegations wait tool action REMOVED, the monitor wait tool is the only waiting surface; stale wait-verb text driven to zero incl. grep-invisible docstring). Monitor: /monitors command (armed panel id/name/excerpt/age/time-left, cancel <id> via gate-skipping internals, headless silent no-op, completions) and the poll guard now counts the delegations results action (list|log|results). Subagent: in-memory result cache (ring of last 8, dual-indexed by delegation_id and parent_id, eviction/duplicate/parent-omission hygiene, injected-clock timestamps, char caps 120/2000/6000 with head/tail markers) wired at the deliverNote entry before the 2s batch window; structured results ride every card (details.result single, details.notes[i].result batched); delegations results [id] action with registry-disambiguated misses. Versions subagent 1.2.0, monitor 1.1.0. High-effort: plan-review MoE (2 experts, READY-WITH-FOLDS, 9 musts folded), two disjoint lanes (A subagent / B monitor) merged clean, implementation MoE (3 experts, triple SHIP, zero musts), QA review-tests GATE: BLOCKED cleared (mutation-proven aborted-note wiring row + rejection-redirect pins). 771 tests green (765 pass, 6 gated skips), typecheck clean."
     }
   ]
 }

@@ -11,7 +11,11 @@ import { describe, expect, test } from "bun:test";
 import {
   type ChildEvent,
   type AdmissionCaps,
+  DEFAULT_PEEK_LINES,
   MAX_ACTIVITY_LEN,
+  MAX_PEEK_LINES,
+  MIN_PEEK_LINES,
+  PEEK_PREVIEW_MAX_CHARS,
   type LogDirEntry,
   type LogRunFile,
   RUN_TIMEOUT_MAX_MS,
@@ -31,10 +35,13 @@ import {
   formatUsage,
   liveQueuePosition,
   parseChildEvent,
+  previewTextFromEvent,
   pruneLogFiles,
   releaseRun,
   removePending,
   renderDelegationStatus,
+  tailLines,
+  clampPeekLines,
   type DelegationStatusRun,
 } from "../extensions/subagent/delegation-core.ts";
 
@@ -929,5 +936,100 @@ describe("deriveActivity target hygiene (R9)", () => {
     expect(deriveActivity(readEvent({ path: "them" }))).toBe("reading…");
     expect(deriveActivity(readEvent({ path: "the settings" }))).toBe("reading…");
     expect(deriveActivity(readEvent({ path: "  " }))).toBe("reading…");
+  });
+});
+
+// ------------------------------------------------------------------ P1: conditional session segment on panel lines
+
+describe("P1-A2 — session segment on delegation panel lines (DelegationStatusRun.sessionId)", () => {
+  const run: DelegationStatusRun = {
+    id: "d-1",
+    agent: "architect",
+    state: "running",
+    startedAt: NOW - 3000,
+    usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+  };
+
+  test("run with sessionId renders a trailing `session <id>` segment", () => {
+    expect(renderDelegationStatus([{ ...run, sessionId: "sess-1" }], NOW)).toBe(
+      "d-1 architect — 3s — ↑10 ↓2 — session sess-1",
+    );
+  });
+
+  test("run without sessionId is byte-identical to today", () => {
+    expect(renderDelegationStatus([run], NOW)).toBe("d-1 architect — 3s — ↑10 ↓2");
+  });
+});
+
+// ------------------------------------------------------------------ P2: live peek helpers
+
+describe("P2 — peek helpers (preview cap, line clamp, preview filter)", () => {
+  test("PEEK_PREVIEW_MAX_CHARS is 3000 (within the 2000–4000 range)", () => {
+    expect(PEEK_PREVIEW_MAX_CHARS).toBe(3000);
+    expect(PEEK_PREVIEW_MAX_CHARS).toBeGreaterThanOrEqual(2000);
+    expect(PEEK_PREVIEW_MAX_CHARS).toBeLessThanOrEqual(4000);
+  });
+
+  test("clampPeekLines mirrors clampLogTailBytes: default 20, round, clamp 1–100", () => {
+    expect(DEFAULT_PEEK_LINES).toBe(20);
+    expect(MIN_PEEK_LINES).toBe(1);
+    expect(MAX_PEEK_LINES).toBe(100);
+    expect(clampPeekLines(undefined)).toBe(20);
+    expect(clampPeekLines(Number.NaN)).toBe(20);
+    expect(clampPeekLines(Number.POSITIVE_INFINITY)).toBe(20);
+    expect(clampPeekLines(5)).toBe(5);
+    expect(clampPeekLines(2.6)).toBe(3);
+    expect(clampPeekLines(0)).toBe(1);
+    expect(clampPeekLines(-40)).toBe(1);
+    expect(clampPeekLines(1000)).toBe(100);
+  });
+
+  test("tailLines returns the last N lines; short text verbatim; trailing newline ignored", () => {
+    expect(tailLines("a\nb\nc\nd", 2)).toBe("c\nd");
+    expect(tailLines("only", 20)).toBe("only");
+    expect(tailLines("a\nb\n", 2)).toBe("a\nb");
+    expect(tailLines("", 20)).toBe("");
+  });
+
+  test("previewTextFromEvent: text_delta yields its delta verbatim", () => {
+    expect(
+      previewTextFromEvent({
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "partial " },
+      }),
+    ).toBe("partial ");
+  });
+
+  test("previewTextFromEvent: thinking/toolcall deltas and bare updates never contribute", () => {
+    expect(
+      previewTextFromEvent({
+        type: "message_update",
+        assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "hmm" },
+      }),
+    ).toBeUndefined();
+    expect(
+      previewTextFromEvent({ type: "message_update", assistantMessageEvent: { type: "toolcall_delta", contentIndex: 0 } }),
+    ).toBeUndefined();
+    expect(previewTextFromEvent({ type: "message_update" })).toBeUndefined();
+    expect(previewTextFromEvent({ type: "tool_execution_start", toolName: "bash" })).toBeUndefined();
+  });
+
+  test("previewTextFromEvent: message_end assistant text matches extractAnswer's filter, newline-terminated", () => {
+    const event = parse(assistantEnd("final answer"));
+    expect(extractAnswer([event], 0)).toEqual({ kind: "text", text: "final answer" });
+    expect(previewTextFromEvent(event)).toBe("final answer\n");
+  });
+
+  test("previewTextFromEvent: non-assistant ends, tool-only and empty text yield nothing", () => {
+    const userEnd = parse(
+      JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "hi" }] } }),
+    );
+    expect(previewTextFromEvent(userEnd)).toBeUndefined();
+    const toolOnly = parse(
+      JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "toolcall", id: "t1" }] } }),
+    );
+    expect(previewTextFromEvent(toolOnly)).toBeUndefined();
+    expect(previewTextFromEvent(parse(assistantEnd("")))).toBeUndefined();
+    expect(previewTextFromEvent(parse('{"type":"session","version":3,"id":"s"}'))).toBeUndefined();
   });
 });

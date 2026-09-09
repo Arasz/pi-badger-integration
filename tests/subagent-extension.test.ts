@@ -30,6 +30,7 @@ import subagent from "../extensions/subagent/index.ts";
 import {
   BATCH_SEPARATOR,
   clampRunTimeoutMs,
+  notificationContent,
   notificationVerdict,
   RUN_TIMEOUT_MAX_MS,
 } from "../extensions/subagent/index.ts";
@@ -1417,5 +1418,65 @@ describe("T122 — the stale query is prune-free (d-52 SHOULD-1)", () => {
     expect(toolText).toContain("stale");
     expect(toolText).toContain("d-9");
     expect(existsSync(stalePath)).toBe(true); // report-only: the evidence survives the query
+  });
+});
+
+// ------------------------------------------------------------------ P1-A3/A4: session on receipt lines + completion card meta
+
+describe("P1-A3 — receipt content names the session when known", () => {
+  test("running receipt line carries `session <id>` between the head and the tail", async () => {
+    h = makeHarness();
+    const result = await callDelegate({ agent: "architect", task: "t" }, makeCtx(), undefined, "call-42");
+
+    expect(contentOf(result)).toBe(
+      "Delegation d-1 started (architect) — session sess-test — the result will arrive as a followUp message when it completes.",
+    );
+  });
+
+  test("queued receipt line carries `session <id>` between the head and the tail", async () => {
+    h = makeHarness("tui", { cap: 1 });
+    await callDelegate({ agent: "architect", task: "first" }, makeCtx(), undefined, "call-1");
+    const second = await callDelegate({ agent: "architect", task: "second" }, makeCtx(), undefined, "call-2");
+
+    expect(second.details.state).toBe("queued");
+    expect(contentOf(second)).toBe(
+      "Delegation d-2 queued (position 1) (architect) — session sess-test — the result will arrive as a followUp message when it completes.",
+    );
+  });
+
+  test("receipt line omits the session when unknown — byte-identical to today", async () => {
+    h = makeHarness();
+    const ctx = { ...(makeCtx() as Record<string, unknown>), sessionManager: undefined };
+    const result = await callDelegate({ agent: "architect", task: "t" }, ctx, undefined, "call-42");
+
+    expect(contentOf(result)).toBe(
+      "Delegation d-1 started (architect) — the result will arrive as a followUp message when it completes.",
+    );
+  });
+});
+
+describe("P1-A4 — completion card meta carries the session", () => {
+  const usage = { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 };
+  const base: DelegationNote = {
+    id: "d-1",
+    agent: "architect",
+    task: "t",
+    state: "completed",
+    exitCode: 0,
+    answer: "done",
+    usage,
+    logFile: "/tmp/d-1.jsonl",
+  };
+
+  test("meta order is usage, session, log path", () => {
+    expect(notificationContent({ ...base, sessionId: "sess-test" })).toBe(
+      "Delegation d-1 (architect) completed.\n↑10 ↓2 — session sess-test — /tmp/d-1.jsonl\n\ndone",
+    );
+  });
+
+  test("no session → byte-identical to today", () => {
+    expect(notificationContent(base)).toBe(
+      "Delegation d-1 (architect) completed.\n↑10 ↓2 — /tmp/d-1.jsonl\n\ndone",
+    );
   });
 });

@@ -5,14 +5,14 @@
  * Three surfaces over one injected registry (this module never spawns, kills or reads child
  * streams — the registry and the runner own all of that):
  *
- *   - the LLM tool `delegations` (R6): list / log / abort / results — NO wait verb (f: 2026-09-02, the
+ *   - the LLM tool `delegations` (R6): list / log / abort / peek / results — NO wait verb (f: 2026-09-02, the
  *     queue-model ruling: the only waiting surface is the monitor extension's `wait` tool,
  *     which user input interrupts; the removed verb blocked the loop and ignored input).
  *     Unknown ids are loud errors; abort without an id is a usage error; `log` answers with
  *     a bounded tail of the run's log file plus the full path pointer, and "log unavailable"
  *     when there is no healthy log (R4 review CR6); `results` reads the in-memory result
  *     cache (last 8, option (c) — one id, or the current session's results without one).
- *   - the human twin `/delegations [log <id>] [abort <id|all>]` with argument completions —
+ *   - the human twin `/delegations [peek <id>] [log <id>] [abort <id|all>]` with argument completions —
  *     every mutation goes through the same registry calls the tool uses (T78), so the tool
  *     and the command can never disagree about a transition.
  *   - the background widget (R9): one line per live BACKGROUND run (id, agent, elapsed,
@@ -35,7 +35,7 @@
 import { readFileSync } from "node:fs";
 import { Type, type Static } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { formatDuration, formatUsage, renderDelegationStatus, type DelegationRecord, type LogRunSummary } from "./delegation-core.ts";
+import { clampPeekLines, formatDuration, formatUsage, renderDelegationStatus, tailLines, type DelegationRecord, type LogRunSummary } from "./delegation-core.ts";
 import type { DelegationRegistry } from "./delegation-registry.ts";
 import type { DelegationResultEntry } from "./result-cache.ts";
 
@@ -162,6 +162,8 @@ export function describeRecord(record: DelegationRecord, now: number, probe?: (p
 			break;
 	}
 	parts.push(`task: ${taskExcerpt(record.task)}`);
+	// P1: conditional session segment — trailing, only when the record knows its session.
+	if (record.sessionId !== undefined) parts.push(`session ${record.sessionId}`);
 	return parts.join(" — ");
 }
 
@@ -188,6 +190,8 @@ export function widgetLines(
 		if (record.activity) parts.push(record.activity);
 		const usage = formatUsage(record.usage, contextWindow);
 		if (usage) parts.push(usage);
+		// P1: conditional session segment — trailing, only when the record knows its session.
+		if (record.sessionId !== undefined) parts.push(`session ${record.sessionId}`);
 		lines.push(parts.join(" — "));
 	}
 	const queued = background.filter((r) => r.state === "queued").length;
@@ -195,11 +199,24 @@ export function widgetLines(
 	return lines;
 }
 
-const USAGE_LINE = "usage: /delegations [log <id>] [abort <id|all>]";
+const USAGE_LINE = "usage: /delegations [peek <id> [--lines N]] [log <id>] [abort <id|all>]";
 
 function unknownIdError(id: string): Error {
 	// Same wording the registry's abort throws — one loud unknown-id message everywhere.
 	return new Error(`ai-badger: unknown delegation id "${id}" — use delegations list for current ids`);
+}
+
+/** Where a peek answer came from: the result cache, the live in-memory preview, or the queue. */
+export type PeekSource = "cache" | "live" | "queued";
+
+/** Assertable peek payload — id, applied lines and source without string-parsing (P2-A4). */
+export interface PeekDetails {
+	id: string;
+	/** The applied (clamped) line count. */
+	lines: number;
+	source: PeekSource;
+	/** Only on the queued branch: the snapshot position. */
+	queuePosition?: number;
 }
 
 /** The readable body of one cached result entry; the structured payload rides `details`. */
@@ -360,15 +377,56 @@ export function registerDelegationStatus(
 		return { ok: true, message: parts.join("\n"), logFile: record.logFile };
 	}
 
+	/**
+	 * The shared peek read (P2, M4 precedence): the tool action and the /delegations twin both
+	 * answer through here, so they cannot disagree (T78 parity by construction):
+	 *   1. result-cache hit → the cached answer's tail (source cache) — settled runs;
+	 *   2. live run with a preview → the in-memory preview's tail (source live);
+	 *   3. live run without one → "running, no output yet" (source live);
+	 *   4. queued run → "queued (position N)" (source queued);
+	 *   5. anything else → unknownIdError — one loud behavior for never-existed ids, settled
+	 *      runs whose result left the last-8 cache window, and forgotten ids from dead sessions
+	 *      (the cache dies with the session and shutdown empties the registry).
+	 */
+	function peekResult(id: string, linesParam?: number): { message: string; details: PeekDetails } {
+		const lines = clampPeekLines(linesParam);
+		const cached = opts?.resultCache?.byId(id);
+		if (cached) {
+			const tail = tailLines(cached.output, lines);
+			if (tail.trim() !== "") return { message: tail, details: { id, lines, source: "cache" } };
+			return { message: `delegation ${id}: no cached output`, details: { id, lines, source: "cache" } };
+		}
+		const record = registry.get(id);
+		if (record?.state === "running") {
+			const tail = record.answerPreview ? tailLines(record.answerPreview, lines) : "";
+			if (tail.trim() !== "") return { message: tail, details: { id, lines, source: "live" } };
+			return { message: `delegation ${id}: running, no output yet`, details: { id, lines, source: "live" } };
+		}
+		if (record?.state === "queued") {
+			const position = record.queuePosition !== undefined ? ` (position ${record.queuePosition})` : "";
+			return {
+				message: `delegation ${id}: queued${position}`,
+				details: {
+					id,
+					lines,
+					source: "queued",
+					...(record.queuePosition !== undefined ? { queuePosition: record.queuePosition } : {}),
+				},
+			};
+		}
+		throw unknownIdError(id);
+	}
+
 	// ---------------------------------------------------------------- tool
 
 	const DelegationsParams = Type.Object({
 		action: Type.Union(
-			[Type.Literal("list"), Type.Literal("log"), Type.Literal("abort"), Type.Literal("results")],
-			{ description: "list: every delegation with its state; log: tail one run's log; abort: stop one run or all; results: one delegation's cached structured result, or (without an id) every cached result this session parented" },
+			[Type.Literal("list"), Type.Literal("log"), Type.Literal("abort"), Type.Literal("results"), Type.Literal("peek")],
+			{ description: "list: every delegation with its state; log: tail one run's log; abort: stop one run or all; results: one delegation's cached structured result, or (without an id) every cached result this session parented; peek: the answer tail — the cached output for settled runs, the live preview while running" },
 		),
-		id: Type.Optional(Type.String({ description: 'Run id for log/abort/results (abort also accepts "all"; results without an id means this session)' })),
+		id: Type.Optional(Type.String({ description: 'Run id for log/abort/peek/results (abort also accepts "all"; results without an id means this session)' })),
 		bytes: Type.Optional(Type.Number({ description: `log: tail size in bytes (${MIN_LOG_TAIL_BYTES}–${MAX_LOG_TAIL_BYTES}, default ${DEFAULT_LOG_TAIL_BYTES})` })),
+		lines: Type.Optional(Type.Number({ description: "peek: answer tail in lines (1–100, default 20)" })),
 	});
 	type DelegationsParams = Static<typeof DelegationsParams>;
 
@@ -458,8 +516,19 @@ export function registerDelegationStatus(
 				}
 				return textResult(entries.map(describeResultEntry).join("\n\n"), { parentId: sessionId, results: entries });
 			}
+			case "peek": {
+				if (typeof params.id !== "string" || !params.id.trim()) {
+					throw new Error(`delegations peek needs a run id — use delegations list for current ids; ${USAGE_LINE}`);
+				}
+				const linesParam = (params as { lines?: unknown }).lines;
+				if (linesParam !== undefined && typeof linesParam !== "number") {
+					throw new Error(`delegations peek needs lines as a number (got ${JSON.stringify(linesParam)})`);
+				}
+				const result = peekResult(params.id.trim(), typeof linesParam === "number" ? linesParam : undefined);
+				return textResult(result.message, result.details);
+			}
 			default:
-				throw new Error(`delegations action must be one of list, log, abort, results`);
+				throw new Error(`delegations action must be one of list, log, abort, results, peek`);
 		}
 	}
 
@@ -472,6 +541,7 @@ export function registerDelegationStatus(
 			"log id (bounded tail of a run's log file plus the full log path),",
 			'abort id|"all" (stop one delegation or every live one),',
 			"results [id] (one delegation's cached structured result — without an id, every result this session parented; the cache keeps the last 8 results and dies with the session).",
+			"peek id [lines N] (the answer tail: the cached output for settled runs, the live preview while running).",
 			"Completion results arrive as followUp messages on their own — never poll with list/log (repeated polling is blocked). There is NO wait verb (removed f: 2026-09-02 — it blocked the main loop and ignored user input): to spend waiting time use the monitor extension's wait tool (user input interrupts it) or register a monitor, or simply end your turn and let the followUps wake you.",
 			'A run is unbounded unless the delegate call passes timeoutMs: on expiry the run is aborted through the normal kill path and settles aborted (timeout) — use abort to stop one yourself.',
 		].join(" "),
@@ -490,9 +560,9 @@ export function registerDelegationStatus(
 	}
 
 	pi.registerCommand(DELEGATIONS_COMMAND_NAME, {
-		description: "Delegation status; `log <id>` tails a run's log; `abort <id|all>` stops runs.",
+		description: "Delegation status; `peek <id> [--lines N]` shows the answer tail; `log <id>` tails a run's log; `abort <id|all>` stops runs.",
 		getArgumentCompletions(argumentPrefix) {
-			const idPosition = /^(?:log|abort)\s+(\S*)$/.exec(argumentPrefix);
+			const idPosition = /^(?:log|abort|peek)\s+(\S*)$/.exec(argumentPrefix);
 			if (idPosition) {
 				const token = idPosition[1]!;
 				const items = registry
@@ -503,9 +573,14 @@ export function registerDelegationStatus(
 				return items.length > 0 ? items : null;
 			}
 			const first = argumentPrefix.trim();
-			const subcommands = ["log", "abort"]
+			const subcommandDescriptions: Record<string, string> = {
+				log: "tail a run's log",
+				abort: "stop a run or all",
+				peek: "show the answer tail",
+			};
+			const subcommands = ["log", "abort", "peek"]
 				.filter((verb) => verb.startsWith(first))
-				.map((verb) => ({ value: verb, label: verb, description: verb === "log" ? "tail a run's log" : "stop a run or all" }));
+				.map((verb) => ({ value: verb, label: verb, description: subcommandDescriptions[verb] }));
 			return subcommands.length > 0 ? subcommands : null;
 		},
 		async handler(args, ctx) {
@@ -516,12 +591,27 @@ export function registerDelegationStatus(
 				return;
 			}
 			const match = /^(log|abort)\s+(\S+)\s*$/.exec(trimmed);
-			if (!match) {
+			const peekMatch = /^peek\s+(\S+)(?:\s+--lines\s+(\S+))?\s*$/.exec(trimmed);
+			if (!match && !peekMatch) {
 				commandResult(ctx, USAGE_LINE, "info");
 				return;
 			}
-			const [, verb, target] = match;
 			try {
+				if (peekMatch) {
+					const rawLines = peekMatch[2];
+					let lines: number | undefined;
+					if (rawLines !== undefined) {
+						const parsed = Number(rawLines);
+						if (!Number.isFinite(parsed)) {
+							commandResult(ctx, `delegations peek --lines needs a number (got ${JSON.stringify(rawLines)}) — ${USAGE_LINE}`, "warning");
+							return;
+						}
+						lines = parsed;
+					}
+					commandResult(ctx, peekResult(peekMatch[1]!, lines).message, "info");
+					return;
+				}
+				const [, verb, target] = match!;
 				if (verb === "log") {
 					const result = logTailResult(target!);
 					commandResult(ctx, result.message, result.ok ? "info" : "warning");

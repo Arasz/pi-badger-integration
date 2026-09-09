@@ -25,6 +25,8 @@ import {
   emptyUsage,
   extractAnswer,
   parseChildEvent,
+  PEEK_PREVIEW_MAX_CHARS,
+  previewTextFromEvent,
   type ChildEvent,
   type DelegationRecord,
   type DelegationUsage,
@@ -445,6 +447,12 @@ export class DelegationRunner {
     if (!event) return; // row 30: garbage is skipped from the event stream, the tee kept the raw line
     if (!state.settled) this.resetWatchdog(state); // S1: every parsed event is activity; the settled gate keeps the lost-settle close tail-flush path from re-arming an orphan watchdog (RR2)
     state.events.push(event);
+    const previewChunk = previewTextFromEvent(event);
+    if (previewChunk) {
+      // P2 live preview: the capped tail stamped on the shared record BEFORE onUpdate (M3),
+      // so peek rides registry.get/list with no new seams. O(cap). Settle/notify untouched.
+      state.record.answerPreview = capTail(`${state.record.answerPreview ?? ""}${previewChunk}`, PEEK_PREVIEW_MAX_CHARS);
+    }
     applyUsage(state.usage, event);
     applyLiveUsage(state.liveUsage, event); // display floor: cumulative provider reports (see core)
     state.record.usage = applyLiveUsage({ ...state.usage }, event); // live view — settle overwrites with the sum

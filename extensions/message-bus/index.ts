@@ -54,12 +54,23 @@ import {
 	formatList,
 	isAck,
 	isValidBusId,
+	MESSAGE_BUS_ENV,
 	normalizeSendTargets,
+	REGISTRY_TTL_S,
+	registryVersion,
 	selfSendWarning,
 	type BusMessage,
+	type RegistryEntry,
+	type RegistrySnapshot,
 	type StartupDropStats,
 	unknownTargetWarning,
 } from "./message-bus-core.ts";
+/** Re-exported from core (single-source pin): the registry TTL, snapshot
+ * types and kill-switch name live in core — this module stamps snapshots
+ * with them but never redefines them. */
+export { MESSAGE_BUS_ENV, REGISTRY_TTL_S, type RegistryEntry, type RegistrySnapshot } from "./message-bus-core.ts";
+import { tickCoordinator } from "./coordinator.ts";
+import { buildChannelCache, groupByScope, type ChannelCache } from "./coordinator-group.ts";
 
 /** The message-bus card's custom message type. */
 export const MESSAGE_BUS_CUSTOM_TYPE = "message-bus-event";
@@ -84,9 +95,6 @@ export const MESSAGE_BUS_TOOL_NAME = "message-bus";
 /** The human command. */
 export const MESSAGE_BUS_COMMAND_NAME = "messages";
 
-/** Kill-switch: the literal string "0" disables the delivery hooks (tools stay). */
-export const MESSAGE_BUS_ENV = "PI_BADGER_MESSAGE_BUS";
-
 /** First-read history gate (mirrors deliver_for_session's 30-minute window). */
 export const FIRST_READ_WINDOW_MS = 30 * 60_000;
 
@@ -101,6 +109,29 @@ export interface MessageBusDeps {
 	dbPath?: string;
 	sessionId?: (ctx: ExtensionContext) => string;
 	projectId?: (ctx: ExtensionContext) => string | null;
+}
+
+// ---------------------------------------------------------------------------
+// registry heartbeat (PKG-1): read-side staleness + throttled touch
+// ---------------------------------------------------------------------------
+
+/** Touch throttle: at most one registry write per session per TTL/4. */
+export const REGISTRY_TOUCH_INTERVAL_MS = (REGISTRY_TTL_S * 1000) / 4;
+
+/** Live-registry read: rows newer than REGISTRY_TTL_S, stably ordered, with a
+ * version pin. Fail-open (D31): a store without the read seam — or an
+ * unreadable one — reads as empty, never throws. */
+export function readRegistrySnapshot(store: Pick<BusStore, "listIdentities">, now: () => number): RegistrySnapshot {
+	let rows: RegistryEntry[] = [];
+	try {
+		if (typeof store.listIdentities === "function") rows = store.listIdentities();
+	} catch (error) {
+		console.error("ai-badger message-bus: registry read failed — fail-open, snapshot reads empty", error);
+		return { entries: [], version: registryVersion([]) };
+	}
+	const fresh = now() - REGISTRY_TTL_S * 1000;
+	const entries = rows.filter((r) => r.lastSeenMs >= fresh).sort((a, b) => (a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0));
+	return { entries, version: registryVersion(entries) };
 }
 
 /** The backend surface the wiring needs (default: node:sqlite over the user DB). */
@@ -134,6 +165,9 @@ export interface BusStore {
 	 * old fakes — the wiring skips unknown-target warnings, still sends. */
 	recordIdentity?(args: { sessionId: string; projectId: string | null }): void;
 	hasIdentity?(sessionId: string): boolean;
+	/** Registry read seam (PKG-1, OPTIONAL with fallback): live rows for
+	 * readRegistrySnapshot. Absent on old fakes — the snapshot reads empty. */
+	listIdentities?(): RegistryEntry[];
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +440,12 @@ export function createSqliteStore(dbPath: string, now: () => number = Date.now):
 				return row !== null && row !== undefined;
 			});
 		},
+		listIdentities() {
+			return withDb((db) => {
+				const rows = db.prepare("SELECT session_id, project_id, ts FROM bus_identities").all() as Array<{ session_id?: unknown; project_id?: unknown; ts?: unknown }>;
+				return rows.map((r) => ({ sessionId: String(r.session_id), projectId: (r.project_id as string | null) ?? null, lastSeenMs: Date.parse(String(r.ts)) }));
+			});
+		},
 		deliverForSession(sessionId, projectId) {
 			return withDb((db) => {
 				const selected = selectBatch(db, sessionId, projectId);
@@ -466,6 +506,26 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		if (deps.store) return deps.store;
 		return createSqliteStore(deps.dbPath ?? userDbPath(env, defaultCwd), now);
 	};
+	/** Heartbeat touch (PKG-1): the SAME recordIdentity upsert session_start
+	 * uses — no second write path. Throttled to one write per session per
+	 * REGISTRY_TOUCH_INTERVAL_MS; best-effort, failure-silent (one console
+	 * line). The stamp moves only on success so a failure retries next turn. */
+	const lastRegistryTouch = new Map<string, number>();
+	const touchRegistry = (store: BusStore, sessionId: string, projectId: string | null, force = false): void => {
+		if (!sessionId) return;
+		if (env[MESSAGE_BUS_ENV] === "0") return; // kill-switch: hooks AND registry writes stop, tools stay
+		const t = now();
+		if (!force) {
+			const last = lastRegistryTouch.get(sessionId);
+			if (last !== undefined && t - last < REGISTRY_TOUCH_INTERVAL_MS) return;
+		}
+		try {
+			store.recordIdentity?.({ sessionId, projectId });
+			lastRegistryTouch.set(sessionId, t);
+		} catch (error) {
+			console.error("ai-badger message-bus: identity upsert failed — fail-open", error);
+		}
+	};
 
 	const hooksDisabled = (): boolean => env[MESSAGE_BUS_ENV] === "0";
 
@@ -492,6 +552,7 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		}
 		const projectId = resolvePid(ctx);
 		const header = formatIdentityHeader(sessionId, projectId);
+		touchRegistry(store, sessionId, projectId);
 		let result: { messages: BusMessage[]; cursor: number };
 		try {
 			result = store.deliverForSession(sessionId, projectId);
@@ -530,6 +591,7 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		if (!peek) return runCheck(ctx, false);
 		const projectId = resolvePid(ctx);
 		const header = formatIdentityHeader(sessionId, projectId);
+		touchRegistry(store, sessionId, projectId);
 		let preview: { messages: BusMessage[]; cursor: number };
 		try {
 			preview = peek(sessionId, projectId);
@@ -704,12 +766,16 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		if (hooksDisabled()) return undefined;
 		// P3 registry-lite: record our own session id best-effort so future
 		// direct senders get silence instead of an unknown-target warning.
-		// Never blocks delivery — a registry failure just logs.
-		try {
-			const sid = resolveSid(ctx);
-			if (sid) storeFor(ctx.cwd).recordIdentity?.({ sessionId: sid, projectId: resolvePid(ctx) });
-		} catch (error) {
-		console.error("ai-badger message-bus: identity upsert failed — fail-open", error);
+		// Never blocks delivery — a registry failure just logs. The sid guard
+		// keeps an empty identity from opening the store for a write that
+		// touchRegistry would then discard (no spurious fail-open line).
+		const sid = resolveSid(ctx);
+		if (sid) {
+			try {
+				touchRegistry(storeFor(ctx.cwd), sid, resolvePid(ctx), true);
+			} catch (error) {
+			console.error("ai-badger message-bus: identity upsert failed — fail-open", error);
+			}
 		}
 		try {
 			await runDirectStart(ctx);
@@ -728,6 +794,66 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		}
 		return undefined;
 	});
+
+	// ---- coordinator tick wire-in (PKG-4A): piggyback wake-set inside live turns
+	//
+	// Composes PKG-1 (readRegistrySnapshot) → PKG-2 (groupByScope, version-gated
+	// buildChannelCache) → PKG-3 (tickCoordinator), read-only end to end: the
+	// tick only computes WHO has pending mail and the result is console.debug
+	// observability — zero cards, zero cursor writes, zero registry writes.
+	// Fail-open per-tick catch: any failure logs one line and the turn proceeds.
+	// Idle-machine wake is struck by design (d-728: no pi host owns a durable
+	// tick) — this seam only observes turns that are starting anyway.
+	let coordinatorChannels: ChannelCache | null = null;
+	const runCoordinatorTick = async (ctx: ExtensionContext): Promise<void> => {
+		const sessionId = resolveSid(ctx);
+		if (!sessionId) return;
+		let store: BusStore;
+		try {
+			store = storeFor(ctx.cwd);
+		} catch (error) {
+			console.error("ai-badger message-bus: coordinator tick unavailable — fail-open", error);
+			return;
+		}
+		try {
+			const snapshot = readRegistrySnapshot(store, now);
+			const projectId = resolvePid(ctx);
+			// PKG-2 observability: group this turn's peeked rows into channels
+			// (pure; the cache rebuilds only when the registry version moves).
+			// Read-only like the tick; its failure never breaks the wake set.
+			let channelSummary = "n/a";
+			try {
+				// Lazy preview: the peek runs INSIDE the compute closure, so it
+				// executes only on a cache miss — steady-state cache hits cost
+				// zero store reads. Still fail-open via the wrapper below.
+				coordinatorChannels = buildChannelCache(coordinatorChannels, snapshot, () => {
+					const preview =
+						typeof store.peekForSession === "function"
+							? store.peekForSession(sessionId, projectId)
+							: { messages: store.listForSession(sessionId, projectId).filter((m) => m.id > store.getCursor(sessionId)) };
+					return groupByScope(preview.messages, projectId);
+				});
+				channelSummary = Object.entries(coordinatorChannels.channels)
+					.map(([key, rows]) => `${key}:${rows.length}`)
+					.join(",");
+			} catch {
+				// grouping is observability-only — the wake set still computes
+			}
+			const result = await tickCoordinator(store, snapshot, { now: now(), env });
+			console.debug(
+				`ai-badger message-bus coordinator tick: woke=[${result.woke.join(",")}] errors=${result.errors.length} truncated=${result.truncated} channels={${channelSummary}}`,
+				{ kind: "coordinator-tick", woke: result.woke, errors: result.errors, truncated: result.truncated },
+			);
+		} catch (error) {
+			console.error("ai-badger message-bus: coordinator tick failed — fail-open", error);
+		}
+	};
+
+	pi.on("turn_start", (_event, ctx) => {
+		if (hooksDisabled()) return undefined;
+		return runCoordinatorTick(ctx);
+	});
+	// ---- end coordinator tick wire-in (PKG-4A)
 
 	// ---- tool
 

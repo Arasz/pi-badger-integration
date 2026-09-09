@@ -622,6 +622,8 @@ export function notificationContent(
   const meta: string[] = [];
   const usage = formatUsage(note.usage, contextWindow);
   if (usage) meta.push(usage);
+  // P1: conditional session segment — between usage and the log path, only when known.
+  if (note.sessionId !== undefined) meta.push(`session ${note.sessionId}`);
   if (note.logFile) meta.push(note.logFile);
   if (meta.length > 0) lines.push(meta.join(" — "));
 
@@ -1231,11 +1233,13 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     const record = outcome.record;
     const override = levelOverrides.get(record.id);
     const tail = "the result will arrive as a followUp message when it completes.";
+    // P1: conditional session segment — running + queued variants, omitted when unknown.
+    const session = record.sessionId !== undefined ? ` — session ${record.sessionId}` : "";
     const line =
       record.state === "queued"
-        ? `Delegation ${record.id} queued (position ${record.queuePosition}) (${record.agent}) — ${tail}`
+        ? `Delegation ${record.id} queued (position ${record.queuePosition}) (${record.agent})${session} — ${tail}`
         : record.state === "running"
-          ? `Delegation ${record.id} started (${record.agent}) — ${tail}`
+          ? `Delegation ${record.id} started (${record.agent})${session} — ${tail}`
           : `Delegation ${record.id} ${record.state} (${record.agent}).`;
     return {
       content: text(line),
