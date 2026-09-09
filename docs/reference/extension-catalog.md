@@ -151,13 +151,14 @@ nothing.
 The `wait` tool spends idle time without polling — and is allowed in every mode. It blocks
 the turn (the pending-tool idiom) until the FIRST of: a watched delegation settles (pass
 `ids` to scope the watch; the default is any live delegation), an armed monitor fires, the
-user sends a message, or the timeout passes (default 120 s, max 600 s, clamped). The
+user sends a message, or the timeout passes (default 5 min, max 600 s, clamped). The
 tie-break is listener order (delegation → monitor → input → timeout) and the wait resolves
 exactly once. With nothing live and nothing armed it resolves immediately with
 `observed: "empty"` and guidance instead of idling. The result is a terse pointer
 (`details: {observed, waitedMs, records?}`) — a monitor wake's payload rides the
 monitor-event card and is never duplicated. A turn abort or session shutdown resolves the
-wait as `observed: "aborted"`; nothing sends after shutdown.
+wait as `observed: "aborted"`; nothing sends after shutdown. Bus mail wakes a
+wait via its internal 1 s check; see `docs/howto/wait-check-loop.md`.
 
 The monitor extension also enforces the no-polling rule: a `tool_call` observer counts
 `delegations list`/`log`/`results` calls (nothing else — `wait`, `abort`, `peek`, `queue` and `monitor`
@@ -262,6 +263,8 @@ as a project broadcast, never reply to an ack, only ack what is in your inbox).
   also upserts the session into `bus_identities` (fail-open, never creates a missing DB).
   The idle-session wake
   stays with the adapter's poll timer — these hooks never arm their own.
+  A wait-blocked turn still wakes on new mail via the wait's internal 1 s check;
+  `check` delivers on demand outside waits. See `docs/howto/wait-check-loop.md`.
   `PI_BADGER_MESSAGE_BUS=0` disables the hooks; tools stay. Every backend
   failure is fail-open: an error result, a command notify, or a silent hook
   skip — a broken bus never breaks a session, and a missing DB file is never
