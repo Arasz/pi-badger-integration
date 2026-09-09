@@ -103,6 +103,57 @@ export interface MessageBusDeps {
 	projectId?: (ctx: ExtensionContext) => string | null;
 }
 
+// ---------------------------------------------------------------------------
+// registry heartbeat (PKG-1): read-side staleness + throttled touch
+// ---------------------------------------------------------------------------
+
+/** Registry entry TTL in seconds — MEASUREMENT-TODO: 300 is a placeholder,
+ * not a measured lease; tune from observed session lifetimes. Read-side only:
+ * stale rows are filtered by readRegistrySnapshot, never deleted, so old DBs
+ * keep working with zero DDL change (bus_identities already exists). */
+export const REGISTRY_TTL_S = 300;
+
+/** Touch throttle: at most one registry write per session per TTL/4. */
+export const REGISTRY_TOUCH_INTERVAL_MS = (REGISTRY_TTL_S * 1000) / 4;
+
+/** One live-registry row: who was last seen, where, and when (ms since epoch). */
+export interface RegistryEntry {
+	sessionId: string;
+	projectId: string | null;
+	lastSeenMs: number;
+}
+
+/** Read-side snapshot: live entries only, plus a version pin of
+ * max(lastSeenMs):count:snapshot-hash for cheap change detection. */
+export interface RegistrySnapshot {
+	entries: RegistryEntry[];
+	version: string;
+}
+
+function registryVersion(entries: RegistryEntry[]): string {
+	const max = entries.length > 0 ? Math.max(...entries.map((e) => e.lastSeenMs)) : 0;
+	const canonical = entries.map((e) => `${e.sessionId}|${e.projectId ?? ""}|${e.lastSeenMs}`).join("\n");
+	let hash = 5381;
+	for (let i = 0; i < canonical.length; i++) hash = ((hash << 5) + hash + canonical.charCodeAt(i)) >>> 0;
+	return `${max}:${entries.length}:${hash.toString(16).padStart(8, "0")}`;
+}
+
+/** Live-registry read: rows newer than REGISTRY_TTL_S, stably ordered, with a
+ * version pin. Fail-open (D31): a store without the read seam — or an
+ * unreadable one — reads as empty, never throws. */
+export function readRegistrySnapshot(store: Pick<BusStore, "listIdentities">, now: () => number): RegistrySnapshot {
+	let rows: RegistryEntry[] = [];
+	try {
+		if (typeof store.listIdentities === "function") rows = store.listIdentities();
+	} catch (error) {
+		console.error("ai-badger message-bus: registry read failed — fail-open, snapshot reads empty", error);
+		return { entries: [], version: registryVersion([]) };
+	}
+	const fresh = now() - REGISTRY_TTL_S * 1000;
+	const entries = rows.filter((r) => r.lastSeenMs >= fresh).sort((a, b) => (a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0));
+	return { entries, version: registryVersion(entries) };
+}
+
 /** The backend surface the wiring needs (default: node:sqlite over the user DB). */
 export interface BusStore {
 	send(args: {
@@ -134,6 +185,9 @@ export interface BusStore {
 	 * old fakes — the wiring skips unknown-target warnings, still sends. */
 	recordIdentity?(args: { sessionId: string; projectId: string | null }): void;
 	hasIdentity?(sessionId: string): boolean;
+	/** Registry read seam (PKG-1, OPTIONAL with fallback): live rows for
+	 * readRegistrySnapshot. Absent on old fakes — the snapshot reads empty. */
+	listIdentities?(): RegistryEntry[];
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +460,12 @@ export function createSqliteStore(dbPath: string, now: () => number = Date.now):
 				return row !== null && row !== undefined;
 			});
 		},
+		listIdentities() {
+			return withDb((db) => {
+				const rows = db.prepare("SELECT session_id, project_id, ts FROM bus_identities").all() as Array<{ session_id?: unknown; project_id?: unknown; ts?: unknown }>;
+				return rows.map((r) => ({ sessionId: String(r.session_id), projectId: (r.project_id as string | null) ?? null, lastSeenMs: Date.parse(String(r.ts)) }));
+			});
+		},
 		deliverForSession(sessionId, projectId) {
 			return withDb((db) => {
 				const selected = selectBatch(db, sessionId, projectId);
@@ -466,6 +526,25 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		if (deps.store) return deps.store;
 		return createSqliteStore(deps.dbPath ?? userDbPath(env, defaultCwd), now);
 	};
+	/** Heartbeat touch (PKG-1): the SAME recordIdentity upsert session_start
+	 * uses — no second write path. Throttled to one write per session per
+	 * REGISTRY_TOUCH_INTERVAL_MS; best-effort, failure-silent (one console
+	 * line). The stamp moves only on success so a failure retries next turn. */
+	const lastRegistryTouch = new Map<string, number>();
+	const touchRegistry = (store: BusStore, sessionId: string, projectId: string | null, force = false): void => {
+		if (!sessionId) return;
+		const t = now();
+		if (!force) {
+			const last = lastRegistryTouch.get(sessionId);
+			if (last !== undefined && t - last < REGISTRY_TOUCH_INTERVAL_MS) return;
+		}
+		try {
+			store.recordIdentity?.({ sessionId, projectId });
+			lastRegistryTouch.set(sessionId, t);
+		} catch (error) {
+			console.error("ai-badger message-bus: identity upsert failed — fail-open", error);
+		}
+	};
 
 	const hooksDisabled = (): boolean => env[MESSAGE_BUS_ENV] === "0";
 
@@ -492,6 +571,7 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		}
 		const projectId = resolvePid(ctx);
 		const header = formatIdentityHeader(sessionId, projectId);
+		touchRegistry(store, sessionId, projectId);
 		let result: { messages: BusMessage[]; cursor: number };
 		try {
 			result = store.deliverForSession(sessionId, projectId);
@@ -530,6 +610,7 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		if (!peek) return runCheck(ctx, false);
 		const projectId = resolvePid(ctx);
 		const header = formatIdentityHeader(sessionId, projectId);
+		touchRegistry(store, sessionId, projectId);
 		let preview: { messages: BusMessage[]; cursor: number };
 		try {
 			preview = peek(sessionId, projectId);
@@ -706,8 +787,7 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 		// direct senders get silence instead of an unknown-target warning.
 		// Never blocks delivery — a registry failure just logs.
 		try {
-			const sid = resolveSid(ctx);
-			if (sid) storeFor(ctx.cwd).recordIdentity?.({ sessionId: sid, projectId: resolvePid(ctx) });
+			touchRegistry(storeFor(ctx.cwd), resolveSid(ctx), resolvePid(ctx), true);
 		} catch (error) {
 		console.error("ai-badger message-bus: identity upsert failed — fail-open", error);
 		}
