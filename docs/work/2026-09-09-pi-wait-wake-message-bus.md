@@ -35,17 +35,66 @@ Reasoning from F1 (the closed wake-source list) + F2 (bus hooks are turn-boundar
 
 ### F6 — the reliable pattern is short waits plus explicit check, not push [INFERRED]
 
-> Update (2026-09-09, task pbi-wait-check-loop-bus-mail): SUPERSEDED as an agent-side
-> loop. Owner feedback moved the loop inside the tool — `wait` now checks the bus
-> itself every second (fixed `BUS_MAIL_TICK_MS`, `defaultBusMailProbe`, fail-open) and
-> resolves `observed: "mail"`. From the agent's perspective `wait` just works; the
-> reasoning above (no cross-process push path; in-process fleet maps vs SQLite rows)
-> is why the check lives in the waiter rather than in a hook. Behavior pinned in
-> `tests/wait-check-loop-guidance.test.ts`; user doc `docs/howto/wait-check-loop.md`.
+> Update (2026-09-09, task pbi-wait-tick-shared-cursor-race): live-tested (F7–F9 below).
+> The tick as first shipped (cursor-based peek) lost a shared-cursor race with the
+> adapter poll and slept through R1; the tick now tracks a private high-water mark
+> per wait (`readMailMark` / `defaultBusMailSince`, optional indexed `hasNewSince`
+> seam) and is race-free. Behavior pinned in `tests/wait-check-loop-guidance.test.ts`
+> (two-consumer regression); user doc `docs/howto/wait-check-loop.md`.
 
 Reasoning from F1–F5: because no push path reaches a `wait`-held turn cross-process (monitor fleet maps and `pendingWaits` are in-process memory; bus rows are cross-process SQLite), the waiter must come up for air itself — `wait` with a short `timeoutMs`, then `message-bus check`, then loop. The sender side needs no new hook; the receiver side needs a polling discipline (which is also what the bus header prescribes: the adapter's poll timer owns idle wake). An in-process `sendMessage` followUp card is still worth posting so the mail surfaces at the next turn boundary, but it must not be mistaken for a wake.
 
 ## Still open
+
+### Live test (2026-09-09, tasks pbi-wait-check-loop-bus-mail + pbi-wait-tick-shared-cursor-race)
+
+Two live rounds against session `01a087bd` (second TUI session, same project):
+
+### F7 — a cursor-based tick sleeps through mail the adapter consumes first [MEASURED]
+
+R1: the waiter entered `wait` (timeoutMs 180000) ~12 s after the instruction message
+and timed out the full 180 s, although the WAKE message sat deliverable in the bus
+for ~90 s mid-wait. The tick probed the shared delivery cursor, which the adapter
+poll had already advanced past the WAKE (consume-at-sighting, display-at-boundary).
+
+**Evidence:** bus DB rows `#815` (instruction, 19:57:45Z), `#816` (WAKE, 19:59:27Z),
+`#817` (waiter reply `OBSERVED=timeout WAITEDMS=180000`, 20:00:57Z), run live from
+this checkout (`message-bus send` to the waiter session, replies read back the same way).
+
+### F8 — the same tick wakes within a second when it sights first [MEASURED]
+
+R3 (same session, same code): the waiter entered `wait` (timeoutMs 300000); the WAKE
+committed at 20:08:04.168Z and the wait resolved `observed: "mail"` at 20:08:04.419Z
+(251 ms later); the waiter replied 5 s after the WAKE.
+
+**Evidence:** bus DB rows `#820` (R3 instructions, 20:05:24Z), `#821` (WAKE, 20:08:04Z),
+`#822` (waiter reply `OBSERVED=mail WAITEDMS=153000`, 20:08:09Z); waiter toolResult
+`observed: mail, waitedMs: 153370` in its session transcript.
+
+### F9 — the adapter consumes at sighting and displays at the turn boundary [READ]
+
+The waiter's session transcript shows the adapter posting the R1-WAKE as an
+`ai-badger` custom message at 20:00:51.554Z — the exact millisecond its `wait`
+timeout toolResult landed. A co-sighting is implausible across an 84 s gap between
+the WAKE commit and the post; the consistent reading is consume-early (cursor past
+the WAKE within the wait, blinding the cursor-based tick ~90 consecutive times)
+and post-late (followUp queued behind the blocked turn, flushed at its end).
+
+**Evidence:** waiter session transcript
+`/Users/arasz/.pi/agent/sessions/--Users-arasz-RiderProjects-pi-badger-integration--/2026-09-09T19-55-52-865Z_01a087bd-b8a0-73e5-8693-4edbe14dd5b0.jsonl`
+lines 10–11 (wait timeout toolResult and adapter card share timestamp 20:00:51.554Z).
+
+### Closure (2026-09-09) — will not continue
+
+Closed as wont-continue under task pbi-wait-check-loop-bus-mail: F6 (short-wait +
+check loop) is the implemented answer as an internal tick, and none of these would
+change it.
+
+- ~~Whether an RPC `prompt`/`steer` delivered mid-tool aborts or queues behind `wait`~~ — CLOSED: even an aborting steer would be the wrong primitive for mail (it kills the waiter's turn); the internal tick is the contract regardless of the RPC answer.
+- ~~What the adapter's poll-timer interval actually is~~ — CLOSED as a tuning question; F9 below makes the tick independent of the adapter's cadence, so the interval no longer matters to wake reliability.
+- ~~Whether a same-process bus→monitor bridge is worth the coupling~~ — CLOSED: rejected; it would fix only same-session self-notify, never the cross-agent case in the question, while coupling two extensions.
+
+Original items (kept for history):
 
 - Whether an RPC `prompt`/`steer` delivered mid-tool-aborts or queues behind `wait` on this pi build was not exercised end-to-end (needs a two-process live test: one TUI waiter, one RPC sender, observing `wait` output) — the docs say streaming delivery queues after tool calls, but only a live run settles it.
 - What the adapter's poll-timer interval actually is (bus-store.ts/bus-prefilter.ts live outside this repo's checkout) and whether shortening it is cheaper than a wait/check loop for sub-minute latency.

@@ -32,6 +32,10 @@ Just `wait` — with whatever `timeoutMs` fits the work (default 5 min, max
   sources and still ends on timeout. Bus trouble never breaks or hangs a wait.
 - **Read-only.** The tick peeks (never advances the cursor), so delivery stays
   exactly-once through the normal hook path.
+- **Race-free vs the adapter.** The tick tracks a private high-water mark per wait
+  (max addressed id at wait start) instead of the shared delivery cursor: when the
+  adapter's poll consumes mail out-of-band mid-wait, the tick still sees the new id
+  and wakes. Only mail arriving *after* the wait starts can wake it.
 - **Kill switch.** `PI_BADGER_MESSAGE_BUS=0` disables the tick along with the
   delivery hooks; the `check` tool stays.
 - **No polling-guard cost.** The internal tick is not a `delegations list`
