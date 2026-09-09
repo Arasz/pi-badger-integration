@@ -1,7 +1,19 @@
 {
-  "lastUpdated": "2026-09-09T18:59:07Z",
+  "lastUpdated": "2026-09-09T19:45:00Z",
   "next": null,
   "completedTasks": [
+    {
+      "taskId": "pbi-wait-check-loop-bus-mail",
+      "title": "Short wait plus message-bus check loop, close wake research still-open",
+      "finishedAt": "2026-09-09T19:45:00Z",
+      "summary": "Owner feedback moved F6 inside the tool: wait now wakes on bus mail via an internal fixed 1 s tick (BUS_MAIL_TICK_MS, defaultBusMailProbe read-only peek, observed mail) — from the agent's perspective wait just works, no check loop. Fail-open (missing/locked DB, no identity, bus-off all read as no mail), per-ctx probe groups, tick disarms with last wait + on shutdown, mail beats idleness in W-A4 re-check. Wait + bus tool descriptions name it; docs/howto/wait-check-loop.md + catalog pointers; catalog stale wait default fixed (120 s -> 5 min code truth); research Still-open closed wont-continue, F6 marked superseded. 279 touched-surface tests green (15 new incl. live re-arm/kill-switch/cross-session mutation pins), tsc clean outside pre-existing pi-mcp-tools worktree gap, full suite only pre-existing pi-mcp-tools parity reds, merged FF, published (2 coordinator-revert extras remain, not this task). Low-effort: in-session plan/review + code-reviewer SHIP (7 SHOULDs, 3 folded) + qa BLOCKED->fixed (2 blockers + 4 nits, re-arm mutation verified lethal live). User must /reload running sessions.",
+      "decisions": [
+        "Internal tick over agent-side loop: no push path reaches a wait-held turn cross-process, so the waiter checks itself; agent contract unchanged (wait just resolves mail)",
+        "Fixed 1 s cadence, no ms knob (owner order); one shared timer, one probe per distinct ctx per tick",
+        "Peek-never-advance keeps exactly-once delivery through the turn_start hook; kill switch PI_BADGER_MESSAGE_BUS=0 honored",
+        "Deferred with reasons: bus-store module split (pure-core pollution risk), contention measurement (measure-first), tick-skip micro-opt (probe returns pre-fs), timer-handle naming (order loudly pinned)"
+      ]
+    },
     {
       "taskId": "pbi-ask-child-budget-mcp-strip",
       "title": "Strip /ask child boot stack + raise child budget",
