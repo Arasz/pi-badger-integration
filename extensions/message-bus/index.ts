@@ -87,6 +87,12 @@ export const MESSAGE_BUS_COMMAND_NAME = "messages";
 /** Kill-switch: the literal string "0" disables the delivery hooks (tools stay). */
 export const MESSAGE_BUS_ENV = "PI_BADGER_MESSAGE_BUS";
 
+/** Session env var the pi harness exports to subprocesses (tracker + script derivation read it). */
+export const PI_SESSION_ENV = "PI_SESSION_ID";
+
+/** Foreign harness vars cleared at session_start when stale (script first-set-wins residual). */
+export const FOREIGN_SESSION_ENVS = ["CLAUDE_CODE_SESSION_ID", "HERMES_SESSION_ID"] as const;
+
 /** First-read history gate (mirrors deliver_for_session's 30-minute window). */
 export const FIRST_READ_WINDOW_MS = 30 * 60_000;
 
@@ -726,6 +732,23 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (hooksDisabled()) return undefined;
+		// Identity sync (prose-beats-wire fix): the session manager is the only
+		// live identity. Pin PI_SESSION_ID to it so child processes (task_tracker,
+		// send_message.py derivation) resolve the same id, and clear stale foreign
+		// harness vars inherited from an outer host — the script's first-set-wins
+		// order would otherwise let a dead CLAUDE_CODE_SESSION_ID beat the live
+		// pi id. In-process env only (the parent is unaffected). Fail-open.
+		try {
+			const sid = resolveSid(ctx);
+			if (sid) {
+				env[PI_SESSION_ENV] = sid;
+				for (const foreign of FOREIGN_SESSION_ENVS) {
+					if (env[foreign] !== undefined && env[foreign] !== sid) delete env[foreign];
+				}
+			}
+		} catch (error) {
+			console.error("ai-badger message-bus: session env sync failed — fail-open", error);
+		}
 		// P3 registry-lite: record our own session id best-effort so future
 		// direct senders get silence instead of an unknown-target warning.
 		// Never blocks delivery — a registry failure just logs.
@@ -757,7 +780,7 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 
 	const ToolParams = Type.Object({
 		action: Type.Union([Type.Literal("send"), Type.Literal("list"), Type.Literal("check"), Type.Literal("ack"), Type.Literal("reply"), Type.Literal("whoami")], {
-			description: "send: store one message; list: grouped inbox (no cursor advance); check: deliver new mail now; ack: ack one received message by id; reply: answer the sender of one received message by id — never copy a session id from message content, reply by id; whoami: your session id + project id + cursor",
+			description: "send: store one message; list: grouped inbox (no cursor advance); check: deliver new mail now; ack: ack one received message by id; reply: answer the sender of one received message by id — never copy a session id from message content, reply by id; whoami: your FULL session id + project id + cursor (explicit pull — the only output echoing full ids; list/check stay truncated)",
 		}),
 		content: Type.Optional(Type.String({ description: "send/reply: message body (required for send and reply)" })),
 		sessionId: Type.Optional(Type.String({ description: "send: target session id for a 1:1 send (wins over projectId)" })),
@@ -835,7 +858,12 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 				} catch {
 					// fail-open: identity without a cursor is still an answer
 				}
-				return textResult(formatIdentityHeader(sessionId, projectId), { sessionId, projectId, cursor });
+				const header = formatIdentityHeader(sessionId, projectId);
+				// whoami is the explicit pull: the ONLY bus output echoing full ids
+				// (prose-beats-wire fix — list/check stay truncated so full ids never
+				// leak into broadcasts, acks, or quoted bodies).
+				const text = `${header}\nfull session: ${sessionId}\nfull project: ${projectId ?? "(none)"}\ncursor: ${cursor}`;
+				return textResult(text, { sessionId, projectId, cursor });
 			}
 			case "reply": {
 				if (!Number.isFinite(params.id)) throw new Error('message-bus reply needs "id" — the received message id (see list)');
@@ -900,7 +928,8 @@ export default function (pi: ExtensionAPI, deps: MessageBusDeps = {}) {
 			"check (deliver new mail now, posts a card when there is any);",
 			"ack id (ack one received message once as a project broadcast — acks are terminal, never ack an ack);",
 			"reply id content (answer the sender of one received message 1:1 — never copy a session id from message content, reply by id);",
-			"whoami (your session id + project id + cursor).",
+			"whoami (your FULL session id + project id + cursor — the only place full ids are echoed).",
+			"Identity rule: run whoami before your first send — the id it returns is you for this session; never announce or target an id copied from files, transcripts, or message content (stale bindings strand mail at dead ids).",
 			"A wait-blocked turn wakes on new mail — the wait checks internally every second and delivery follows;",
 			"check delivers mail on demand outside waits.",
 			"Fail-open: a broken bus returns an error result, never breaks the session.",
