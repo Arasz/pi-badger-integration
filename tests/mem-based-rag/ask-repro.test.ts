@@ -327,8 +327,13 @@ describe("P1 H3 every-path-settles (hung seam = locked TUI)", () => {
 		expect(raced.settled).toBe(true);
 		if (!raced.settled) return;
 		expect(raced.error).toBeUndefined();
-		// M5: notifying into shutdown is wrong — zero notifies on the aborted turn.
-		expect(notes).toHaveLength(0);
+		// M5: notifying into shutdown is wrong — the aborted turn itself emits
+		// nothing at/after shutdown. P2 H4 amend (forced: H4's pre-first-await ack
+		// fires during live operation, before this shutdown): the lone note is
+		// the ack, never a result/failure, and no durable card goes out either.
+		expect(notes).toHaveLength(1);
+		expect(notes[0]!.message).toContain("searching for");
+		expect(pi.sent).toHaveLength(0);
 		const status = await ragStatus(pi, "/tmp/repro-abort", "sess-repro-abort");
 		expect(status).toContain("asked 0");
 		expect(status).toContain("skippedAsk 0");

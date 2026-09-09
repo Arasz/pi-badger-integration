@@ -57,6 +57,17 @@ export const MEM_RAG_BIN_ENV = "PI_BADGER_MEM_RAG_BIN";
 export const ASK_COMMAND_NAME = "ask";
 
 /**
+ * Custom message type of the /ask durable answer/failure cards (P2).
+ * Separate from MEM_RAG_CUSTOM_TYPE: the card carries a prose answer (or a
+ * terminal skip/failure line), never a memory-context block, so it renders
+ * through its own verbatim renderer instead of the toCardLines parser.
+ */
+export const ASK_CUSTOM_TYPE = "mem-based-rag-ask";
+
+/** Terminal card kinds for /ask durable delivery (P2). */
+export type AskCardKind = "answer" | "skip" | "failure";
+
+/**
  * `--exclude-tools` value for /ask children. Literal copy of the subagent
  * CHILD_EXCLUDED_TOOLS (extensions/subagent/index.ts) — read-only reference,
  * NO cross-extension runtime import so the two extensions never couple at load.
@@ -530,6 +541,53 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 			);
 		});
 
+	/**
+	 * P2 durable send: append-only custom card via the factory-closure `pi`
+	 * (never `ctx.ui` — a stale/missing ui surface silently drops notifies
+	 * while the card persists in session state + transcript).
+	 *
+	 * M3 triggerTurn choice: `{ triggerTurn: false }`, explicitly — NOT the
+	 * subagent `{deliverAs:"followUp",triggerTurn:true}` precedent, which
+	 * fires in the STREAMING context (tool result mid-turn). /ask runs in
+	 * prompt()'s commands-first IDLE branch, so triggerTurn:true would start
+	 * a FRESH parent LLM turn per answer (cost + behavior change). `deliverAs`
+	 * is streaming-queue placement only — omitted while idle. Loop-freedom:
+	 * cards are role:"custom" (customType set, never user text), commands
+	 * dispatch only from `/`-prefixed user input, and nothing seeds the
+	 * input queue after a card.
+	 *
+	 * S2: a throwing sendMessage falls back to `onSendThrow` (notify) — the
+	 * turn never throws either way.
+	 */
+	const deliverAskCard = (
+		content: string,
+		details: Record<string, unknown>,
+		onSendThrow: () => void,
+	): void => {
+		try {
+			pi.sendMessage({ customType: ASK_CUSTOM_TYPE, content, display: true, details }, { triggerTurn: false });
+		} catch {
+			try {
+				onSendThrow();
+			} catch {
+				// never throw the turn
+			}
+		}
+	};
+
+	/** Never-throwing notify — a stale/missing ui surface must never throw the turn (P2 M4). */
+	const notifySafely = (
+		ctx: ExtensionContext,
+		message: string,
+		type: "info" | "warning" | "error",
+	): void => {
+		try {
+			ctx.ui?.notify?.(message, type);
+		} catch {
+			// notify must never throw the turn
+		}
+	};
+
 	const getClient = async (bin: string): Promise<RaccoonClientLike> => {
 		if (!client) {
 			const fresh = createClient(bin);
@@ -765,8 +823,9 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 			return items.length > 0 ? items : null;
 		},
 		async handler(args, ctx) {
+			// M4: guarded like /ask — a throwing ui getter (stale ctx) must not kill /rag.
 			const notify = (message: string, type: "info" | "warning" | "error"): void => {
-				ctx.ui?.notify?.(message, type);
+				notifySafely(ctx, message, type);
 			};
 			const config = readConfig(sessionMode);
 			const trimmed = args.trim().toLowerCase();
@@ -810,6 +869,9 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 					// notify must never throw the turn
 				}
 			};
+			// P2 outer-catch card query: a block-scoped `let` inside try is invisible
+			// to catch, so the carrier lives outside (empty = pre-acceptance throw).
+			let askQuery = "";
 			try {
 				const config = readConfig(sessionMode);
 				if (!config.enabled) {
@@ -826,6 +888,7 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 					notify(`mem-based-rag /ask: skipped (${decision.reason}).`, "info");
 					return undefined;
 				}
+				askQuery = decision.query;
 				let projectId: string | null;
 				try {
 					projectId = resolveProjectId(ctx.cwd, process.env);
@@ -845,6 +908,24 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 					notify("mem-based-rag /ask: skipped (no session id).", "info");
 					return undefined;
 				}
+				// P2 H4 ack: an accepted query announces itself BEFORE the first
+				// await — names the query + the outer settle budget.
+				notify(`mem-based-rag /ask: searching for "${decision.query}" (budget ${config.timeoutMs}ms).`, "info");
+				// P2 terminal finish: every post-acceptance outcome notifies AND
+				// cards (thin-skip/mode-off/no-id above stay notify-only, no ack).
+				const finish = (
+					message: string,
+					type: "info" | "warning" | "error",
+					kind: AskCardKind,
+					extra?: Record<string, unknown>,
+				): void => {
+					notify(message, type);
+					deliverAskCard(
+						message,
+						{ kind, query: decision.query, mode: config.mode, ...(extra ?? {}) },
+						() => notify(message, "info"),
+					);
+				};
 				const startedAt = Date.now();
 				let mem: MemoryHit[];
 				let code: MemoryHit[];
@@ -870,14 +951,14 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 					if (mem.length === 0 && code.length === 0) {
 						skippedAsk += 1;
 						lastAskReason = "ask skipped (no-hits)";
-						notify("mem-based-rag /ask: skipped (no-hits).", "info");
+						finish("mem-based-rag /ask: skipped (no-hits).", "info", "skip", { reason: "no-hits" });
 						return undefined;
 					}
 				} catch (error) {
 					skippedAsk += 1;
 					const detail = error instanceof Error ? error.message : String(error);
 					lastAskReason = `ask skipped (bank error: ${detail})`;
-					notify(`mem-based-rag /ask: skipped (bank error: ${detail}).`, "info");
+					finish(`mem-based-rag /ask: skipped (bank error: ${detail}).`, "info", "skip", { reason: "bank-error" });
 					console.error("ai-badger mem-based-rag: /ask enrichment failed fail-open —", error);
 					return undefined;
 				}
@@ -945,7 +1026,10 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 						skippedAsk += 1;
 						lastAskReason = `ask failed (exit ${String(result.exitCode)})`;
 						const tail = result.stderr?.trim() ? ` ${result.stderr.trim().slice(0, 200)}` : "";
-						notify(`mem-based-rag /ask: failed (exit ${String(result.exitCode)}).${tail}`, "warning");
+						finish(`mem-based-rag /ask: failed (exit ${String(result.exitCode)}).${tail}`, "warning", "failure", {
+							reason: "child-exit",
+							exitCode: result.exitCode,
+						});
 						console.error("ai-badger mem-based-rag: /ask child failed —", {
 							exitCode: result.exitCode,
 							cwd: ctx.cwd,
@@ -957,13 +1041,18 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 					if (!parsed) {
 						skippedAsk += 1;
 						lastAskReason = "ask skipped (no answer from child)";
-						notify("mem-based-rag /ask: skipped (no answer from child).", "info");
+						finish("mem-based-rag /ask: skipped (no answer from child).", "info", "skip", { reason: "no-answer" });
 						return undefined;
 					}
 					const answer = capAskAnswer(parsed);
 					asked += 1;
-					lastAskReason = `asked (${config.mode}, ${Date.now() - startedAt}ms)`;
-					notify(answer, "info");
+					const latencyMs = Date.now() - startedAt;
+					lastAskReason = `asked (${config.mode}, ${latencyMs}ms)`;
+					finish(answer, "info", "answer", {
+						latencyMs,
+						memHashes: mem.map((hit) => hit.hash),
+						codeHashes: code.map((hit) => hit.hash),
+					});
 					// Runtime returns the answer for tests/callers; typed as void
 					// because RegisteredCommand.handler is Promise<void>.
 					return answer as unknown as void;
@@ -973,7 +1062,7 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 					skippedAsk += 1;
 					const detail = error instanceof Error ? error.message : String(error);
 					lastAskReason = `ask failed (${detail})`;
-					notify(`mem-based-rag /ask: failed (${detail}).`, "warning");
+					finish(`mem-based-rag /ask: failed (${detail}).`, "warning", "failure", { reason: "child-failed" });
 					return undefined;
 				}
 			} catch (error) {
@@ -982,7 +1071,9 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 					skippedAsk += 1;
 					const detail = error instanceof Error ? error.message : String(error);
 					lastAskReason = `ask failed (${detail})`;
-					notify(`mem-based-rag /ask: failed (${detail}).`, "warning");
+					const text = `mem-based-rag /ask: failed (${detail}).`;
+					notify(text, "warning");
+					deliverAskCard(text, { kind: "failure" as AskCardKind, query: askQuery }, () => notify(text, "info"));
 				} catch {
 					// notify itself must never throw
 				}
@@ -1025,6 +1116,30 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 				})
 				.join("\n");
 			box.addChild(new Text(styled, 0, 0));
+			return box;
+		} catch {
+			return new Text(body, 0, 0);
+		}
+	});
+
+	// ---------------------------------------------------------------- P2 ask cards
+
+	pi.registerMessageRenderer(ASK_CUSTOM_TYPE, (message, options, theme) => {
+		const body = typeof message.content === "string" ? message.content : "";
+		if (!body) return undefined;
+		// S1: prose answers render VERBATIM — never toCardLines, whose
+		// memory-block parser would mangle answer prose into hit bullets.
+		try {
+			const paint = theme as unknown as {
+				fg: (color: string, text: string) => string;
+				bg: (color: string, line: string) => string;
+			};
+			if (typeof paint.fg !== "function" || typeof paint.bg !== "function") return new Text(body, 0, 0);
+			const details = message as { details?: { kind?: unknown } };
+			const head = details.details?.kind === "failure" ? "error" : "success";
+			const box = new Box(options.outputPad, 1, (line: string) => paint.bg("customMessageBg", line));
+			const lines = body.split("\n");
+			box.addChild(new Text([paint.fg(head, lines[0] ?? ""), ...lines.slice(1)].join("\n"), 0, 0));
 			return box;
 		} catch {
 			return new Text(body, 0, 0);
