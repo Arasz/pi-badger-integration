@@ -1,0 +1,12 @@
+{
+  "name": "task-rename",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Task session rename: registers /rename as an alias over pi.setSessionName (matching the task skill's /rename {task-id} reminder) and auto-applies the task_tracker's REMINDER line from tool output. pi discovers the entry as ~/.pi/agent/extensions/<name>/index.ts; this manifest records metadata only and does not register the entry.",
+  "main": "index.ts",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}
