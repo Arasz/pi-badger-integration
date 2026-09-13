@@ -9,8 +9,10 @@
  *     queue-model ruling: the only waiting surface is the monitor extension's `wait` tool,
  *     which user input interrupts; the removed verb blocked the loop and ignored input).
  *     Unknown ids are loud errors; abort without an id is a usage error; `log` answers with
- *     a bounded tail of the run's log file plus the full path pointer, and "log unavailable"
- *     when there is no healthy log (R4 review CR6); `results` reads the in-memory result
+ *     a bounded tail of the run's log file plus the full path pointer — for a RUNNING run,
+ *     whose on-disk log holds only its `run` header, it answers with the in-memory live
+ *     preview instead — and "log unavailable" when there is no healthy log (R4 review CR6);
+ *     `results` reads the in-memory result
  *     cache (last 8, option (c) — one id, or the current session's results without one).
  *   - the human twin `/delegations [peek <id>] [log <id>] [abort <id|all>]` with argument completions —
  *     every mutation goes through the same registry calls the tool uses (T78), so the tool
@@ -64,6 +66,11 @@ export const MIN_LOG_TAIL_BYTES = 512;
 export const MAX_LOG_TAIL_BYTES = 49152;
 export const DEFAULT_LOG_TAIL_BYTES = 8192;
 
+/** The note `log` appends when it answers a live run from the in-memory preview: the runner
+ * tees the child's output only at close (`writeTeeStreams`), so the file is header-only while
+ * the child runs (RR4, docs/work/2026-08-31-delegation-liveness-watchdog-plan.md). */
+const LIVE_PREVIEW_NOTE = "[live in-memory preview — the log file is written when the run settles]";
+
 /** Widget refresh cadence. Rendering happens on transitions and tool events; the tick only
  * refreshes elapsed clocks and usage while a background run is live. */
 const TICK_MS = 5000;
@@ -99,16 +106,20 @@ export function clampLogTailBytes(bytes: number): number {
 }
 
 /**
- * The last `bytes` of `content`, snapped forward to the next line boundary so every kept
- * line is whole — the same tail discipline the log tee's elision marker uses (P1's
- * `elideTeeStream`). Within the bound the content is verbatim.
+ * The last `bytes` BYTES of `content` (UTF-8), snapped forward to the next line boundary so
+ * every kept line is whole — the same tail discipline the log tee's elision marker uses
+ * (P1's `elideTeeStream`). Within the bound the content is verbatim. Counting bytes (not
+ * UTF-16 code units) is what the `... earlier bytes dropped` marker claims; a window landing
+ * inside a multibyte character skips its continuation bytes instead of decoding U+FFFD.
  */
 export function formatLogTail(content: string, bytes: number): { text: string; droppedBytes: number } {
-	if (content.length <= bytes) return { text: content, droppedBytes: 0 };
-	let tail = content.slice(-bytes);
-	const newline = tail.indexOf("\n");
-	if (newline >= 0) tail = tail.slice(newline + 1);
-	return { text: tail, droppedBytes: content.length - tail.length };
+	const buf = Buffer.from(content, "utf8");
+	if (buf.length <= bytes) return { text: content, droppedBytes: 0 };
+	let tail = buf.subarray(buf.length - bytes);
+	const newline = tail.indexOf(0x0a);
+	if (newline >= 0) tail = tail.subarray(newline + 1);
+	while (tail.length > 0 && (tail[0]! & 0b1100_0000) === 0b1000_0000) tail = tail.subarray(1);
+	return { text: tail.toString("utf8"), droppedBytes: buf.length - tail.length };
 }
 
 function taskExcerpt(task: string): string {
@@ -350,13 +361,31 @@ export function registerDelegationStatus(
 		return `abort requested for ${live.length} live delegation${live.length === 1 ? "" : "s"}`;
 	}
 
-	function logTailResult(id: string, perCallBytes?: number): { ok: boolean; message: string; logFile?: string } {
+	function logTailResult(
+		id: string,
+		perCallBytes?: number,
+	): { ok: boolean; message: string; logFile?: string; source?: "log" | "live" } {
 		const record = requireRecord(id);
 		if (!record.logFile) {
 			return {
 				ok: false,
 				message: `delegation ${id}: log unavailable — no log file was written for this run (the sink was disabled or failed); the delegation itself is unaffected`,
 			};
+		}
+		// A live run's on-disk log holds ONLY its `run` header — the runner flushes the child's
+		// output at close (P2 tee, RR4). The in-memory preview IS the live stream, so `log`
+		// answers with it, marked, instead of printing the "showing the tail" marker over
+		// nothing.
+		if (record.state === "running" && record.answerPreview) {
+			const live = tailLines(record.answerPreview, clampPeekLines(undefined));
+			if (live.trim().length > 0) {
+				return {
+					ok: true,
+					message: [live, LIVE_PREVIEW_NOTE, `full log: ${record.logFile}`].join("\n"),
+					logFile: record.logFile,
+					source: "live",
+				};
+			}
 		}
 		const bytes = clampLogTailBytes(perCallBytes ?? configuredLogBytes);
 		let content: string;
@@ -371,10 +400,20 @@ export function registerDelegationStatus(
 		}
 		const { text, droppedBytes } = formatLogTail(content, bytes);
 		const parts: string[] = [];
-		if (droppedBytes > 0) parts.push(`[...${droppedBytes} earlier bytes dropped — showing the tail]`);
-		if (text.trim().length > 0) parts.push(text.trimEnd());
+		if (text.trim().length > 0) {
+			if (droppedBytes > 0) parts.push(`[...${droppedBytes} earlier bytes dropped — showing the tail]`);
+			parts.push(text.trimEnd());
+		} else if (record.state === "running") {
+			// The header-only live log has no complete line inside the window: never claim a
+			// tail — name the state and point at the surface that does have live output.
+			parts.push(
+				`delegation ${id}: running — the log holds only the run header until the child closes; no output to tail yet (use \`delegations peek ${id}\`)`,
+			);
+		} else {
+			parts.push(`delegation ${id}: no complete line in the last ${bytes} bytes — nothing to show`);
+		}
 		parts.push(`full log: ${record.logFile}`);
-		return { ok: true, message: parts.join("\n"), logFile: record.logFile };
+		return { ok: true, message: parts.join("\n"), logFile: record.logFile, source: "log" };
 	}
 
 	/**
@@ -422,7 +461,7 @@ export function registerDelegationStatus(
 	const DelegationsParams = Type.Object({
 		action: Type.Union(
 			[Type.Literal("list"), Type.Literal("log"), Type.Literal("abort"), Type.Literal("results"), Type.Literal("peek")],
-			{ description: "list: every delegation with its state; log: tail one run's log; abort: stop one run or all; results: one delegation's cached structured result, or (without an id) every cached result this session parented; peek: the answer tail — the cached output for settled runs, the live preview while running" },
+			{ description: "list: every delegation with its state; log: tail one run's log (a running run's file holds only its run header, so log answers with the in-memory live preview until it settles); abort: stop one run or all; results: one delegation's cached structured result, or (without an id) every cached result this session parented; peek: the answer tail — the cached output for settled runs, the live preview while running" },
 		),
 		id: Type.Optional(Type.String({ description: 'Run id for log/abort/peek/results (abort also accepts "all"; results without an id means this session)' })),
 		bytes: Type.Optional(Type.Number({ description: `log: tail size in bytes (${MIN_LOG_TAIL_BYTES}–${MAX_LOG_TAIL_BYTES}, default ${DEFAULT_LOG_TAIL_BYTES})` })),
@@ -467,7 +506,12 @@ export function registerDelegationStatus(
 					throw new Error(`delegations log needs a run id — use delegations list for current ids; ${USAGE_LINE}`);
 				}
 				const result = logTailResult(params.id.trim(), typeof params.bytes === "number" ? params.bytes : undefined);
-				return textResult(result.message, { id: params.id, logFile: result.logFile, ok: result.ok });
+				return textResult(result.message, {
+					id: params.id,
+					logFile: result.logFile,
+					ok: result.ok,
+					...(result.source !== undefined ? { source: result.source } : {}),
+				});
 			}
 			case "abort": {
 				if (typeof params.id !== "string" || !params.id.trim()) {
@@ -560,7 +604,7 @@ export function registerDelegationStatus(
 	}
 
 	pi.registerCommand(DELEGATIONS_COMMAND_NAME, {
-		description: "Delegation status; `peek <id> [--lines N]` shows the answer tail; `log <id>` tails a run's log; `abort <id|all>` stops runs.",
+		description: "Delegation status; `peek <id> [--lines N]` shows the answer tail; `log <id>` tails a run's log (live runs answer from the in-memory preview); `abort <id|all>` stops runs.",
 		getArgumentCompletions(argumentPrefix) {
 			const idPosition = /^(?:log|abort|peek)\s+(\S*)$/.exec(argumentPrefix);
 			if (idPosition) {
@@ -574,7 +618,7 @@ export function registerDelegationStatus(
 			}
 			const first = argumentPrefix.trim();
 			const subcommandDescriptions: Record<string, string> = {
-				log: "tail a run's log",
+				log: "tail a run's log (live preview while running)",
 				abort: "stop a run or all",
 				peek: "show the answer tail",
 			};

@@ -13,7 +13,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeChild } from "./helpers/fake-child.ts";
@@ -453,6 +453,62 @@ describe("T76: delegations tool contract details (review CR10)", () => {
 		}
 	});
 
+	test("log answers a RUNNING delegation from the in-memory live preview, not the header-only file", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "delegation-log-live-"));
+		try {
+			const fx = makeFixture({
+				logSink: ({ id }) => ({
+					logFile: join(dir, `${id}.jsonl`),
+					appendLine: (line) => appendFileSync(join(dir, `${id}.jsonl`), `${line}\n`),
+				}),
+			});
+			await startBackground(fx, "d-1");
+			fx.children[0]!.emitEvent({
+				type: "message_end",
+				message: { role: "assistant", content: [{ type: "text", text: "live line 1\nlive line 2" }] },
+			});
+
+			const result = await delegationsTool(fx).execute({ action: "log", id: "d-1" });
+			const text = result.content[0]!.text;
+			expect(text).toContain("live line 2"); // the live preview is what a supervisor needs
+			expect(text).toContain("live in-memory preview");
+			expect(text).toContain(join(dir, "d-1.jsonl"));
+			expect(text).not.toContain("earlier bytes dropped"); // never the phantom-tail marker
+			expect(result.details).toEqual({ id: "d-1", logFile: join(dir, "d-1.jsonl"), ok: true, source: "live" });
+
+			// The fallback's premise: the on-disk log is still header-only while the run lives.
+			const onDisk = readFileSync(join(dir, "d-1.jsonl"), "utf8");
+			expect(onDisk.trimEnd().split("\n")).toHaveLength(1);
+			expect(text).not.toContain('"type":"run"');
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("log on a running delegation with no output yet names the header-only file instead of a phantom tail", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "delegation-log-header-"));
+		try {
+			const fx = makeFixture({
+				logSink: ({ id }) => ({
+					logFile: join(dir, `${id}.jsonl`),
+					appendLine: (line) => appendFileSync(join(dir, `${id}.jsonl`), `${line}\n`),
+				}),
+			});
+			// A long task prompt makes the single header line exceed the tail window — the shape
+			// every real delegation has (the header carries the whole task text).
+			await startBackground(fx, "d-1", { task: "x".repeat(12_000) });
+
+			const result = await delegationsTool(fx).execute({ action: "log", id: "d-1" });
+			const text = result.content[0]!.text;
+			expect(text).toContain("holds only the run header");
+			expect(text).toContain("delegations peek d-1"); // the surface that does have live output
+			expect(text).not.toContain("showing the tail"); // the old lie
+			expect((result.details as { source?: string }).source).toBe("log");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("log tail bounds and clamping (512–49152, default 8192)", () => {
 		expect(DEFAULT_LOG_TAIL_BYTES).toBe(8192);
 		expect(MIN_LOG_TAIL_BYTES).toBe(512);
@@ -467,6 +523,12 @@ describe("T76: delegations tool contract details (review CR10)", () => {
 		const whole = formatLogTail("short", 8192);
 		expect(whole.text).toBe("short");
 		expect(whole.droppedBytes).toBe(0);
+
+		// Byte accounting (what the marker claims): a window landing inside a multibyte
+		// character skips its continuation bytes instead of decoding a replacement character.
+		const midChar = formatLogTail("—".repeat(10), 4);
+		expect(midChar.text).toBe("—");
+		expect(midChar.droppedBytes).toBe(27); // 30 bytes total − 3 kept
 	});
 });
 
