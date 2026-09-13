@@ -158,8 +158,12 @@ export function userDbPath(env: Record<string, string | undefined>, cwd: string)
 	return join(homedir(), ".ai-badger", "ai-badger.db");
 }
 
-/** Sender session: the session manager's id only (bus-prefilter.ts C6 — no env fallback). */
-export function resolveSessionId(ctx: ExtensionContext): string {
+/** Sender session: the session manager's id only (bus-prefilter.ts C6 — no env fallback).
+ * The parameter is structural on purpose: monitor imports this helper across package
+ * boundaries, and each extension's node_modules carries its OWN pi SDK copy (extension
+ * manifests pin `*`), so a nominal `ExtensionContext` here would require every copy to be
+ * the same build — which the per-extension locked installs do not guarantee. */
+export function resolveSessionId(ctx: { sessionManager?: { getSessionId?(): string } }): string {
 	try {
 		const id = ctx.sessionManager?.getSessionId?.();
 		if (typeof id === "string" && id) return id;
