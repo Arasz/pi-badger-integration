@@ -70,7 +70,9 @@ settles as `aborted (lost)`.
 Checking on delegations:
 
 - **`delegations` tool** (LLM-facing): `list` (state, elapsed, current activity, usage,
-  trailing `session <id>` when known), `log <id>` (bounded tail + full path),
+  trailing `session <id>` when known), `log <id>` (bounded tail + full path; a RUNNING
+  run's file holds only its `run` header, so `log` answers from the in-memory live preview
+  until the run settles),
   `peek <id> [--lines N]` (last N lines of the delegated task output, default 20, 1-100;
   settled runs read the cached answer, live runs read the in-memory preview, queued runs
   report position), `abort <id|all>`, `results [id]` (the cached
@@ -88,9 +90,12 @@ Checking on delegations:
   `~/.pi/agent/subagent-logs/<runId>.jsonl` — a `run` header (runId, sessionId, persona,
   task, argv, cwd, pid, startedAt), the child's events verbatim, stderr as
   `{"type":"stderr",…}` lines, and a final `exit` line. Byte-capped per run (header + tail
-  kept, middle elided). Logs live at user scope deliberately: they survive reboots and
-  never touch any project's git status. Retention: >14 days pruned at `session_start`,
-  directory capped oldest-first.
+  kept, middle elided). While a run is LIVE the file holds only its `run` header — the
+  child's buffered stream lands at close — so `delegations log` falls back to the in-memory
+  live preview (the same source `peek` reads) and never prints an empty "showing the tail"
+  marker. Logs live at user scope deliberately: they survive reboots and never touch any
+  project's git status. Retention: >14 days pruned at `session_start`, directory capped
+  oldest-first.
 
 Lifecycle: at most 4 children run at once (env `PI_BADGER_SUBAGENT_MAX_CONCURRENT`), 16
 queued FIFO, loud rejection beyond. `session_shutdown` SIGTERMs running children (SIGKILL
