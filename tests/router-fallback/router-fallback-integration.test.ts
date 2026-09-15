@@ -46,20 +46,54 @@ function agentEndEvent(last: Record<string, unknown>) {
   };
 }
 
+/** A catalog entry as `ModelRegistry.find` really returns it — `api`/`baseUrl` included,
+ *  never just `{reasoning}` (that shape only ever existed in this fixture, not in pi). */
+interface FakeCatalogModel {
+  readonly reasoning: boolean;
+  readonly api: string;
+  readonly baseUrl: string;
+}
+
 /** Pinned-chain catalog: pro-preview deliberately ABSENT (stale-id resolve-or-skip). */
-const CATALOG: Record<string, { reasoning: boolean }> = {
-  "groq/llama-3.3-70b-versatile": { reasoning: false },
-  "google/gemini-3.1-flash-lite": { reasoning: false },
-  "openrouter/z-ai/glm-5.2:free": { reasoning: false },
-  "openrouter/poolside/laguna-s-2.1:free": { reasoning: false },
-  "openrouter/minimax/minimax-m3:free": { reasoning: false },
-  "openrouter/thinkingmachines/inkling-small:free": { reasoning: false },
+const CATALOG: Record<string, FakeCatalogModel> = {
+  "groq/llama-3.3-70b-versatile": {
+    reasoning: false,
+    api: "openai-completions",
+    baseUrl: "https://api.groq.com/openai/v1",
+  },
+  "google/gemini-3.1-flash-lite": {
+    reasoning: false,
+    api: "google-generative",
+    baseUrl: "https://generativelanguage.googleapis.com",
+  },
+  "openrouter/z-ai/glm-5.2:free": {
+    reasoning: false,
+    api: "openai-completions",
+    baseUrl: "https://openrouter.ai/api/v1",
+  },
+  "openrouter/poolside/laguna-s-2.1:free": {
+    reasoning: false,
+    api: "openai-completions",
+    baseUrl: "https://openrouter.ai/api/v1",
+  },
+  "openrouter/minimax/minimax-m3:free": {
+    reasoning: false,
+    api: "openai-completions",
+    baseUrl: "https://openrouter.ai/api/v1",
+  },
+  "openrouter/thinkingmachines/inkling-small:free": {
+    reasoning: false,
+    api: "openai-completions",
+    baseUrl: "https://openrouter.ai/api/v1",
+  },
 };
 
-function fakeRegistry(configured: Record<string, boolean>, catalog: Record<string, { reasoning: boolean }> = CATALOG) {
+function fakeRegistry(configured: Record<string, boolean>, catalog: Record<string, FakeCatalogModel> = CATALOG) {
   return {
-    find: (provider: string, modelId: string): { reasoning: boolean } | undefined =>
-      catalog[`${provider}/${modelId}`],
+    find: (provider: string, modelId: string): (FakeCatalogModel & { provider: string; id: string }) | undefined => {
+      const entry = catalog[`${provider}/${modelId}`];
+      return entry === undefined ? undefined : { ...entry, provider, id: modelId };
+    },
     getProviderAuthStatus: (provider: string): { configured: boolean } => ({
       configured: configured[provider] ?? false,
     }),
@@ -77,7 +111,7 @@ interface WiredHarness {
 function makeWired(options: {
   env?: Record<string, string | undefined>;
   configured?: Record<string, boolean>;
-  catalog?: Record<string, { reasoning: boolean }>;
+  catalog?: Record<string, FakeCatalogModel>;
   primary?: { provider: string; id: string };
 } = {}): WiredHarness {
   const pi = createFakePi();
@@ -121,13 +155,51 @@ function fallbackNotices(pi: FakePi) {
   return pi.sent.filter((entry) => entry.message.customType === ROUTER_FALLBACK_CUSTOM_TYPE);
 }
 
+/** Full models `fakeRegistry.find()` hands back for the pinned-chain heads — what
+ *  `setModel` should now receive, never the bare `{provider,id}` it used to get.
+ *  Derived from the fixture itself (never hand-copied) so editing `CATALOG` can't
+ *  drift these out of sync with what the registry actually returns. */
+const GROQ_MODEL = fakeRegistry({}).find("groq", "llama-3.3-70b-versatile")!;
+const GEMINI_MODEL = fakeRegistry({}).find("google", "gemini-3.1-flash-lite")!;
+
+// ------------------------------------------------------------------ setModel payload completeness
+
+describe("setModel receives the full catalog model, never a bare {provider,id} stub", () => {
+  test("the switch target passed to setModel carries the registry's api field", async () => {
+    const h = makeWired();
+    await fire(h.pi, "agent_end", billingEnd(), h.ctx);
+    expect(h.setModelCalls[0]).toMatchObject({
+      provider: "groq",
+      id: "llama-3.3-70b-versatile",
+      api: "openai-completions",
+      baseUrl: "https://api.groq.com/openai/v1",
+    });
+  });
+
+  test("the serving entry's provider/id win over a registry model that disagrees", async () => {
+    const h = makeWired();
+    const real = fakeRegistry({ groq: true, google: true, openrouter: false });
+    // A misbehaving/mismapped registry entry — the served (provider, id) pair, not
+    // whatever the raw model object itself claims, must land in setModel.
+    h.ctx.modelRegistry = {
+      ...real,
+      find: (provider: string, modelId: string) => {
+        const found = real.find(provider, modelId);
+        return found === undefined ? undefined : { ...found, provider: "wrong-provider", id: "wrong-id" };
+      },
+    };
+    await fire(h.pi, "agent_end", billingEnd(), h.ctx);
+    expect(h.setModelCalls[0]).toMatchObject({ provider: "groq", id: "llama-3.3-70b-versatile" });
+  });
+});
+
 // ------------------------------------------------------------------ I2′ story
 
 describe("I2′ story (real wiring): billing-on-primary → fallback serves → notice names provider", () => {
   test("first billing failure switches the anthropic primary to Groq and names it", async () => {
     const h = makeWired();
     await fire(h.pi, "agent_end", billingEnd(), h.ctx);
-    expect(h.setModelCalls).toEqual([{ provider: "groq", id: "llama-3.3-70b-versatile" }]);
+    expect(h.setModelCalls).toEqual([GROQ_MODEL]);
     const cards = fallbackNotices(h.pi);
     expect(cards).toHaveLength(1);
     expect(String(cards[0]!.message.content)).toMatch(/groq/i);
@@ -143,13 +215,10 @@ describe("I2′ story (real wiring): billing-on-primary → fallback serves → 
   test("second failure advances past the cooling head; expiry re-admits it (cooldown recovery)", async () => {
     const h = makeWired({ env: { [ROUTER_FALLBACK_MAX_SWITCHES_ENV]: "3" } });
     await fire(h.pi, "agent_end", billingEnd(), h.ctx);
-    expect(h.setModelCalls).toEqual([{ provider: "groq", id: "llama-3.3-70b-versatile" }]);
+    expect(h.setModelCalls).toEqual([GROQ_MODEL]);
     // Same episode: Groq is parked (60 s cooldown) → Gemini serves.
     await fire(h.pi, "agent_end", billingEnd(), h.ctx);
-    expect(h.setModelCalls).toEqual([
-      { provider: "groq", id: "llama-3.3-70b-versatile" },
-      { provider: "google", id: "gemini-3.1-flash-lite" },
-    ]);
+    expect(h.setModelCalls).toEqual([GROQ_MODEL, GEMINI_MODEL]);
     // Same episode, still inside both cooldowns → exhausted, notice-only.
     await fire(h.pi, "agent_end", billingEnd(), h.ctx);
     expect(h.setModelCalls).toHaveLength(2);
@@ -159,7 +228,7 @@ describe("I2′ story (real wiring): billing-on-primary → fallback serves → 
     h.pi.clock.advance(61_000);
     await fire(h.pi, "agent_end", billingEnd(), h.ctx);
     expect(h.setModelCalls).toHaveLength(3);
-    expect(h.setModelCalls[2]).toEqual({ provider: "groq", id: "llama-3.3-70b-versatile" });
+    expect(h.setModelCalls[2]).toEqual(GROQ_MODEL);
   });
 
   test("/fallback status post-switch names the serving provider and the failure kind", async () => {
@@ -186,9 +255,9 @@ describe("I2′ story (real wiring): billing-on-primary → fallback serves → 
   });
 
   test("a reasoning catalog entry yields the explicit setThinkingLevel passthrough", async () => {
-    const reasoningCatalog: Record<string, { reasoning: boolean }> = {
+    const reasoningCatalog: Record<string, FakeCatalogModel> = {
       ...CATALOG,
-      "google/gemini-3.1-flash-lite": { reasoning: true },
+      "google/gemini-3.1-flash-lite": { ...CATALOG["google/gemini-3.1-flash-lite"]!, reasoning: true },
     };
     const h = makeWired({
       env: { [ROUTER_FALLBACK_MAX_SWITCHES_ENV]: "2" },
@@ -196,7 +265,7 @@ describe("I2′ story (real wiring): billing-on-primary → fallback serves → 
     });
     await fire(h.pi, "agent_end", billingEnd(), h.ctx);
     await fire(h.pi, "agent_end", billingEnd(), h.ctx);
-    expect(h.setModelCalls[1]).toEqual({ provider: "google", id: "gemini-3.1-flash-lite" });
+    expect(h.setModelCalls[1]).toEqual({ ...GEMINI_MODEL, reasoning: true });
     expect(h.thinkingCalls).toEqual(["low"]);
   });
 });
