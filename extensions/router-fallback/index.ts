@@ -205,9 +205,12 @@ export interface FallbackSelectorSources {
   readonly headers: () => Record<string, string> | undefined;
 }
 
-/** Minimal structural view of the registry the wiring reads off `ctx.modelRegistry`. */
+/** Minimal structural view of the registry the wiring reads off `ctx.modelRegistry`.
+ *  `find` returns the FULL catalog model (`ModelRegistry.find(): Model<Api> | undefined`
+ *  in pi) — never narrowed here, so callers needing the whole shape (setModel) can have
+ *  it; `findIn` below narrows to `{reasoning}` only where the pure selector needs that. */
 interface RegistrySource {
-  find?: (provider: string, modelId: string) => { reasoning?: unknown } | undefined;
+  find?: (provider: string, modelId: string) => Record<string, unknown> | undefined;
   getProviderAuthStatus?: (provider: string) => { configured?: unknown } | undefined;
 }
 
@@ -226,6 +229,10 @@ function registrySourceOf(ctx: unknown): RegistrySource {
 export function createDefaultSelector(sources: FallbackSelectorSources): RouterFallbackSelector {
   const states = new Map<string, SelectorState>();
   const reasoningByTarget = new Map<string, boolean>();
+  // Full registry model per target (folds the fix for setModel needing api/baseUrl/etc,
+  // not just {provider,id} — see index.ts header + attemptSwitch). Same lifetime and
+  // key space as reasoningByTarget; never cleared since catalog entries are stable.
+  const fullModelByTarget = new Map<string, Record<string, unknown>>();
 
   const stateFor = (episode: string, init: () => SelectorState): SelectorState => {
     const existing = states.get(episode);
@@ -236,13 +243,22 @@ export function createDefaultSelector(sources: FallbackSelectorSources): RouterF
     return fresh;
   };
 
-  const findIn = (registry: RegistrySource) => (provider: string, modelId: string) => {
+  /** Raw registry lookup, degrading to `undefined` on any throw or miss. */
+  const findFullIn = (registry: RegistrySource) => (provider: string, modelId: string): Record<string, unknown> | undefined => {
     try {
-      const found = registry.find?.(provider, modelId);
-      return found === undefined || found === null ? undefined : { reasoning: found.reasoning === true };
+      return registry.find?.(provider, modelId) ?? undefined;
     } catch {
       return undefined;
     }
+  };
+
+  /** `findFullIn`, narrowed to the `{reasoning}` shape the pure selector core needs. */
+  const findIn = (registry: RegistrySource) => {
+    const raw = findFullIn(registry);
+    return (provider: string, modelId: string) => {
+      const found = raw(provider, modelId);
+      return found === undefined ? undefined : { reasoning: found.reasoning === true };
+    };
   };
 
   const authViewsOf = (registry: RegistrySource): Record<string, { configured: boolean }> => {
@@ -283,8 +299,12 @@ export function createDefaultSelector(sources: FallbackSelectorSources): RouterF
       const registry = registrySourceOf(ctx);
       const eligible = filterEligible(DEFAULT_PROVIDERS, sources.env, authViewsOf(registry));
       const targets = resolveSelectorTargets(eligible, { find: findIn(registry) }, scopedRefsOf(ctx));
+      const findFull = findFullIn(registry);
       for (const target of targets) {
-        reasoningByTarget.set(`${target.entry.piProvider}/${target.model}`, target.reasoning);
+        const key = `${target.entry.piProvider}/${target.model}`;
+        reasoningByTarget.set(key, target.reasoning);
+        const full = findFull(target.entry.piProvider, target.model);
+        if (full !== undefined) fullModelByTarget.set(key, full);
       }
       // Init-once per episode: a second decide in one switch (advance-on-false)
       // must see the SAME state, so an existing entry is never rebuilt here.
@@ -304,9 +324,29 @@ export function createDefaultSelector(sources: FallbackSelectorSources): RouterF
         return { none: true as const, reason: result.reason, retryAfterMs: result.retryAfterMs };
       }
       const served = result as { entry: FallbackProviderEntry; model: string };
+      // The FULL registry model (api/baseUrl/etc.) rides along here — never a bare
+      // {provider,id} stub, which is all pi.setModel gets otherwise (agent-session.js
+      // stores whatever is passed as `session.model` with no registry re-lookup, so a
+      // stub silently corrupts session.model until the next switch, breaking every
+      // later call needing model.api — the exact bug this seam exists to not repeat).
+      // Every `state.targets` entry `decideSelectorTarget` can serve was produced by
+      // the SAME `resolveTargets` pass that populated this map for that identical key
+      // set (`fallback-providers.ts` `resolveTargets`/`safeFind` — only successful
+      // lookups become targets at all), so a miss here would mean the two disagree —
+      // hold rather than actuate a model this seam cannot vouch for.
+      const fullModel = fullModelByTarget.get(`${served.entry.piProvider}/${served.model}`);
+      if (fullModel === undefined) {
+        return {
+          none: true as const,
+          reason: `router-fallback: ${served.entry.piProvider}/${served.model} was selected but is no longer in the registry (stale?)`,
+        };
+      }
+      // provider/id are forced from the serving entry (the source of truth for WHICH
+      // target was chosen) in case the registry's own fields ever disagree.
+      const model = { ...fullModel, provider: served.entry.piProvider, id: served.model } as RouterFallbackModelRef;
       return {
         entry: { id: served.entry.id, label: served.entry.label, model: served.model },
-        model: { provider: served.entry.piProvider, id: served.model },
+        model,
       };
     },
     getServingProvider: () => {
