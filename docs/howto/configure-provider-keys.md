@@ -34,7 +34,7 @@ The free tier is generous and needs no card for basic use. If Groq asks for bill
 
 1. Open `aistudio.google.com` and sign in with a Google account.
 2. Click Get API Key, then Create API key. Copy it once.
-3. If Google offers a Cloud project prompt, accept the default. You do not need Vertex or `gcloud` for this path. The plain AI Studio key is what pi expects as `GEMINI_API_KEY`.
+3. If Google offers a Cloud project prompt, accept the default. You do not need Vertex or `gcloud` for this path. The plain AI Studio key is what pi expects as `GEMINI_API_KEY`. (If you prefer to use Google Cloud Vertex AI with Application Default Credentials instead of an AI Studio key, see [Google Vertex AI with ADC](configure-google-vertex.md).)
 
 ### OpenRouter (verify what you have)
 
@@ -129,6 +129,7 @@ Fallback never fires at all. Check the two kill-switches first (`PI_BADGER_ROUTE
 
 - Groq console (`console.groq.com`) for `GROQ_API_KEY`
 - Google AI Studio (`aistudio.google.com`) for `GEMINI_API_KEY`
+- Google Vertex AI guide (`configure-google-vertex.md`) for ADC configuration without static keys
 - OpenRouter keys (`openrouter.ai/keys`) for `OPENROUTER_API_KEY`
 - Pi provider docs in the installed package (`docs/providers.md` under `@earendil-works/pi-coding-agent`) for the full variable table and `auth.json` format
 - Repo README section on the router-fallback extension for chain order, budgets, and `/fallback` command details
