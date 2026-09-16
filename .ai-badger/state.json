@@ -1,7 +1,18 @@
 {
-  "lastUpdated": "2026-09-09T23:10:00Z",
+  "lastUpdated": "2026-09-16T21:15:00Z",
   "next": null,
   "completedTasks": [
+    {
+      "taskId": "pbi-google-vertex-adc-support",
+      "title": "Enable Google Vertex API support with ADC in Pi",
+      "finishedAt": "2026-09-16T21:15:00Z",
+      "summary": "Enabled native Google Vertex API support with Application Default Credentials (ADC) in Pi, mirroring Hermes Agent patterns. Configured ~/.pi/agent/auth.json with google-vertex provider (env GOOGLE_CLOUD_PROJECT='job-search-ai-assistant-503814', GOOGLE_CLOUD_LOCATION='global', key omitted for ADC resolution). Configured ~/.pi/agent/models.json with Hermes-style model aliases (google/gemini-3.8-flash, google/gemini-2.5-flash, etc.) eliminating custom-model warnings. Added persistent exports to ~/.zshrc. Verified end-to-end live generation on gemini-2.5-flash and gemini-3.8-flash with real tool execution. Authored docs/howto/configure-google-vertex.md and updated configure-provider-keys.md. PR #24 squash-merged.",
+      "decisions": [
+        "In ~/.pi/agent/auth.json, omitting the 'key' property allows pi-ai google-vertex resolve to forward credential.env to the client; setting a dummy key incorrectly short-circuits env forwarding",
+        "Configuring Hermes-style prefixed model IDs in models.json allows users to use both bare (gemini-3.8-flash) and prefixed (google/gemini-3.8-flash) IDs cleanly without warnings",
+        "Set GOOGLE_CLOUD_LOCATION='global' as recommended for Gemini 3.x preview models"
+      ]
+    },
     {
       "taskId": "pbi-bus-identity-whoami-prose-guard",
       "title": "Bus identity: full-id whoami pull, session env sync, prose-beats-wire mandates",
