@@ -167,12 +167,11 @@ function setup(
 		setActiveToolsCalls.push([...names]);
 		toolState.active = [...names];
 	};
-	const defaultSetModel = async (model: unknown): Promise<boolean> => {
-		setModelCalls.push([model]);
-		const ref = model as { provider?: unknown; id?: unknown };
-		if (typeof ref.provider === "string" && typeof ref.id === "string") {
-			modelState.current = { provider: ref.provider, id: ref.id };
-		}
+	const defaultSetModel = async (...args: unknown[]): Promise<boolean> => {
+		// Records every received arg: the D6 one-positional-arg gate inspects
+		// the call shape, so extras must survive the double (a fixed (model)
+		// parameter would silently drop them and the gate would prove nothing).
+		setModelCalls.push(args);
 		return true;
 	};
 
@@ -215,7 +214,12 @@ function setup(
 		setThinkingCalls,
 		notifies,
 		skills,
-		nowMs,
+		get nowMs() {
+			return nowMs;
+		},
+		set nowMs(value: number) {
+			nowMs = value;
+		},
 		fireTurn: async (prompt, opts) => {
 			const event = {
 				type: "before_agent_start",
@@ -252,12 +256,13 @@ describe("D1 — one fetch per enabled DISTINCT turn, tools→model→routing or
 		expect(h.fetchCount()).toBe(2);
 		const body = JSON.parse(h.fetchCalls[0]!.init.body) as { questions: Record<string, unknown> };
 		expect(Object.keys(body.questions).sort()).toEqual(["needs_subagent", "skill", "tier", "tools"]);
-		// Apply order tools→model→routing: tools actuated, model upgraded, ring logged.
+		// Apply order tools→model→routing: tools actuated once (second turn hits
+		// already-enabled), model upgraded per turn, ring logged.
 		expect(h.setActiveToolsCalls).toEqual([["bash", "read"]]);
-		expect(h.setModelCalls).toHaveLength(1);
+		expect(h.setModelCalls).toHaveLength(2);
 		expect(h.setModelCalls[0]).toHaveLength(1);
 		expect(h.setModelCalls[0]![0]).toEqual({ provider: "test", id: "tier-high-model" });
-		expect(h.setThinkingCalls).toEqual(["high"]);
+		expect(h.setThinkingCalls).toEqual(["high", "high"]);
 		const shadow = await h.runCmd("shadow");
 		expect(shadow.join("\n")).toContain("review");
 	});
@@ -329,7 +334,7 @@ describe("D6 — setModelFn called exactly once with ONE positional arg; persist
 		expect(h.setModelCalls[0]).toHaveLength(1);
 		const target = h.setModelCalls[0]![0] as Record<string, unknown>;
 		expect(target).toEqual({ provider: "test", id: "tier-high-model" });
-		expect(target).not.toContain("persist");
+		expect(Object.keys(target).sort()).toEqual(["id", "provider"]);
 		expect(h.setThinkingCalls).toEqual(["high"]);
 		expect(h.pi.entries).toHaveLength(0);
 		expect(h.pi.sent).toHaveLength(0);
@@ -338,6 +343,7 @@ describe("D6 — setModelFn called exactly once with ONE positional arg; persist
 	test("already-on-target holds: setModelFn and setThinkingLevelFn uncalled, fetch proves the turn ran", async () => {
 		const h = setup();
 		h.modelState.current = { provider: "test", id: "tier-high-model" };
+		h.toolState.active = ["bash", "read"]; // subset [bash] already enabled: tools hold too
 		const before = h.snapshot();
 		await h.fireTurn("Fix the failing build in the deploy pipeline");
 		expect(h.fetchCount()).toBe(1);
@@ -453,8 +459,8 @@ describe("D21 — mixed fan-out step-independence, both directions", () => {
 	test("a throwing setModelFn never blocks the tools step or the routing log", async () => {
 		const modelCalls: unknown[][] = [];
 		const failing = setup(() => ({ status: 200, text: fullActuationBody() }), {
-			setModelFn: async (model) => {
-				modelCalls.push([model]);
+			setModelFn: async (...args: unknown[]) => {
+				modelCalls.push(args);
 				throw new Error("boom: model mutation failed");
 			},
 		});
@@ -581,8 +587,12 @@ describe("D15 — reset clears session state; unknown answers usage; completions
 		const cmd = h.pi.commands.get(DECISIONS_COMMAND) as {
 			getArgumentCompletions: (prefix: string) => Array<{ value: string }> | null;
 		};
-		expect(cmd.getArgumentCompletions("").map((item) => item.value).sort()).toEqual([...DECISIONS_SUBCOMMANDS].sort());
-		expect(cmd.getArgumentCompletions("st").map((item) => item.value)).toEqual(["status"]);
+		const all = cmd.getArgumentCompletions("");
+		if (all === null) throw new Error("expected completions for empty prefix");
+		expect(all.map((item) => item.value).sort()).toEqual([...DECISIONS_SUBCOMMANDS].sort());
+		const st = cmd.getArgumentCompletions("st");
+		if (st === null) throw new Error("expected completions for st");
+		expect(st.map((item) => item.value)).toEqual(["status"]);
 		expect(cmd.getArgumentCompletions("zzz")).toBeNull();
 	});
 });
@@ -897,8 +907,8 @@ function setupDeferred(onWait: (resolve: (spec: { status: number; text: string }
 			setActiveToolsCalls.push([...names]);
 			toolState.active = [...names];
 		},
-		setModelFn: async (model) => {
-			setModelCalls.push([model]);
+		setModelFn: async (...args: unknown[]) => {
+			setModelCalls.push(args);
 			return true;
 		},
 		setThinkingLevelFn: (level) => {
@@ -928,9 +938,11 @@ function setupDeferred(onWait: (resolve: (spec: { status: number; text: string }
 		skills: [...DEFAULT_SKILLS],
 		nowMs,
 		fireTurn: (prompt) =>
-			handler(
-				{ type: "before_agent_start", prompt, systemPrompt: "", systemPromptOptions: { skills: [...DEFAULT_SKILLS] } },
-				ctxOf(),
+			Promise.resolve(
+				handler(
+					{ type: "before_agent_start", prompt, systemPrompt: "", systemPromptOptions: { skills: [...DEFAULT_SKILLS] } },
+					ctxOf(),
+				),
 			),
 		runCmd: async (args) => {
 			const cmd = pi.commands.get(DECISIONS_COMMAND) as {
