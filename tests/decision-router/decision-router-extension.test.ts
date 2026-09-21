@@ -575,6 +575,27 @@ describe("B3 (qa-F3) — cache LRU cap and recency", () => {
 	});
 });
 
+// ------------------------------------------------------------------ B4 skill filter
+
+describe("B4 (qa-F4) — disableModelInvocation skills are excluded from routing options", () => {
+	test("both the turn event and the check command filter out model-invocation-disabled skills", async () => {
+		const h = setup();
+		h.skills.push({ name: "hidden-skill", description: "Never model-invoked", disableModelInvocation: true });
+		await h.fireTurn("Fix the failing build in the deploy pipeline");
+		const turnBody = JSON.parse(h.fetchCalls[0]!.init.body) as {
+			questions: { skill: { criteria: Record<string, string> } };
+		};
+		expect(Object.keys(turnBody.questions.skill.criteria)).toContain("review");
+		expect(Object.keys(turnBody.questions.skill.criteria)).not.toContain("hidden-skill");
+		await h.runCmd("check Fix the failing build in the deploy pipeline");
+		const checkBody = JSON.parse(h.fetchCalls[1]!.init.body) as {
+			questions: { skill: { criteria: Record<string, string> } };
+		};
+		expect(Object.keys(checkBody.questions.skill.criteria)).toContain("review");
+		expect(Object.keys(checkBody.questions.skill.criteria)).not.toContain("hidden-skill");
+	});
+});
+
 // ------------------------------------------------------------------ D23 timeout twin
 
 describe("D23 — timeout twin: fallback ran, session untouched", () => {
