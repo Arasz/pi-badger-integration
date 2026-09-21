@@ -652,6 +652,24 @@ describe("B9 (qa-F9) — error-path /decisions status summaries", () => {
 	});
 });
 
+// ------------------------------------------------------------------ B11 ring cap
+
+describe("B11 (qa-F12) — the 20-record ring evicts the oldest", () => {
+	test("a 21st record drops the first", async () => {
+		const h = setup();
+		await h.fireTurn("Fix the failing build number 1 in the deploy pipeline");
+		const firstHash = /hash=([0-9a-f]+)/.exec((await h.runCmd("shadow")).join("\n"))?.[1];
+		expect(firstHash).toBeDefined();
+		for (let i = 2; i <= 21; i++) {
+			await h.fireTurn(`Fix the failing build number ${i} in the deploy pipeline`);
+		}
+		const shadow = (await h.runCmd("shadow")).join("\n");
+		const lines = shadow.split("\n").filter((line) => line.startsWith("shadow "));
+		expect(lines).toHaveLength(20);
+		expect(shadow).not.toContain(`hash=${firstHash}`);
+	});
+});
+
 // ------------------------------------------------------------------ D23 timeout twin
 
 describe("D23 — timeout twin: fallback ran, session untouched", () => {
