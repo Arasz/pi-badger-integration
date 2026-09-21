@@ -1,6 +1,10 @@
-I have what I need. Here is the verification and risk plan.
-
 # Verification & risk plan — DeepSeek V4.1 Flash as the medium+high delegation default
+
+> **Superseded in part (2026-09-21):** the framework released `0.172.0` for this rotation, then `0.172.1`
+> (registry evidence erratum, PR #493). The pbi refresh therefore shipped `frameworkVersion 0.172.1`
+> (PR #28). Probes below that assert `0.172.0` (A5, B4, B6, the PKG-I pass condition) were executed
+> against `0.172.1` — assert `frameworkVersion == <framework VERSION>` (or the live registry stamp) rather
+> than the literal `0.172.0`.
 
 Legend: **VERIFIED** = read/executed in this session against the worktrees named in the task; **HYPOTHESIS** = not yet executed. Baselines measured today: framework worktree `4ed2e34b` (VERSION 0.171.0), pbi worktree `26d953a` (VERSION 1.1.11), both clean. All paths below are under those two worktrees unless absolute.
 

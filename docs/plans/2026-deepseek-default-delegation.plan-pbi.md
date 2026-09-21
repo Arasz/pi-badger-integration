@@ -90,6 +90,10 @@ Test prose naming the old provenance (no assertion; update for truthfulness in t
 
 This is the activation step; the frozen edit alone changes nothing in this repo (project registry wins: research F3, `extensions/subagent/index.ts:123-158`, VERIFIED).
 
+> **Superseded in part (2026-09-21):** the refresh below shipped against framework `0.172.1` (the
+> `0.172.0` release plus the evidence/registryVersion erratum, PR #493); read its literal `0.172.0`
+> preconditions as `== <framework VERSION>`.
+
 **Precondition gate (run before touching the repo — currently FAILS, VERIFIED):**
 ```bash
 export AI_BADGER=~/RiderProjects/ai-badger          # env is unset today (VERIFIED)
