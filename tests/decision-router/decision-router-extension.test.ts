@@ -596,6 +596,18 @@ describe("B4 (qa-F4) — disableModelInvocation skills are excluded from routing
 	});
 });
 
+// ------------------------------------------------------------------ B6 error-path ring
+
+describe("B6 (qa-F6) — a failed turn records the fallback ring entry (D8)", () => {
+	test("after a failed turn /decisions shadow shows the observe-only record", async () => {
+		const h = setup(() => ({ status: 500, text: "boom" }));
+		await h.fireTurn("Fix the failing build in the deploy pipeline");
+		const shadow = (await h.runCmd("shadow")).join("\n");
+		expect(shadow).toContain("shadow 1: skill=none conf=0");
+		expect(shadow).not.toContain("no records");
+	});
+});
+
 // ------------------------------------------------------------------ D23 timeout twin
 
 describe("D23 — timeout twin: fallback ran, session untouched", () => {
