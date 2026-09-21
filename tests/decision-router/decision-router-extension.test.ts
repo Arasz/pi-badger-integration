@@ -636,6 +636,19 @@ describe("B8 (qa-F8) — lastError truncates a long classifier detail", () => {
 	});
 });
 
+// ------------------------------------------------------------------ B9 error status
+
+describe("B9 (qa-F9) — error-path /decisions status summaries", () => {
+	test("a failed turn reports hold (auth) for tools and model and record none (fallback)", async () => {
+		const h = setup(() => ({ status: 401, text: '{"error":{"code":401}}' }));
+		await h.fireTurn("Fix the failing build in the deploy pipeline");
+		const status = await h.status();
+		expect(status).toContain("last tools: hold (auth)");
+		expect(status).toContain("last model: hold (auth)");
+		expect(status).toContain("last routing: record none (fallback)");
+	});
+});
+
 // ------------------------------------------------------------------ D23 timeout twin
 
 describe("D23 — timeout twin: fallback ran, session untouched", () => {
