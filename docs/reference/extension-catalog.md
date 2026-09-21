@@ -302,3 +302,60 @@ the adapter closes over the bare name at registration time and a custom
 ai-raccoon tools plus `mcp_list_servers`; unknown names get the fallback.
 `execute`/`content`/`details` are byte-identical — rendering never touches
 the tool result, only how it displays.
+
+## The decision-router extension: one Jev call per turn for tools, tier and shadow routing
+
+An enabled turn gets one pre-flight decision call before the agent loop: a
+single `POST` to the TypeSafe Jev 1.13 decisions endpoint carrying the task and
+up to three questions — which tools the task needs, which model tier is
+sufficient, and which skill should handle it (plus a `needs_subagent` noul
+companion). The three answers ride one body; only enabled capabilities are
+asked, and the tools question is dropped (hold, no priced work) when the
+catalogue is empty or cannot fit the 8 KB state budget. Every turn is gated
+first — kill switches, session override, missing key, an armed `429` cooldown,
+slash-prefixed prompts, marker-prefixed prompts once the predicate is wired
+(provisional, plan F18 — the shipped default never marks), fewer than 12
+non-whitespace characters, an in-flight call, and the session cache all skip
+without a request. The cache is an LRU of 50 keyed by prompt hash + catalogue hash +
+model id with no TTL; a catalogue change, a foreign `model_select`, a
+`router-fallback` switch, `/decisions reset` or shutdown invalidates it.
+
+Policy is deliberately asymmetric. Tool selection is **additive**: the winner
+must be a live catalogue entry, confidence must clear 0.7, and the applied set
+is the active set plus every catalogue entry at probability ≥ 0.2 — an unknown
+winner rejects the whole question and tools are never removed. The tier
+question upgrades only on `high` ≥ 0.6 and demotes only on `low` ≥ 0.85 (the
+measured medium answer holds), targets come from
+`PI_BADGER_JEV_TIER_LOW_MODEL`/`_MEDIUM_MODEL`/`_HIGH_MODEL`, and while a
+router-fallback switch latch is armed upgrades hold. Routing is
+**shadow-only, with no enforce path at all**: the record
+`{question, choice, confidence, promptHash}` goes to a 20-entry ring that
+`/decisions shadow` prints, and actuation does not exist in the action type.
+The model step is session-only — `setModel` takes a single positional full
+registry model resolved from the configured `provider/model-id` target through
+`ctx.modelRegistry.find`, thinking level follows the landed model — and a
+larger async `before_agent_start` can never change `systemPromptOptions`, so
+the tool set is moved through `setActiveTools` alone.
+
+Failure posture: the alpha endpoint sits behind an injected classifier seam,
+and every transport/status/parse failure degrades to a deterministic
+observe-only fallback (bounded word-part tool match, tier hold, route none)
+while the tool set and model stay untouched; a missing or empty
+`OPENROUTER_API_KEY` is a silent no-op with no request. `429` arms the
+`Retry-After` cooldown clamped 60 s–1 h. The frozen error vocabulary
+(`misrouted-refusal`, `auth`, `billing`, `rate-limited`, `server`,
+`transport-timeout`, `malformed`, `missing-key`) and a 120-char `lastError` cap
+are the only error text that surfaces; the key, headers, bodies and prompt
+text never reach a log or the ring (hashes only). Kill switches are read per
+call and only the literal `"0"` disables: `PI_BADGER_DECISION_ROUTER` (master)
+and `PI_BADGER_DECISION_ROUTER_TOOLS`/`_MODEL`/`_ROUTING` (per capability),
+with per-capability kills winning over the master, which wins over the
+`/decisions off` session override — `/decisions on` never lifts an env kill.
+
+Probe note: the in-hook `setModel`/`setActiveTools` semantics are source-
+verified against the pinned pi 0.84.4 (hook-probe evidence recorded in the
+ADR and the script at `tests/decision-router/probe/hook-probe.md`) but the
+probe is **not run in-pipeline** — spawning `pi` is blocked by the
+delegation-skip guard. If a live run ever shows `setModel` declining inside the
+hook, the documented fallback is the thinking-level-only path; the wiring
+already isolates that step from tools and routing.

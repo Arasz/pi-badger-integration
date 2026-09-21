@@ -1,0 +1,8 @@
+{
+  "name": "ai-badger-decision-router",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pre-flight Jev decision call per enabled turn: additive tool selection, asymmetric model-tier choice and shadow-only skill routing, all fail-open. pi discovers the entry as ~/.pi/agent/extensions/decision-router/index.ts; this manifest records metadata only and does not register the entry.",
+  "main": "index.ts"
+}
