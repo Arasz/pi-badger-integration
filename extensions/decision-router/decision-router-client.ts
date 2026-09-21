@@ -354,10 +354,19 @@ function parseAnswer(name: string, entry: unknown, question: JevQuestionSpec): A
 			detail: `answer "${name}" winner is outside the live catalogue`,
 		};
 	}
+	const winnerOnly = (): AnswerParse => ({
+		status: "ok",
+		answer: { type: "choice", choice, probabilities: { [choice]: 1 }, confidence: 0 },
+	});
 	const probabilities = record["probabilities"];
 	if (typeof probabilities !== "object" || probabilities === null || Array.isArray(probabilities)) {
-		return { status: "ok", answer: { type: "choice", choice, probabilities: { [choice]: 1 }, confidence: 0 } };
+		return winnerOnly();
 	}
+	// Fail-closed (R12): a distribution that does not carry a finite entry for
+	// the declared winner is inconsistent — degrade exactly like missing
+	// probabilities so no consumer can actuate a non-winner.
+	const rawWinner = (probabilities as Record<string, unknown>)[choice];
+	if (typeof rawWinner !== "number" || !Number.isFinite(rawWinner)) return winnerOnly();
 	const clean: Record<string, number> = {};
 	for (const [option, value] of Object.entries(probabilities as Record<string, unknown>)) {
 		clean[option] = clampProbability(value);

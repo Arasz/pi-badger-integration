@@ -323,6 +323,49 @@ describe("B12 — missing probabilities degrade to winner-only with confidence 0
 	});
 });
 
+describe("A2 (code-S1) — an inconsistent probability map degrades to winner-only (fail-closed)", () => {
+	test("a winner absent from probabilities never actuates a non-winner", () => {
+		const body = JSON.stringify({
+			model: "m",
+			answers: {
+				department: { type: "choice", choice: "billing", probabilities: { sales: 0.9 }, confidence: 0.99 },
+			},
+			id: "i",
+			provider: "p",
+		});
+		const parsed = parseJevResponseBody(body, DEPT_SPEC);
+		expect(parsed.status).toBe("ok");
+		if (parsed.status !== "ok") throw new Error("expected ok");
+		expect(parsed.answers["department"]).toEqual({
+			status: "ok",
+			answer: { type: "choice", choice: "billing", probabilities: { billing: 1 }, confidence: 0 },
+		});
+	});
+
+	test("a winner whose entry is not a finite number degrades the same way", () => {
+		const body = JSON.stringify({
+			model: "m",
+			answers: {
+				department: {
+					type: "choice",
+					choice: "billing",
+					probabilities: { billing: "0.99", sales: 0.01 },
+					confidence: 0.99,
+				},
+			},
+			id: "i",
+			provider: "p",
+		});
+		const parsed = parseJevResponseBody(body, DEPT_SPEC);
+		expect(parsed.status).toBe("ok");
+		if (parsed.status !== "ok") throw new Error("expected ok");
+		expect(parsed.answers["department"]).toEqual({
+			status: "ok",
+			answer: { type: "choice", choice: "billing", probabilities: { billing: 1 }, confidence: 0 },
+		});
+	});
+});
+
 // --------------------------------------------------------------- body-level rejects
 
 describe("truncated JSON and error envelopes reject at the body level, never throw", () => {
