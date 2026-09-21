@@ -27,6 +27,7 @@ import createDecisionRouter, {
 	DECISIONS_SUBCOMMANDS,
 	DECISIONS_USAGE,
 	TIER_HIGH_MODEL_ENV,
+	TIER_LOW_MODEL_ENV,
 	type DecisionRouterDeps,
 } from "../../extensions/decision-router/index.ts";
 import { ROUTER_FALLBACK_CHANNEL } from "../../extensions/router-fallback/index.ts";
@@ -547,6 +548,23 @@ describe("B2 (qa-F2) — live env overrides drive URL, body model and tier targe
 		expect(body.model).toBe("custom/jev-model-x");
 		expect(h.setModelCalls).toHaveLength(1);
 		expect(h.setModelCalls[0]![0]).toMatchObject({ provider: "env", id: "tier-high-override" });
+	});
+
+	test("TIER_LOW_MODEL env drives the demote target end-to-end", async () => {
+		const h = setup(() =>
+			({
+				status: 200,
+				text: jevBody({
+					tier: choiceAnswer("low", { low: 0.9, medium: 0.1, high: 0 }, 0.9),
+				}),
+			}),
+		);
+		h.modelState.current = { provider: "test", id: "tier-high-model" };
+		h.registry.set("env/tier-low-override", fullModel("env", "tier-low-override"));
+		h.env[TIER_LOW_MODEL_ENV] = "env/tier-low-override";
+		await h.fireTurn("Rename the cooldownMs variable across the codebase");
+		expect(h.setModelCalls).toHaveLength(1);
+		expect(h.setModelCalls[0]![0]).toMatchObject({ provider: "env", id: "tier-low-override" });
 	});
 });
 
