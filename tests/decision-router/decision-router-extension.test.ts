@@ -474,6 +474,27 @@ describe("A5 (code-N2) — the extension's own model_select during the await doe
 	});
 });
 
+// ------------------------------------------------------------------ A6 stale status
+
+describe("A6 (code-N4) — a tools-only decided turn clears the previous error/fallback", () => {
+	test("after an error turn, a tools-only hold reports no stale lastError or fallback", async () => {
+		const h = setup(() => ({ status: 500, text: "boom" }));
+		await h.fireTurn("Fix the failing build in the deploy pipeline");
+		let status = await h.status();
+		expect(status).toContain("lastError: server");
+		expect(status).toContain("fallback: ");
+		// Next turn decides tools-only: catalogue empty + model/routing killed.
+		h.env["PI_BADGER_DECISION_ROUTER_MODEL"] = "0";
+		h.env["PI_BADGER_DECISION_ROUTER_ROUTING"] = "0";
+		h.toolState.all = [];
+		await h.fireTurn("Refactor the auth module to use the new session store");
+		status = await h.status();
+		expect(status).toContain("last turn: decided");
+		expect(status).toContain("lastError: none");
+		expect(status).not.toContain("fallback: ");
+	});
+});
+
 // ------------------------------------------------------------------ D23 timeout twin
 
 describe("D23 — timeout twin: fallback ran, session untouched", () => {

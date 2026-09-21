@@ -403,6 +403,9 @@ export default function (pi: ExtensionAPI, deps: DecisionRouterDeps = {}) {
 				routing: "record none (capability-killed)",
 			};
 			lastTurn = "decided";
+			// N4: a decided turn reports its own state, never the previous turn's error/fallback.
+			lastError = undefined;
+			lastFallback = undefined;
 			failedSinceLatch = false;
 			return;
 		}
