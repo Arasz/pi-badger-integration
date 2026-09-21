@@ -446,6 +446,34 @@ describe("A3 (code-S2) — a failed getActiveTools read holds the tool step, nev
 	});
 });
 
+// ------------------------------------------------------------------ A5 own model_select
+
+describe("A5 (code-N2) — the extension's own model_select during the await does not invalidate", () => {
+	test("a model_select emitted while setModel is pending does not evict an earlier cached turn", async () => {
+		let h!: Harness;
+		h = setup(() => ({ status: 200, text: fullActuationBody() }), {
+			setModelFn: async (model: unknown) => {
+				// pi emits model_select{source:"set"} before setModel resolves.
+				for (const handler of h.pi.handlers.get("model_select") ?? []) {
+					await handler({ type: "model_select", model, previousModel: undefined, source: "set" }, {});
+				}
+				return true;
+			},
+		});
+		const firstPrompt = "Fix the failing build in the deploy pipeline";
+		await h.fireTurn(firstPrompt);
+		expect(h.fetchCount()).toBe(1);
+		// A different target than the previous switch, so the stale applied id
+		// cannot mask the pending one.
+		h.env[TIER_HIGH_MODEL_ENV] = "test/tier-medium-model";
+		await h.fireTurn("Refactor the auth module to use the new session store");
+		expect(h.fetchCount()).toBe(2);
+		// The second turn's own switch must not have wiped the first turn's entry.
+		await h.fireTurn(firstPrompt);
+		expect(h.fetchCount()).toBe(2);
+	});
+});
+
 // ------------------------------------------------------------------ D23 timeout twin
 
 describe("D23 — timeout twin: fallback ran, session untouched", () => {

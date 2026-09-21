@@ -225,6 +225,7 @@ export default function (pi: ExtensionAPI, deps: DecisionRouterDeps = {}) {
 	let upgradesLatched = false;
 	let failedSinceLatch = false;
 	let lastAppliedTarget: string | undefined;
+	let pendingTarget: string | undefined;
 	let lastTurn = "none yet";
 	let lastDecision: { tools: string; model: string; routing: string } | undefined;
 	let lastError: string | undefined;
@@ -246,6 +247,7 @@ export default function (pi: ExtensionAPI, deps: DecisionRouterDeps = {}) {
 		upgradesLatched = false;
 		failedSinceLatch = false;
 		lastAppliedTarget = undefined;
+		pendingTarget = undefined;
 		lastTurn = "none yet";
 		lastDecision = undefined;
 		lastError = undefined;
@@ -486,7 +488,16 @@ export default function (pi: ExtensionAPI, deps: DecisionRouterDeps = {}) {
 						// provider/id forced from the configured target; the registry
 						// supplies api/baseUrl/reasoning/… for the full model object.
 						const target = { ...full, provider: parsed.provider, id: parsed.id };
-						const ok = await setModel(target);
+						// N2: pi emits model_select before setModel resolves; the pending id
+						// keeps that own switch from being treated as foreign and clearing
+						// the cache mid-turn.
+						pendingTarget = tierAction.targetModel;
+						let ok = false;
+						try {
+							ok = await setModel(target);
+						} finally {
+							pendingTarget = undefined;
+						}
 						if (ok) {
 							lastAppliedTarget = tierAction.targetModel;
 							try {
@@ -544,7 +555,8 @@ export default function (pi: ExtensionAPI, deps: DecisionRouterDeps = {}) {
 	pi.on("model_select", (event) => {
 		try {
 			const select = event as { model?: unknown };
-			if (modelIdOf(select.model) !== lastAppliedTarget) clearCache();
+			const id = modelIdOf(select.model);
+			if (id !== lastAppliedTarget && id !== pendingTarget) clearCache();
 		} catch {
 			// Invalidation is advisory — a bad event never breaks the turn.
 		}
