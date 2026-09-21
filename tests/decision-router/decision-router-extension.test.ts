@@ -319,6 +319,7 @@ describe("D2/D3/D5 — no-op paths never fetch, never mutate, snapshot-identical
 		expect(h.setModelCalls).toHaveLength(0);
 		expect(h.setThinkingCalls).toHaveLength(0);
 		expect(h.snapshot()).toEqual(before);
+		expect((await h.status()).split("\n").find((line) => line.startsWith("last turn:"))).toContain("skip (missing-key)");
 	});
 
 	test("D3 master kill: zero fetch, spies uncalled, snapshot identical", async () => {
@@ -330,6 +331,7 @@ describe("D2/D3/D5 — no-op paths never fetch, never mutate, snapshot-identical
 		expect(h.setActiveToolsCalls).toHaveLength(0);
 		expect(h.setModelCalls).toHaveLength(0);
 		expect(h.snapshot()).toEqual(before);
+		expect((await h.status()).split("\n").find((line) => line.startsWith("last turn:"))).toContain("skip (master-kill)");
 	});
 
 	test("D3b all three per-cap kills skip the turn outright", async () => {
@@ -350,6 +352,7 @@ describe("D2/D3/D5 — no-op paths never fetch, never mutate, snapshot-identical
 		expect(h.setActiveToolsCalls).toHaveLength(0);
 		expect(h.setModelCalls).toHaveLength(0);
 		expect(h.snapshot()).toEqual(before);
+		expect((await h.status()).split("\n").find((line) => line.startsWith("last turn:"))).toContain("skip (short-prompt)");
 	});
 
 	test("slash-prefixed prompt skips without priced work", async () => {
