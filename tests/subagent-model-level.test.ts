@@ -119,10 +119,11 @@ describe("5a loadModelGroups — absence rule (T-MISS halves)", () => {
 });
 
 describe("5a FROZEN_MODEL_GROUPS — degrade-on-stale pins", () => {
-  test("frozen carries the PKG-1 preferred pins (source: tiers/pkg1-registry canonical)", () => {
+  test("frozen carries the ai-badger canonical preferred pins", () => {
+    expect(FROZEN_MODEL_GROUPS.source).toContain("ai-badger canonical");
     expect(FROZEN_MODEL_GROUPS.groups.low[0]?.id).toBe("openrouter/z-ai/glm-5.3-flash");
-    expect(FROZEN_MODEL_GROUPS.groups.medium[0]?.id).toBe("openrouter/meta/muse-spark-1.3-contributor");
-    expect(FROZEN_MODEL_GROUPS.groups.high[0]?.id).toBe("openrouter/meta/muse-spark-1.3-contributor");
+    expect(FROZEN_MODEL_GROUPS.groups.medium[0]?.id).toBe("openrouter/deepseek/deepseek-v4.1-flash");
+    expect(FROZEN_MODEL_GROUPS.groups.high[0]?.id).toBe("openrouter/deepseek/deepseek-v4.1-flash");
   });
 
   test("closed level set is exactly low|medium|high", () => {

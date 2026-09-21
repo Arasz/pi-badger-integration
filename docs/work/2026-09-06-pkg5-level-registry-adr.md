@@ -35,16 +35,19 @@ is the "fail loud" half, the fallback is the "never brick" half.
 
 ## Frozen fallback provenance
 
-Preferred pins only, copied from the PKG-1 canonical
-(`tiers/pkg1-registry:.ai-badger/model-groups.json`, read-only):
+Preferred pins only, copied from the ai-badger canonical
+(`features/common/data/model-groups.json`, delivered to each project as
+`.ai-badger/model-groups.json` by the scaffold/refresh path):
 
 - low → `openrouter/z-ai/glm-5.3-flash`
-- medium → `openrouter/meta/muse-spark-1.3-contributor`
-- high → `openrouter/meta/muse-spark-1.3-contributor`
+- medium → `openrouter/deepseek/deepseek-v4.1-flash`
+- high → `openrouter/deepseek/deepseek-v4.1-flash`
 
 Marked `{ frozen: true }` so telemetry (`registryVersion` surfacing per contract §4.10)
-distinguishes degraded resolutions. Refresh: manual re-pin against PKG-1 canonical when
-preferreds rotate (no automation this task; G1 follow-up).
+distinguishes degraded resolutions. Refresh: manual re-pin against the framework canonical
+when preferreds rotate (no automation this task; G1 follow-up). Re-pins follow the
+framework canonical's preferred index (medium/high rotated to deepseek-v4.1-flash by
+0.168.0/0.172.0).
 
 ## Consumer posture (binding on 5b/5c)
 

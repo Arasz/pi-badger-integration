@@ -23,7 +23,7 @@ import { MODEL_ID_PATTERN } from "../extensions/subagent/delegation-core.ts";
 import subagent from "../extensions/subagent/index.ts";
 
 const LOW_PREF = "openrouter/z-ai/glm-5.3-flash";
-const MED_PREF = "openrouter/meta/muse-spark-1.3-contributor";
+const MED_PREF = "openrouter/deepseek/deepseek-v4.1-flash";
 
 interface Harness {
   tools: Map<string, any>;

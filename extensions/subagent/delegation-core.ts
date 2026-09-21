@@ -1067,19 +1067,20 @@ export interface LevelRegistry {
 
 /**
  * Frozen fallback (router degrade-on-stale precedent): preferred pins only, copied from
- * the PKG-1 canonical (`tiers/pkg1-registry:.ai-badger/model-groups.json`, read-only).
- * Served when the target project has no usable registry file (absence rule — the warning
- * rides `ModelGroupsLoad.warning`). `{ frozen: true }` marks degraded resolutions in
- * telemetry; re-pin against the PKG-1 canonical when preferreds rotate (G1 follow-up).
+ * the ai-badger canonical (`features/common/data/model-groups.json`, delivered to a
+ * project by scaffold/den-refresh as `.ai-badger/model-groups.json`, read-only). Served
+ * when the target project has no usable registry file (absence rule — the warning rides
+ * `ModelGroupsLoad.warning`). The degraded load is marked by `source: "frozen"` plus its
+ * warning; re-pin against the framework canonical when preferreds rotate (G1 follow-up).
  */
 export const FROZEN_MODEL_GROUPS: LevelRegistry & { readonly frozen: true } = {
   registryVersion: 1,
   frozen: true,
-  source: "tiers/pkg1-registry canonical preferred pins (frozen fallback, revisit on rotation)",
+  source: "ai-badger canonical preferred pins (frozen fallback, revisit on rotation)",
   groups: {
     low: [{ id: "openrouter/z-ai/glm-5.3-flash", preferred: true }],
-    medium: [{ id: "openrouter/meta/muse-spark-1.3-contributor", preferred: true }],
-    high: [{ id: "openrouter/meta/muse-spark-1.3-contributor", preferred: true }],
+    medium: [{ id: "openrouter/deepseek/deepseek-v4.1-flash", preferred: true }],
+    high: [{ id: "openrouter/deepseek/deepseek-v4.1-flash", preferred: true }],
   },
 };
 
