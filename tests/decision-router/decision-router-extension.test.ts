@@ -151,6 +151,7 @@ function setup(
 	mutations: {
 		readonly setActiveToolsFn?: (names: string[]) => void;
 		readonly setModelFn?: (model: unknown) => Promise<boolean>;
+		readonly getActiveToolsFn?: () => string[];
 	} = {},
 ): Harness {
 	const pi = createFakePi();
@@ -205,7 +206,7 @@ function setup(
 		now: () => nowMs,
 		env,
 		getAllToolsFn: () => [...toolState.all],
-		getActiveToolsFn: () => [...toolState.active],
+		getActiveToolsFn: mutations.getActiveToolsFn ?? (() => [...toolState.active]),
 		setActiveToolsFn: mutations.setActiveToolsFn ?? defaultSetActiveTools,
 		setModelFn: mutations.setModelFn ?? defaultSetModel,
 		setThinkingLevelFn: (level) => {
@@ -422,6 +423,26 @@ describe("A1 (code-M1) — tier apply resolves a FULL registry model or holds wi
 		expect(h.setThinkingCalls).toHaveLength(0);
 		expect(h.modelState.current).toEqual({ provider: "test", id: "tier-low-model" });
 		expect(await h.status()).toContain("target-not-in-registry");
+	});
+});
+
+// ------------------------------------------------------------------ A3 active-read failure
+
+describe("A3 (code-S2) — a failed getActiveTools read holds the tool step, never narrows", () => {
+	test("a throwing getActiveToolsFn holds tools as active-read-failed while tier still applies", async () => {
+		const h = setup(() => ({ status: 200, text: fullActuationBody() }), {
+			getActiveToolsFn: () => {
+				throw new Error("getActiveTools unavailable");
+			},
+		});
+		await h.fireTurn("Fix the failing build in the deploy pipeline");
+		expect(h.fetchCount()).toBe(1);
+		// The destructive narrowing (write [bash] over the real active set) never happens.
+		expect(h.setActiveToolsCalls).toHaveLength(0);
+		expect(await h.status()).toContain("hold (active-read-failed)");
+		// Other steps stay fail-open and independent.
+		expect(h.setModelCalls).toHaveLength(1);
+		expect((await h.runCmd("shadow")).join("\n")).toContain("review");
 	});
 });
 

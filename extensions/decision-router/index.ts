@@ -271,11 +271,16 @@ export default function (pi: ExtensionAPI, deps: DecisionRouterDeps = {}) {
 			.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 	};
 
-	const readActive = (): string[] => {
+	/**
+	 * Active tool names, or undefined when the read threw. The caller holds the
+	 * tool step on undefined: the additive write unions with this set, so
+	 * treating a read fault as `[]` would remove the real active tools (S2).
+	 */
+	const readActive = (): string[] | undefined => {
 		try {
 			return getActiveTools().filter((name) => typeof name === "string");
 		} catch {
-			return [];
+			return undefined;
 		}
 	};
 
@@ -365,12 +370,16 @@ export default function (pi: ExtensionAPI, deps: DecisionRouterDeps = {}) {
 		let toolsState: ReadonlyArray<{ name: string; description: string }> | undefined;
 		let toolsQuestion: JevQuestion | undefined;
 		if (enabled.tools) {
-			const built = buildToolChoiceRequest({ task: prompt, tools: catalogue, model: jevModel });
-			if (built.status === "ok") {
-				toolsQuestion = built.request.questions["tools"];
-				toolsState = built.request.state.tools;
+			if (activeTools === undefined) {
+				toolsHold = "active-read-failed";
 			} else {
-				toolsHold = built.reason;
+				const built = buildToolChoiceRequest({ task: prompt, tools: catalogue, model: jevModel });
+				if (built.status === "ok") {
+					toolsQuestion = built.request.questions["tools"];
+					toolsState = built.request.state.tools;
+				} else {
+					toolsHold = built.reason;
+				}
 			}
 		}
 		const questions: Record<string, JevQuestion> = {};
@@ -439,7 +448,7 @@ export default function (pi: ExtensionAPI, deps: DecisionRouterDeps = {}) {
 				tierAnswer,
 				skillAnswer,
 				catalogue: catalogueNames,
-				activeTools,
+				activeTools: activeTools ?? [],
 				currentModel: currentId,
 				tierModels,
 				upgradesLatched,
@@ -453,7 +462,8 @@ export default function (pi: ExtensionAPI, deps: DecisionRouterDeps = {}) {
 				toolsSummary = `hold (${toolsHold})`;
 			} else if (toolsAction.status === "actuate") {
 				try {
-					setActiveTools([...new Set([...activeTools, ...toolsAction.enable])].sort());
+					// activeTools is defined here: an undefined read set toolsHold, which nulls toolsAction.
+					setActiveTools([...new Set([...(activeTools ?? []), ...toolsAction.enable])].sort());
 					toolsSummary = `actuate [${toolsAction.enable.join(", ")}]`;
 				} catch {
 					toolsSummary = "hold (apply-failed)";
