@@ -3,7 +3,7 @@
  * PKG-5 lane test owns. The lane files pin their own surfaces (5a registry source,
  * 5b resolver/argv/fallback, 5c queue tool); this file pins the JOINS:
  *
- *   7a  frozen fallback == the PKG-1 canonical preferred pins (triangulated with
+ *   7a  frozen fallback == the ai-badger canonical preferred pins (triangulated with
  *       ai-badger's tests/test_model_tiers_integration.py, which pins the same
  *       three ids against the shipped registry), the PKG-5 ADR names them, and a
  *       project registry file wins over frozen (import path decides).
@@ -36,11 +36,12 @@ import {
 } from "../extensions/subagent/index.ts";
 import subagent from "../extensions/subagent/index.ts";
 
-// Canonical preferred pins (source: tiers/pkg1-registry canonical seed, measured
-// 2026-09-05; triangulated with ai-badger tests/test_model_tiers_integration.py).
+// Canonical preferred pins (source: ai-badger canonical features/common/data/model-groups.json,
+// delivered as .ai-badger/model-groups.json by scaffold/den-refresh; triangulated with
+// ai-badger tests/test_model_tiers_integration.py).
 const LOW_PREF = "openrouter/z-ai/glm-5.3-flash";
-const MED_PREF = "openrouter/meta/muse-spark-1.3-contributor";
-const HIGH_PREF = "openrouter/meta/muse-spark-1.3-contributor";
+const MED_PREF = "openrouter/deepseek/deepseek-v4.1-flash";
+const HIGH_PREF = "openrouter/deepseek/deepseek-v4.1-flash";
 
 const ADR_PATH = new URL("../docs/work/2026-09-06-pkg5-level-registry-adr.md", import.meta.url);
 
@@ -63,7 +64,7 @@ function canonicalProjectFile(dir: string): void {
   });
 }
 
-describe("join 7a — frozen fallback triangulates the PKG-1 canonical pins", () => {
+describe("join 7a — frozen fallback triangulates the ai-badger canonical pins", () => {
   test("FROZEN preferred ids are the canonical three", () => {
     expect(FROZEN_MODEL_GROUPS.groups.low[0]?.id).toBe(LOW_PREF);
     expect(FROZEN_MODEL_GROUPS.groups.medium[0]?.id).toBe(MED_PREF);
@@ -75,6 +76,10 @@ describe("join 7a — frozen fallback triangulates the PKG-1 canonical pins", ()
     for (const pin of [LOW_PREF, MED_PREF, HIGH_PREF]) {
       expect(text).toContain(pin);
     }
+    // FOLD-9: medium == high, so pin the exact bullet lines — the id-only loop is
+    // blind to a half-edit (only one of the two bullets updated).
+    expect(text).toContain("- medium → `openrouter/deepseek/deepseek-v4.1-flash`");
+    expect(text).toContain("- high → `openrouter/deepseek/deepseek-v4.1-flash`");
   });
 
   test("a project registry wins over frozen (import path decides, not the fallback)", () => {
