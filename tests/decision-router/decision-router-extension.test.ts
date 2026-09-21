@@ -17,7 +17,11 @@ import {
 	DECISION_ROUTER_ENV,
 	DECISION_ROUTER_TOOLS_ENV,
 } from "../../extensions/decision-router/decision-router-core.ts";
-import type { JevFetchInit } from "../../extensions/decision-router/decision-router-client.ts";
+import {
+	JEV_ENDPOINT_ENV,
+	JEV_MODEL_ENV,
+	type JevFetchInit,
+} from "../../extensions/decision-router/decision-router-client.ts";
 import createDecisionRouter, {
 	DECISIONS_COMMAND,
 	DECISIONS_SUBCOMMANDS,
@@ -522,6 +526,24 @@ describe("B1 (qa-F1) — a declined setModel holds and applies nothing", () => {
 		}
 		await h.fireTurn("Fix the failing build in the deploy pipeline");
 		expect(h.fetchCount()).toBe(2);
+	});
+});
+
+// ------------------------------------------------------------------ B2 live env overrides
+
+describe("B2 (qa-F2) — live env overrides drive URL, body model and tier target", () => {
+	test("JEV_ENDPOINT, JEV_MODEL and TIER_HIGH_MODEL reach the wire and the resolved setModel", async () => {
+		const h = setup();
+		h.registry.set("env/tier-high-override", fullModel("env", "tier-high-override"));
+		h.env[JEV_ENDPOINT_ENV] = "https://example.test/decisions";
+		h.env[JEV_MODEL_ENV] = "custom/jev-model-x";
+		h.env[TIER_HIGH_MODEL_ENV] = "env/tier-high-override";
+		await h.fireTurn("Fix the failing build in the deploy pipeline");
+		expect(h.fetchCalls[0]!.url).toBe("https://example.test/decisions");
+		const body = JSON.parse(h.fetchCalls[0]!.init.body) as { model: string };
+		expect(body.model).toBe("custom/jev-model-x");
+		expect(h.setModelCalls).toHaveLength(1);
+		expect(h.setModelCalls[0]![0]).toMatchObject({ provider: "env", id: "tier-high-override" });
 	});
 });
 
