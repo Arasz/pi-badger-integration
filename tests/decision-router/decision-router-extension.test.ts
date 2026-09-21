@@ -495,6 +495,36 @@ describe("A6 (code-N4) — a tools-only decided turn clears the previous error/f
 	});
 });
 
+// ------------------------------------------------------------------ B1 declined setModel
+
+describe("B1 (qa-F1) — a declined setModel holds and applies nothing", () => {
+	test("setModel false: no thinking change, no applied target, status reports the decline", async () => {
+		const calls: unknown[][] = [];
+		const h = setup(() => ({ status: 200, text: fullActuationBody() }), {
+			setModelFn: async (...args: unknown[]) => {
+				calls.push(args);
+				return false;
+			},
+		});
+		await h.fireTurn("Fix the failing build in the deploy pipeline");
+		expect(h.fetchCount()).toBe(1);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toHaveLength(1);
+		expect(h.setThinkingCalls).toHaveLength(0);
+		const status = await h.status();
+		expect(status).toContain("last model: hold (set-model-declined)");
+		// lastAppliedTarget must not have been set: a same-id model_select is foreign.
+		for (const handler of h.pi.handlers.get("model_select") ?? []) {
+			await handler(
+				{ type: "model_select", model: { provider: "test", id: "tier-high-model" }, previousModel: undefined, source: "set" },
+				{},
+			);
+		}
+		await h.fireTurn("Fix the failing build in the deploy pipeline");
+		expect(h.fetchCount()).toBe(2);
+	});
+});
+
 // ------------------------------------------------------------------ D23 timeout twin
 
 describe("D23 — timeout twin: fallback ran, session untouched", () => {
