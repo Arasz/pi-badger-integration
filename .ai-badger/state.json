@@ -1,7 +1,25 @@
 {
-  "lastUpdated": "2026-09-16T21:15:00Z",
+  "lastUpdated": "2026-09-21T21:17:27Z",
   "next": null,
   "completedTasks": [
+    {
+      "taskId": "pbi-deepseek-v41-flash-delegation-default",
+      "title": "DeepSeek V4.1 Flash as the medium+high delegation default (framework + pbi)",
+      "finishedAt": "2026-09-21T21:17:27Z",
+      "summary": "Rotated openrouter/deepseek/deepseek-v4.1-flash (0.15/0.60 per M) to the medium and high preferred tier durably in the ai-badger canonical and immediately in this repo. Framework: 0.172.0 (#492) medium rotation with the displaced muse-spark-1.3-contributor demoted to a revisionWatch tail (high was already rotated in 0.168.0); 0.172.1 (#493) fixed the full-price-twin evidence and published the registryVersion erratum. pbi: FROZEN_MODEL_GROUPS medium+high re-pinned, ADR provenance rewritten, exact-bullet join-7a tripwire added, queue/model-level tests updated (#26); den-refresh to 0.172.1 with the live .ai-badger/model-groups.json now resolving deepseek and the ADR frozen-flag truth fix (#28). Runtime probes with source asserted: frozen (empty cwd), project (refreshed registry frameworkVersion 0.172.1), fresh scaffold from the tag tree; the pre-refresh registry reds the same probe. Published to pi user scope; the installed frozen probe passes. High-effort loop: 3-lane plan MoE, plan-review MoE (2 MUST + 5 SHOULD folded), impl-review MoE, QA GATE-WITH-NITS (all changed assertions mutation-proven).",
+      "decisions": [
+        "Preferred rotation, not a new tier: medium===high is legal (per-group invariants only); deepseek already ships in high, so registryVersion stays 1 and the 0.172.1 erratum corrects 0.172.0's inaccurate 'no member was added or removed' wording",
+        "The frozen fallback is pbi's shipped default for registry-less projects; a scaffolded project's own registry wins, so live activation required den-refresh, not just the frozen edit",
+        "Refresh ran from an immutable checkout --detach worktree at the ai-badger--v0.172.1 tag, then was redone from the canonical /Users/arasz/RiderProjects/ai-badger checkout so the committed manifest.frameworkRoot stays canonical",
+        "Exact-bullet ADR assertions replaced the id-presence loop: with medium==high the old loop was blind to a half-edit (QA confirmed the exact-bullet form is the only test that catches it)",
+        "Publish ran from the task worktree reset to post-merge origin/main, never the dirty main checkout; the sibling session's session-signals extra destination file was left untouched (bus-notified)"
+      ],
+      "followUps": [
+        "Optional: rename the fixture-shaped L0-5 test (sonnet-5 last in medium)",
+        "Deliberately not added: a durable frozen-vs-canonical tripwire (would red between a framework release and a consumer refresh; needs a decided cadence)",
+        "Sibling session must re-publish session-signals when its silence-vertex-debug work lands (bun run check currently OUT OF SYNC on that extension's extra destination file)"
+      ]
+    },
     {
       "taskId": "pbi-google-vertex-adc-support",
       "title": "Enable Google Vertex API support with ADC in Pi",
@@ -19,7 +37,7 @@
       "finishedAt": "2026-09-09T23:10:00Z",
       "summary": "Closed the truncated-only + prose-beats-wire gap behind F2 (stale prose-copied ids stranded 1:1 mail at dead ids). Delivered: message-bus whoami echoes FULL session+project ids in content (explicit pull; list/check headers stay truncated, F7 stays closed); session_start pins PI_SESSION_ID to the live manager id and clears stale foreign CLAUDE/HERMES vars (fail-open, single-resolve, trim guard); tool description carries the whoami-before-first-send rule for immediate effect; whoami-first mandates staged scaffold-safe in multi-agent-communication + task project-local.md; framework-source halves (skill SKILL.md text, task_tracker.py stale-binding warning) recorded as docs/work/2026-09-09-bus-identity-framework-followup.md for a feed-badger draft PR (generated-file guard forbids in-repo edits). 115/115 message-bus tests green (4 new), CI tests 1514 pass 0 fail with only the pre-existing monitor/mem-based-rag typecheck red (identical on main). code-reviewer SHIP-WITH-FIXES, 0 MUST 4 SHOULD all folded. PR #21 squash-merged 945a661. Low-effort, in-session plan, delegated review. User must /reload running sessions.",
       "decisions": [
-        "whoami (explicit pull) is the one surface echoing full ids; list/check stay truncated — full ids never enter broadcasts, acks, or quoted bodies",
+        "whoami (explicit pull) is the one surface echoing full ids; list/check stay truncated \u2014 full ids never enter broadcasts, acks, or quoted bodies",
         "Foreign harness env vars are pi-session-stale by construction when they differ from the live id; clearing them in-process is safe (parent env unaffected)",
         "Generated skill/tracker files change only at their framework source: project-local.md stages the mandate, feed-badger PR delivers it upstream",
         "Pre-existing CI typecheck red (monitor ExtensionContext mismatch, identical on main) does not gate this merge; documented, not fixed here"
@@ -62,7 +80,7 @@
       "taskId": "pbi-wait-check-loop-bus-mail",
       "title": "Short wait plus message-bus check loop, close wake research still-open",
       "finishedAt": "2026-09-09T19:45:00Z",
-      "summary": "Owner feedback moved F6 inside the tool: wait now wakes on bus mail via an internal fixed 1 s tick (BUS_MAIL_TICK_MS, defaultBusMailProbe read-only peek, observed mail) — from the agent's perspective wait just works, no check loop. Fail-open (missing/locked DB, no identity, bus-off all read as no mail), per-ctx probe groups, tick disarms with last wait + on shutdown, mail beats idleness in W-A4 re-check. Wait + bus tool descriptions name it; docs/howto/wait-check-loop.md + catalog pointers; catalog stale wait default fixed (120 s -> 5 min code truth); research Still-open closed wont-continue, F6 marked superseded. 279 touched-surface tests green (15 new incl. live re-arm/kill-switch/cross-session mutation pins), tsc clean outside pre-existing pi-mcp-tools worktree gap, full suite only pre-existing pi-mcp-tools parity reds, merged FF, published (2 coordinator-revert extras remain, not this task). Low-effort: in-session plan/review + code-reviewer SHIP (7 SHOULDs, 3 folded) + qa BLOCKED->fixed (2 blockers + 4 nits, re-arm mutation verified lethal live). User must /reload running sessions.",
+      "summary": "Owner feedback moved F6 inside the tool: wait now wakes on bus mail via an internal fixed 1 s tick (BUS_MAIL_TICK_MS, defaultBusMailProbe read-only peek, observed mail) \u2014 from the agent's perspective wait just works, no check loop. Fail-open (missing/locked DB, no identity, bus-off all read as no mail), per-ctx probe groups, tick disarms with last wait + on shutdown, mail beats idleness in W-A4 re-check. Wait + bus tool descriptions name it; docs/howto/wait-check-loop.md + catalog pointers; catalog stale wait default fixed (120 s -> 5 min code truth); research Still-open closed wont-continue, F6 marked superseded. 279 touched-surface tests green (15 new incl. live re-arm/kill-switch/cross-session mutation pins), tsc clean outside pre-existing pi-mcp-tools worktree gap, full suite only pre-existing pi-mcp-tools parity reds, merged FF, published (2 coordinator-revert extras remain, not this task). Low-effort: in-session plan/review + code-reviewer SHIP (7 SHOULDs, 3 folded) + qa BLOCKED->fixed (2 blockers + 4 nits, re-arm mutation verified lethal live). User must /reload running sessions.",
       "decisions": [
         "Internal tick over agent-side loop: no push path reaches a wait-held turn cross-process, so the waiter checks itself; agent contract unchanged (wait just resolves mail)",
         "Fixed 1 s cadence, no ms knob (owner order); one shared timer, one probe per distinct ctx per tick",
