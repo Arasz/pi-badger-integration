@@ -227,8 +227,9 @@ into packages and subpackages.
    that proves it. A point without them is a wish. Where a point needs a specification or a design
    before it can be built, produce one, and look for an installed skill that formalises that shape
    before writing a bespoke document. Before the first failing test, run `design-tests` on the
-   acceptance criteria — the test list is part of the plan, not of the implementation. When
-   status cannot match the plan, follow `references/tracking-visibility.md`.
+   acceptance criteria — the test list is part of the plan, not of the implementation. When a
+   plan point changes architecture or flow, present it with `archify` (Mermaid only when its
+   runtime is missing). When status cannot match the plan, follow `references/tracking-visibility.md`.
 2. **Plan review before dispatch.** In the **low-effort** variant, hand the drafted plan to a
    second high-reasoning agent for review. In the **high-effort** variant, delegate to an MoE
    panel (default 3 experts, at least one different from the plan-authoring experts) and have it
@@ -367,3 +368,14 @@ machine-run gates that close the task.
 - [ ] `reflect` step examined memory, semantica, and session history for learnings
 - [ ] `finish` left no worktree with unmerged or uncommitted work — `keptBecause` empty or resolved
 - [ ] Token cost reported and compact/fresh-session advice given (or the auto-continue condition held)
+
+# Project-local: bus identity in the task loop (prose-beats-wire lesson)
+
+- Phase 1 step 5 / Phase 3 dispatch: any session that will broadcast on the
+  message bus verifies identity first with the `message-bus` action `whoami`
+  (the intentional full-id pull; `list`/`check` headers stay truncated)
+  and never announces an id copied from files, transcripts, tracking entries,
+  or message content — stale bindings strand 1:1 mail at dead ids
+  (see `docs/work/2026-09-08-bus-identity-and-delegation-skip-report.md:F2`).
+- Lane briefs for lanes that broadcast carry the same rule; the reply-by-id
+  mechanism (`message-bus` action `reply`) replaces every hand-copied session id.
