@@ -621,6 +621,21 @@ describe("B7 (qa-F7) — the sent body carries state.tools", () => {
 	});
 });
 
+// ------------------------------------------------------------------ B8 lastError cap
+
+describe("B8 (qa-F8) — lastError truncates a long classifier detail", () => {
+	test("a long detail is capped at 120 characters", async () => {
+		// A 200-digit status flows into the classifier's `server` detail; the stored
+		// lastError line must still stop at 120 characters.
+		const h = setup(() => ({ status: "9".repeat(200) as unknown as number, text: "" }));
+		await h.fireTurn("Fix the failing build in the deploy pipeline");
+		const line = (await h.status()).split("\n").find((l) => l.startsWith("lastError: "))!;
+		expect(line.startsWith("lastError: server — decisions endpoint failed (HTTP 9")).toBe(true);
+		expect(line.length).toBeLessThanOrEqual("lastError: ".length + 120);
+		expect(line).not.toContain("9".repeat(121));
+	});
+});
+
 // ------------------------------------------------------------------ D23 timeout twin
 
 describe("D23 — timeout twin: fallback ran, session untouched", () => {
