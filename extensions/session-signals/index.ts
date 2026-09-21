@@ -20,6 +20,7 @@
  * tests/session-signals.test.ts; the factory only wires.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { installVertexDebugFilter } from "./silence-vertex-debug.ts";
 
 /** The ai-badger marker catalog's aliases, meaning-first. `!` between alias and colon
  * marks interrupt-grade importance. Order matters for the long forms (longest match). */
@@ -123,6 +124,7 @@ export const TICK_MS = 5000;
 const STATUS_KEY = "pi-badger";
 
 export default function (pi: ExtensionAPI) {
+	const uninstallFilter = installVertexDebugFilter();
 	const toolNames = new Set(parseToolNames(process.env));
 	const tracker = new DelegationTracker();
 	let ticker: ReturnType<typeof setInterval> | undefined;
