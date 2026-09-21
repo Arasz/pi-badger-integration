@@ -608,6 +608,19 @@ describe("B6 (qa-F6) — a failed turn records the fallback ring entry (D8)", ()
 	});
 });
 
+// ------------------------------------------------------------------ B7 wire state.tools
+
+describe("B7 (qa-F7) — the sent body carries state.tools", () => {
+	test("a readable catalogue reaches the wire state", async () => {
+		const h = setup();
+		await h.fireTurn("Fix the failing build in the deploy pipeline");
+		const body = JSON.parse(h.fetchCalls[0]!.init.body) as {
+			state: { task: string; tools?: Array<{ name: string; description: string }> };
+		};
+		expect(body.state.tools).toEqual(DEFAULT_CATALOGUE);
+	});
+});
+
 // ------------------------------------------------------------------ D23 timeout twin
 
 describe("D23 — timeout twin: fallback ran, session untouched", () => {
