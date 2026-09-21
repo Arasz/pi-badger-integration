@@ -642,6 +642,54 @@ describe("C-M7 — upgrade boundary 0.59 hold / 0.61 upgrade", () => {
 	});
 });
 
+describe("B5 (qa-F5) — tier gates are inclusive at the exact threshold", () => {
+	test("upgrade at exactly 0.6 actuates; 0.599 holds", () => {
+		const actuate = decideTier({
+			answer: choiceAnswer("high", { high: 0.6, medium: 0.3, low: 0.1 }, 0.6),
+			currentModel: TIER_MODELS.low,
+			tierModels: TIER_MODELS,
+			upgradesLatched: false,
+		});
+		expect(actuate).toEqual({
+			status: "actuate",
+			direction: "upgrade",
+			targetModel: TIER_MODELS.high,
+			thinking: "high",
+		});
+		expect(
+			decideTier({
+				answer: choiceAnswer("high", { high: 0.6, medium: 0.3, low: 0.1 }, 0.599),
+				currentModel: TIER_MODELS.low,
+				tierModels: TIER_MODELS,
+				upgradesLatched: false,
+			}),
+		).toEqual({ status: "hold", reason: "below-gate" });
+	});
+
+	test("demote at exactly 0.85 actuates; 0.849 holds", () => {
+		const actuate = decideTier({
+			answer: choiceAnswer("low", { low: 0.85, medium: 0.15, high: 0 }, 0.85),
+			currentModel: TIER_MODELS.high,
+			tierModels: TIER_MODELS,
+			upgradesLatched: false,
+		});
+		expect(actuate).toEqual({
+			status: "actuate",
+			direction: "demote",
+			targetModel: TIER_MODELS.low,
+			thinking: "low",
+		});
+		expect(
+			decideTier({
+				answer: choiceAnswer("low", { low: 0.85, medium: 0.15, high: 0 }, 0.849),
+				currentModel: TIER_MODELS.high,
+				tierModels: TIER_MODELS,
+				upgradesLatched: false,
+			}),
+		).toEqual({ status: "hold", reason: "below-gate" });
+	});
+});
+
 describe("C-M8a — already on the target model holds", () => {
 	test("high answer while already on the high model → already-on-target", () => {
 		expect(
