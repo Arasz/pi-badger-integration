@@ -34,7 +34,7 @@ import {
 	type JevFetchInit,
 	type JevFetchResponse,
 	type JevRequest,
-} from "../../extensions/decision-router/decision-router-core.ts";
+} from "../../extensions/decision-router/decision-router-client.ts";
 import {
 	PAYOUT_RESPONSE,
 	SYNTH_PAYMENT_REQUIRED_BODY,
@@ -569,17 +569,18 @@ describe("A6 — deterministic fallback classifier", () => {
 
 // ------------------------------------------------------------------ banned tokens (F11)
 
-describe("core stays I/O-free (F11 banned tokens)", () => {
+describe("client + core stay I/O-free (F11 banned tokens cover both per F25)", () => {
 	test("no process.env, globalThis.fetch, bare fetch(, Date.now( outside injection points", () => {
-		const corePath = join(import.meta.dir, "..", "..", "extensions", "decision-router", "decision-router-core.ts");
-		const core = readFileSync(corePath, "utf8");
-		expect(core).not.toContain("process.env");
-		expect(core).not.toContain("globalThis.fetch");
-		expect(core).not.toContain("Date.now(");
-		expect(core).not.toMatch(/(?<![A-Za-z0-9_$])fetch\(/);
-		const withoutInjectionPoints = core
-			.replaceAll("scheduler.setTimeout(", "")
-			.replace("setTimeout(handler: () => void, timeoutMs: number): unknown;", "");
-		expect(withoutInjectionPoints).not.toContain("setTimeout(");
+		for (const file of ["decision-router-client.ts", "decision-router-core.ts"]) {
+			const source = readFileSync(join(import.meta.dir, "..", "..", "extensions", "decision-router", file), "utf8");
+			expect(source).not.toContain("process.env");
+			expect(source).not.toContain("globalThis.fetch");
+			expect(source).not.toContain("Date.now(");
+			expect(source).not.toMatch(/(?<![A-Za-z0-9_$])fetch\(/);
+			const withoutInjectionPoints = source
+				.replaceAll("scheduler.setTimeout(", "")
+				.replace("setTimeout(handler: () => void, timeoutMs: number): unknown;", "");
+			expect(withoutInjectionPoints).not.toContain("setTimeout(");
+		}
 	});
 });

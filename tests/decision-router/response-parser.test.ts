@@ -14,7 +14,7 @@ import {
 	clampProbability,
 	parseJevResponseBody,
 	type JevAnswerSpec,
-} from "../../extensions/decision-router/decision-router-core.ts";
+} from "../../extensions/decision-router/decision-router-client.ts";
 import {
 	API500_RESPONSE,
 	JSON_STATE_RESPONSE,
