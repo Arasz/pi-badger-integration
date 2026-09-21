@@ -43,8 +43,9 @@ Preferred pins only, copied from the ai-badger canonical
 - medium → `openrouter/deepseek/deepseek-v4.1-flash`
 - high → `openrouter/deepseek/deepseek-v4.1-flash`
 
-Marked `{ frozen: true }` so telemetry (`registryVersion` surfacing per contract §4.10)
-distinguishes degraded resolutions. Refresh: manual re-pin against the framework canonical
+Carries a `{ frozen: true }` marker (type-level residue; nothing reads it). The observable
+degrade signal is `ModelGroupsLoad.source: "frozen"` plus the warning the loader emits.
+Refresh: manual re-pin against the framework canonical
 when preferreds rotate (no automation this task; G1 follow-up). Re-pins follow the
 framework canonical's preferred index (medium/high rotated to deepseek-v4.1-flash by
 0.168.0/0.172.0).
