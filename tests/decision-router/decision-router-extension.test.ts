@@ -22,6 +22,7 @@ import createDecisionRouter, {
 	DECISIONS_COMMAND,
 	DECISIONS_SUBCOMMANDS,
 	DECISIONS_USAGE,
+	TIER_HIGH_MODEL_ENV,
 	type DecisionRouterDeps,
 } from "../../extensions/decision-router/index.ts";
 import { ROUTER_FALLBACK_CHANNEL } from "../../extensions/router-fallback/index.ts";
@@ -100,6 +101,7 @@ interface Harness {
 	readonly scheduler: ReturnType<typeof makeManualScheduler>;
 	readonly toolState: { all: Array<{ name: string; description: string }>; active: string[] };
 	readonly modelState: { current: { provider: string; id: string } };
+	readonly registry: Map<string, Record<string, unknown>>;
 	readonly setActiveToolsCalls: string[][];
 	readonly setModelCalls: unknown[][];
 	readonly setThinkingCalls: unknown[];
@@ -117,6 +119,24 @@ const TIER_MODELS = {
 	medium: "test/tier-medium-model",
 	high: "test/tier-high-model",
 } as const;
+
+/**
+ * Full registry model (M1): pi stores the setModel argument verbatim as
+ * `session.model` and never re-resolves it, so a `{provider,id}` stub breaks
+ * the next provider request. The registry double returns this shape.
+ */
+function fullModel(provider: string, id: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+	return {
+		provider,
+		id,
+		api: "openai-completions",
+		baseUrl: `https://${provider}.test/v1`,
+		reasoning: false,
+		contextWindow: 128_000,
+		maxTokens: 8_192,
+		...overrides,
+	};
+}
 
 const DEFAULT_CATALOGUE = [
 	{ name: "bash", description: "Run shell commands" },
@@ -140,6 +160,10 @@ function setup(
 	const scheduler = makeManualScheduler();
 	const toolState = { all: [...DEFAULT_CATALOGUE], active: ["read"] };
 	const modelState = { current: { provider: "test", id: "tier-low-model" } };
+	const registry = new Map<string, Record<string, unknown>>();
+	for (const id of ["tier-low-model", "tier-medium-model", "tier-high-model"]) {
+		registry.set(`test/${id}`, fullModel("test", id));
+	}
 	const setActiveToolsCalls: string[][] = [];
 	const setModelCalls: unknown[][] = [];
 	const setThinkingCalls: unknown[] = [];
@@ -194,6 +218,8 @@ function setup(
 	const ctxOf = (): ExtensionContext =>
 		({
 			getModel: () => ({ ...modelState.current }),
+			modelRegistry: { find: (provider: string, id: string) => registry.get(`${provider}/${id}`) },
+			getSystemPromptOptions: () => ({ skills: [...skills] }),
 			ui: { notify: (message: string) => notifies.push(message) },
 		}) as unknown as ExtensionContext;
 
@@ -209,6 +235,7 @@ function setup(
 		scheduler,
 		toolState,
 		modelState,
+		registry,
 		setActiveToolsCalls,
 		setModelCalls,
 		setThinkingCalls,
@@ -261,7 +288,12 @@ describe("D1 — one fetch per enabled DISTINCT turn, tools→model→routing or
 		expect(h.setActiveToolsCalls).toEqual([["bash", "read"]]);
 		expect(h.setModelCalls).toHaveLength(2);
 		expect(h.setModelCalls[0]).toHaveLength(1);
-		expect(h.setModelCalls[0]![0]).toEqual({ provider: "test", id: "tier-high-model" });
+		expect(h.setModelCalls[0]![0]).toMatchObject({
+			provider: "test",
+			id: "tier-high-model",
+			api: expect.any(String),
+			baseUrl: expect.any(String),
+		});
 		expect(h.setThinkingCalls).toEqual(["high", "high"]);
 		const shadow = await h.runCmd("shadow");
 		expect(shadow.join("\n")).toContain("review");
@@ -327,14 +359,18 @@ describe("D2/D3/D5 — no-op paths never fetch, never mutate, snapshot-identical
 // ------------------------------------------------------------------ D6 session-only model
 
 describe("D6 — setModelFn called exactly once with ONE positional arg; persist-surface negatives", () => {
-	test("upgrade calls setModelFn once with a single {provider,id} arg and no persist surface", async () => {
+	test("upgrade calls setModelFn once with the FULL resolved registry model and no persist surface", async () => {
 		const h = setup();
 		await h.fireTurn("Fix the failing build in the deploy pipeline");
 		expect(h.setModelCalls).toHaveLength(1);
 		expect(h.setModelCalls[0]).toHaveLength(1);
 		const target = h.setModelCalls[0]![0] as Record<string, unknown>;
-		expect(target).toEqual({ provider: "test", id: "tier-high-model" });
-		expect(Object.keys(target).sort()).toEqual(["id", "provider"]);
+		// The full registry model, not the two-key stub that corrupts session.model (M1).
+		expect(target["provider"]).toBe("test");
+		expect(target["id"]).toBe("tier-high-model");
+		expect(typeof target["api"]).toBe("string");
+		expect(typeof target["baseUrl"]).toBe("string");
+		expect(Object.keys(target).length).toBeGreaterThan(2);
 		expect(h.setThinkingCalls).toEqual(["high"]);
 		expect(h.pi.entries).toHaveLength(0);
 		expect(h.pi.sent).toHaveLength(0);
@@ -351,6 +387,41 @@ describe("D6 — setModelFn called exactly once with ONE positional arg; persist
 		expect(h.setThinkingCalls).toHaveLength(0);
 		expect(h.snapshot()).toEqual(before);
 		expect((await h.status())).toContain("already-on-target");
+	});
+});
+
+// ------------------------------------------------------------------ A1 registry resolution
+
+describe("A1 (code-M1) — tier apply resolves a FULL registry model or holds without setModel", () => {
+	test("empty or whitespace env target holds tier-target-unset with no setModel call", async () => {
+		for (const raw of ["", "   "]) {
+			const h = setup();
+			h.env[TIER_HIGH_MODEL_ENV] = raw;
+			await h.fireTurn("Fix the failing build in the deploy pipeline");
+			expect(h.fetchCount()).toBe(1);
+			expect(h.setModelCalls).toHaveLength(0);
+			expect(h.setThinkingCalls).toHaveLength(0);
+			expect(h.modelState.current).toEqual({ provider: "test", id: "tier-low-model" });
+			expect(await h.status()).toContain("tier-target-unset");
+		}
+	});
+
+	test("an unparseable target (no provider/id split) holds tier-target-unset", async () => {
+		const h = setup();
+		h.env[TIER_HIGH_MODEL_ENV] = "no-slash-target";
+		await h.fireTurn("Fix the failing build in the deploy pipeline");
+		expect(h.setModelCalls).toHaveLength(0);
+		expect(await h.status()).toContain("tier-target-unset");
+	});
+
+	test("a target absent from the registry holds target-not-in-registry", async () => {
+		const h = setup();
+		h.env[TIER_HIGH_MODEL_ENV] = "ghost/not-installed";
+		await h.fireTurn("Fix the failing build in the deploy pipeline");
+		expect(h.setModelCalls).toHaveLength(0);
+		expect(h.setThinkingCalls).toHaveLength(0);
+		expect(h.modelState.current).toEqual({ provider: "test", id: "tier-low-model" });
+		expect(await h.status()).toContain("target-not-in-registry");
 	});
 });
 
@@ -692,7 +763,7 @@ describe("D18/D18b — fallback switched invalidates and latches upgrades off", 
 		h.pi.fireTransition(ROUTER_FALLBACK_CHANNEL, { kind: "switched", episodeId: "ep-1" });
 		await h.fireTurn("Rename the cooldownMs variable across the codebase");
 		expect(h.setModelCalls).toHaveLength(1);
-		expect(h.setModelCalls[0]![0]).toEqual({ provider: "test", id: "tier-low-model" });
+		expect(h.setModelCalls[0]![0]).toMatchObject({ provider: "test", id: "tier-low-model" });
 	});
 
 	test("D18b: the latch clears on a settled successful turn, then upgrades actuate again", async () => {
@@ -879,6 +950,10 @@ function setupDeferred(onWait: (resolve: (spec: { status: number; text: string }
 	const scheduler = makeManualScheduler();
 	const toolState = { all: [...DEFAULT_CATALOGUE], active: ["read"] };
 	const modelState = { current: { provider: "test", id: "tier-low-model" } };
+	const registry = new Map<string, Record<string, unknown>>();
+	for (const id of ["tier-low-model", "tier-medium-model", "tier-high-model"]) {
+		registry.set(`test/${id}`, fullModel("test", id));
+	}
 	const setActiveToolsCalls: string[][] = [];
 	const setModelCalls: unknown[][] = [];
 	const setThinkingCalls: unknown[] = [];
@@ -920,6 +995,7 @@ function setupDeferred(onWait: (resolve: (spec: { status: number; text: string }
 	const ctxOf = () =>
 		({
 			getModel: () => ({ ...modelState.current }),
+			modelRegistry: { find: (provider: string, id: string) => registry.get(`${provider}/${id}`) },
 			ui: { notify: (m: string) => notifies.push(m) },
 		}) as unknown as ExtensionContext;
 	const handler = (pi.handlers.get("before_agent_start") ?? [])[0]!;
@@ -931,6 +1007,7 @@ function setupDeferred(onWait: (resolve: (spec: { status: number; text: string }
 		scheduler,
 		toolState,
 		modelState,
+		registry,
 		setActiveToolsCalls,
 		setModelCalls,
 		setThinkingCalls,

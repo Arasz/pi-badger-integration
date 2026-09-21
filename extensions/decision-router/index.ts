@@ -97,8 +97,8 @@ export interface DecisionRouterDeps {
 	getActiveToolsFn?: () => string[];
 	/** Defaults to the bound pi function, else a no-op. */
 	setActiveToolsFn?: (toolNames: string[]) => void;
-	/** Single positional arg. Defaults to the bound pi setModel, else a declined false. */
-	setModelFn?: (model: DecisionRouterModelRef) => Promise<boolean>;
+	/** Single positional full registry model. Defaults to the bound pi setModel, else a declined false. */
+	setModelFn?: (model: Record<string, unknown>) => Promise<boolean>;
 	/** Defaults to the bound pi function, else a no-op. */
 	setThinkingLevelFn?: (level: TierThinking) => void;
 	/** No pi-level getter exists — falls back to ctx.getModel per call. */
@@ -137,10 +137,41 @@ function modelIdOf(model: unknown): string {
 	return "unknown";
 }
 
-function refFromId(targetId: string, current: DecisionRouterModelRef | undefined): DecisionRouterModelRef {
-	const slash = targetId.indexOf("/");
-	if (slash > 0) return { provider: targetId.slice(0, slash), id: targetId.slice(slash + 1) };
-	return { provider: current?.provider ?? "unknown", id: targetId };
+/** Parse a configured `provider/model-id` target; empty/whitespace/dishonest shapes are unusable. */
+function parseTargetId(targetId: string): { provider: string; id: string } | undefined {
+	const trimmed = targetId.trim();
+	if (trimmed === "") return undefined;
+	const slash = trimmed.indexOf("/");
+	if (slash <= 0 || slash === trimmed.length - 1) return undefined;
+	const provider = trimmed.slice(0, slash).trim();
+	const id = trimmed.slice(slash + 1).trim();
+	if (provider === "" || id === "") return undefined;
+	return { provider, id };
+}
+
+/** Minimal registry view read off `ctx.modelRegistry` (mirrors router-fallback's RegistrySource). */
+interface ModelRegistrySource {
+	find?: (provider: string, modelId: string) => Record<string, unknown> | undefined;
+}
+
+/**
+ * Full catalog model for a target, resolved fresh per apply (M1): pi stores the
+ * `setModel` argument verbatim as `session.model` with no registry re-lookup,
+ * so passing a bare `{provider,id}` stub breaks the next provider request
+ * (`No API provider registered for api: undefined`). A miss or an unreadable
+ * registry is not actuable.
+ */
+function findFullModel(
+	ctx: ExtensionContext,
+	provider: string,
+	id: string,
+): Record<string, unknown> | undefined {
+	try {
+		const registry = (ctx as unknown as { modelRegistry?: ModelRegistrySource }).modelRegistry;
+		return registry?.find?.(provider, id) ?? undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 function hasApiKey(env: Record<string, string | undefined>): boolean {
@@ -176,7 +207,7 @@ export default function (pi: ExtensionAPI, deps: DecisionRouterDeps = {}) {
 	const getActiveTools = deps.getActiveToolsFn ?? (() => toolsApi.getActiveTools?.() ?? []);
 	const setActiveTools =
 		deps.setActiveToolsFn ?? ((names) => void toolsApi.setActiveTools?.(names));
-	const setModel: (model: DecisionRouterModelRef) => Promise<boolean> =
+	const setModel: (model: Record<string, unknown>) => Promise<boolean> =
 		deps.setModelFn ?? ((model) => toolsApi.setModel?.(model) ?? Promise.resolve(false));
 	const setThinkingLevel =
 		deps.setThinkingLevelFn ?? ((level) => void toolsApi.setThinkingLevel?.(level));
@@ -435,18 +466,28 @@ export default function (pi: ExtensionAPI, deps: DecisionRouterDeps = {}) {
 			const tierAction = policies.tier;
 			if (tierAction.status === "actuate") {
 				try {
-					const target = refFromId(tierAction.targetModel, currentRef);
-					const ok = await setModel(target);
-					if (ok) {
-						lastAppliedTarget = tierAction.targetModel;
-						try {
-							setThinkingLevel(tierAction.thinking);
-						} catch {
-							// Thinking is advisory next to the landed model — notice-only.
-						}
-						modelSummary = `${tierAction.direction} → ${tierAction.targetModel} (thinking ${tierAction.thinking})`;
+					const parsed = parseTargetId(tierAction.targetModel);
+					const full = parsed === undefined ? undefined : findFullModel(ctx, parsed.provider, parsed.id);
+					if (parsed === undefined) {
+						modelSummary = "hold (tier-target-unset)";
+					} else if (full === undefined) {
+						modelSummary = "hold (target-not-in-registry)";
 					} else {
-						modelSummary = "hold (set-model-declined)";
+						// provider/id forced from the configured target; the registry
+						// supplies api/baseUrl/reasoning/… for the full model object.
+						const target = { ...full, provider: parsed.provider, id: parsed.id };
+						const ok = await setModel(target);
+						if (ok) {
+							lastAppliedTarget = tierAction.targetModel;
+							try {
+								setThinkingLevel(tierAction.thinking);
+							} catch {
+								// Thinking is advisory next to the landed model — notice-only.
+							}
+							modelSummary = `${tierAction.direction} → ${tierAction.targetModel} (thinking ${tierAction.thinking})`;
+						} else {
+							modelSummary = "hold (set-model-declined)";
+						}
 					}
 				} catch {
 					modelSummary = "hold (apply-failed)";

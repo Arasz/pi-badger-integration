@@ -59,9 +59,13 @@ a session or burn priced calls on noise.
   unique order; the winner is validated against the live catalogue but is not
   force-included — its probability entry decides like every other option. An empty
   subset and an already-enabled subset hold.
-- **Model apply.** `setModel` receives exactly one positional `{provider, id}`; the
-  thinking level is set only after the model call returns true. A decline
-  (`set-model-declined`) or throw (`apply-failed`) holds that step alone.
+- **Model apply.** `setModel` receives exactly one positional full registry model —
+  the configured `provider/model-id` target resolved through `ctx.modelRegistry.find`,
+  never a bare `{provider, id}` stub (pinned pi stores the argument verbatim as
+  `session.model` and never re-resolves it); the thinking level is set only after the
+  model call returns true. A decline (`set-model-declined`), an empty/unparseable
+  target (`tier-target-unset`), a registry miss (`target-not-in-registry`) or a throw
+  (`apply-failed`) holds that step alone.
 - **Skip chain.** Implemented in `evaluateTurn` in R10 order; kill switches resolve
   per capability first (a partial kill narrows the fan-out, it does not skip the turn).
   The `/decisions check` command bypasses cooldown and cache only.

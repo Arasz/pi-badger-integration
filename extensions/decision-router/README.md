@@ -18,6 +18,13 @@ an asymmetric model-tier choice, and shadow-only skill routing.
   answers, weaker confidence, and an already-on-target model all hold. The
   target must be configured (`PI_BADGER_JEV_TIER_*_MODEL`); unset targets fall
   back to the current model, so a tier answer alone can never move the session.
+  A configured target is resolved through the model registry
+  (`ctx.modelRegistry.find(provider, id)`) and `setModel` receives the full
+  registry model — never a `{provider, id}` stub, which pinned pi stores
+  verbatim and which breaks the next request. A target that is empty or
+  whitespace, cannot be split into `provider/model-id`, or is absent from the
+  registry holds that step (`tier-target-unset` / `target-not-in-registry`)
+  and never calls `setModel`.
   While a `router-fallback` switch latch is armed, upgrades hold (demotes still
   pass).
 - **Skill routing (shadow only).** A skill `choice` over the turn's
@@ -47,9 +54,9 @@ override**; `/decisions on` never lifts an env kill.
 | `PI_BADGER_JEV_MODEL` | `typesafe/jev-1.13` | Decision model sent on the wire. |
 | `PI_BADGER_JEV_ENDPOINT` | `https://openrouter.ai/api/alpha/decisions` | Decisions endpoint. |
 | `PI_BADGER_JEV_TIMEOUT_MS` | `2500` | Request timeout; unset, garbage or non-positive values use the default. |
-| `PI_BADGER_JEV_TIER_LOW_MODEL` | current model | `provider/model-id` target for a demote. |
+| `PI_BADGER_JEV_TIER_LOW_MODEL` | current model | `provider/model-id` target for a demote. Unset → current model; empty/whitespace or absent from the registry → hold. |
 | `PI_BADGER_JEV_TIER_MEDIUM_MODEL` | current model | `provider/model-id` target for a medium-tier answer (no actuation path). |
-| `PI_BADGER_JEV_TIER_HIGH_MODEL` | current model | `provider/model-id` target for an upgrade. |
+| `PI_BADGER_JEV_TIER_HIGH_MODEL` | current model | `provider/model-id` target for an upgrade. Unset → current model; empty/whitespace or absent from the registry → hold. |
 
 ## Policy defaults
 
@@ -101,7 +108,7 @@ routing-log**, each step independently fail-open. Tool changes go through
 `systemPromptOptions.selectedTools` (in pinned pi 0.84.4 the
 `BeforeAgentStartEventResult` surface carries only `message`/`systemPrompt`,
 and handler results are contained in `runner.js:881-930`). The model step
-calls `setModel` with a single positional `{provider, id}` argument
-(session-only, never persisted) and sets the thinking level only after the
-model lands; a declined or failed apply holds that step without touching the
-others.
+calls `setModel` with a single positional full registry model resolved from
+the configured `provider/model-id` target (session-only, never persisted) and
+sets the thinking level only after the model lands; a declined, missing,
+unparseable or unresolved target holds that step without touching the others.
