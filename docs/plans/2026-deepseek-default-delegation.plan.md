@@ -29,18 +29,22 @@ wave 2 = I.
    now-false HIGH-tail evidence sentence is corrected; `registryVersion` stays 1.
 2. `python3 tooling/validate.py --all` exit 0 (preferred-first, price order, demoted-tail, weights-identity).
 3. `python3 -m pytest tests/test_model_groups_registry.py tests/test_model_tiers_integration.py -q` green **after**
-   a recorded RED run of the changed expectations (before the content edit) — paste both.
+   a recorded RED run of the changed expectations (before the content edit) and **after** the self-scaffold (the
+   delivered-registry tests cannot be green while the mirror lags VERSION/seed — FOLD-2). Paste both runs.
 4. Changelog `docs/changelog/0.172.0-medium-tier-prefers-deepseek-v41-flash.md` carries the advisory table that
    `test_model_tiers_integration.py` parses; `CHANGELOG` constant repointed; `changelog_index.py` regenerated.
 5. Self-scaffold runs **after** `version_sync.py`; delivered `.ai-badger/model-groups.json` groups == canonical
    and `frameworkVersion == VERSION == 0.172.0`.
-6. Release gates green (`version_sync --check`, `changelog_index --check`, `index_build --check`, `release_guard`,
-   `scaffold_freshness_guard`, `docs_guard`), full `pytest` + `pylint` green; PR merged; tag
+6. Release gates green (`validate --all`, `version_sync --check`, `changelog_index --check`, `index_build --check`,
+   `release_guard`, `scaffold_freshness_guard`, `docs_guard`); **CI green on the PR (all workflows)** is the full-suite
+   pass condition (local budget: focused registry+tiers pytest + the pre-push lane set); PR merged; tag
    `ai-badger--v0.172.0` verified on the remote.
 
 ### PKG-P
 1. `FROZEN_MODEL_GROUPS` medium and high = `openrouter/deepseek/deepseek-v4.1-flash` (low unchanged); docstring +
-   `source` note name the ai-badger canonical, not the retired `tiers/pkg1-registry` branch.
+   `source` note name the ai-badger canonical, not the retired `tiers/pkg1-registry` branch, and the docstring no
+   longer claims the `frozen: true` flag feeds telemetry (FOLD-12); the `source` string is pinned by a new assertion
+   in `tests/subagent-model-level.test.ts`.
 2. ADR `## Frozen fallback provenance` names the new medium/high pins and the framework-canonical provenance;
    join-7a prose test (`tests/subagent-level-integration.test.ts:73-78`) passes against it.
 3. RED-first evidence: with the test literals updated but `FROZEN_MODEL_GROUPS` reverted, the frozen-pin tests fail
@@ -49,8 +53,10 @@ wave 2 = I.
    green (baseline 57 pass) and `bun run typecheck` exit 0.
 
 ### PKG-I
-1. Precondition gate passes first: framework `VERSION` reads `0.172.0` and canonical medium/high preferred =
-   deepseek. Refresh then runs with explicit `--root`.
+1. Precondition gate passes first **on the merged, tagged tree**: `git -C "$FW_ROOT" fetch --tags && git -C "$FW_ROOT" pull --ff-only`,
+   `git -C "$FW_ROOT" describe --tags --exact-match` == `ai-badger--v0.172.0`, `$FW_ROOT/VERSION` reads `0.172.0`,
+   canonical medium/high preferred = deepseek (FOLD-8). Refresh runs with explicit `--root "$FW_ROOT"`; `$FW_ROOT`
+   is the main framework checkout pulled to the tag.
 2. Pass condition on the materialized file: `frameworkVersion == "0.172.0"`, `medium[0] == high[0] ==
    openrouter/deepseek/deepseek-v4.1-flash`; refresh committed **separately** from the PKG-P commit.
 3. Runtime probes (falsifiable, `source` asserted): frozen path (extension from the worktree, empty cwd) resolves
@@ -82,6 +88,31 @@ wave 2 = I.
   `:104`; the annexes carry the corrected cite.
 - **Suite gap acknowledged**: no pbi test reads the repo's own `.ai-badger/model-groups.json`, so only the PKG-I
   probes can catch a stale/wrong refreshed file. That makes probe 3 a required gate, not optional corroboration.
+
+## Plan-review folds (binding — override any conflicting annex text)
+
+Three reviewers (code-reviewer ×2, test-engineer) returned READY-WITH-FOLDS. Folds, all binding on the implementation
+lanes:
+
+| id | source | fold |
+|---|---|---|
+| FOLD-1 | d-1334 MUST / d-1336 SHOULD | **Drop the L0-5 edit entirely.** Its fixture is synthetic; the planned `deciding[-1] == sonnet-5` assertion is false (sonnet-5 is demoted there; `deciding[-1]` is `gpt-5.6-sol`). Leave `tests/test_model_groups_registry.py:165-175` untouched — it still validates the demoted-tail exemption. |
+| FOLD-2 | d-1334 MUST | **Reorder the release sequence:** RED witness → content+tests → `VERSION` + changelog → `changelog_index.py` → `version_sync.py` → **self-scaffold** → focused green run → gates. The delivered-registry tests (`frameworkVersion == VERSION`, shipped groups == canonical) cannot be green before the self-scaffold; never report a green focused run before it. |
+| FOLD-3 | d-1336 MUST | **Drop falsification row F3c** — the same constants feed both the fixture registry and the matrix expectations, so that mutation cannot red. Residual recorded: project-path coverage rests on join-7a's DISTINCT sentinel plus the PKG-I `source === "project"` probe. |
+| FOLD-4 | d-1336 MUST | `plan-pbi.md`'s "probe is corroboration, not a gate" is overridden: PKG-I AC3's probes (including the `(c)` refreshed-repo probe) are **required gates**. |
+| FOLD-5 | d-1334 SHOULD | L0-11 adds `assert groups["medium"][0]["id"] == groups["high"][0]["id"]` and equal `pricing` (kills the "tiers rotated to different models" coordinated edit); keep sonnet-5's `status`/`revisionWatch` assertions at `medium[-2]`. |
+| FOLD-6 | d-1334 SHOULD | PKG-F AC6 now requires CI green (folded above). |
+| FOLD-7 | d-1336 SHOULD | F4's mutation is rewritten: reverting only the medium id while leaving the demoted tail reds via duplicate-id/weights errors, not via preferred-first/price-order. |
+| FOLD-8 | d-1335 SHOULD | Precondition gate runs on the merged+tagged tree, tag exact-match asserted (folded above); `FW_ROOT` defined once = the main framework checkout pulled to the tag. |
+| FOLD-9 | d-1335 SHOULD | Join-7a's ADR check is strengthened: assert the exact `- medium → \`openrouter/deepseek/deepseek-v4.1-flash\`` and `- high → …` bullet lines, not just id presence (medium==high makes the old loop blind to a half-edit). |
+| FOLD-10 | d-1335 SHOULD | Refresh recovery: `git revert <refresh-commit>` is primary; managed roots for uncommitted churn are `.ai-badger/ .claude/ .github/ .pi/ AGENTS.override.md CLAUDE.md HERMES.md .hermes.md`; the review diff explicitly includes `.claude/` and `.github/`. |
+| FOLD-11 | d-1335 SHOULD | Publish runs from the task worktree after `git fetch origin main && git reset --hard origin/main` (post-merge), recording `git rev-parse HEAD`; the dirty main checkout is never touched. |
+| FOLD-12 | d-1335 SHOULD | Frozen docstring drops the unsubstantiated telemetry claim; state that the degraded load is marked by `source: "frozen"` plus the warning. Add `expect(FROZEN_MODEL_GROUPS.source).toContain("ai-badger canonical")`. |
+| FOLD-13 | d-1334 INFO | `measuredAt`: top level `2026-09-21` (rotation date, named in `source`); the new preferred entry `2026-09-11` (the price-measurement date, mirroring 0.168.0); demoted tail stays `2026-09-05`. |
+| FOLD-14 | d-1334 INFO | Expected churn list includes `.ai-badger/config.json`; L0-11 medium price list anchor is `:315-316`. |
+| FOLD-15 | d-1334 INFO | Framework lane interpreter = system `python3` (worktree has no `.venv`); CI owns full `pytest`+`pylint` per test economy. |
+| FOLD-16 | d-1334 INFO | Reword the 7b fixture docstring in `tests/test_model_tiers_integration.py:278-281` (it is content-blind; rotation detection lives in the advisory-table test). |
+| FOLD-17 | d-1336 SHOULD | Claim-shaped ACs get cheap oracles where they matter: the L0-11 `registryVersion == 1` assertion; the FROZEN `source` assertion (FOLD-12). The HIGH-tail evidence correction and docstring truth remain explicit checklist items verified by diff inspection in the lane report. |
 
 ## Falsification plan (summary — full table in `.plan-verification.md`)
 
