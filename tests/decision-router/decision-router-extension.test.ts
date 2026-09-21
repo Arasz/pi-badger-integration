@@ -547,6 +547,34 @@ describe("B2 (qa-F2) — live env overrides drive URL, body model and tier targe
 	});
 });
 
+// ------------------------------------------------------------------ B3 LRU
+
+describe("B3 (qa-F3) — cache LRU cap and recency", () => {
+	const prompts = (n: number) => `Fix the failing build number ${n} in the deploy pipeline`;
+
+	test("a 51st distinct decision evicts the coldest entry", async () => {
+		const h = setup();
+		for (let i = 1; i <= 51; i++) await h.fireTurn(prompts(i));
+		expect(h.fetchCount()).toBe(51);
+		expect(await h.status()).toContain("cache: 50 entries");
+		await h.fireTurn(prompts(1));
+		expect(h.fetchCount()).toBe(52);
+	});
+
+	test("a cache hit refreshes recency so the untouched entry is evicted first", async () => {
+		const h = setup();
+		for (let i = 1; i <= 50; i++) await h.fireTurn(prompts(i));
+		await h.fireTurn(prompts(1)); // hit: entry 1 becomes the newest
+		expect(h.fetchCount()).toBe(50);
+		await h.fireTurn(prompts(51)); // evicts entry 2, not entry 1
+		expect(h.fetchCount()).toBe(51);
+		await h.fireTurn(prompts(1));
+		expect(h.fetchCount()).toBe(51);
+		await h.fireTurn(prompts(2));
+		expect(h.fetchCount()).toBe(52);
+	});
+});
+
 // ------------------------------------------------------------------ D23 timeout twin
 
 describe("D23 — timeout twin: fallback ran, session untouched", () => {
