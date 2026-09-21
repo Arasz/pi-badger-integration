@@ -132,6 +132,13 @@ describe("X-content — manifest, docs and ADR carry the shipped surface", () =>
 		expect(repoReadme).toMatch(/^\| decision-router \|/m);
 	});
 
+	test("marker-prefix skip is qualified as provisional (plan F18)", () => {
+		const catalog = read("docs/reference/extension-catalog.md");
+		const adr = read("docs/work/2026-09-21-jev-decision-router-adr.md");
+		expect(catalog).toMatch(/marker-prefixed[^.]*once the predicate is wired/i);
+		expect(adr).toMatch(/marker-prefixed[^.]*provisional/i);
+	});
+
 	test("ADR carries Context / Decision / Consequences / Alternatives and the F2 evidence", () => {
 		const adr = read("docs/work/2026-09-21-jev-decision-router-adr.md");
 		for (const heading of ["## Context", "## Decision", "## Consequences", "## Alternatives"]) {

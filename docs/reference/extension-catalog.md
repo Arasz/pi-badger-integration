@@ -313,9 +313,10 @@ companion). The three answers ride one body; only enabled capabilities are
 asked, and the tools question is dropped (hold, no priced work) when the
 catalogue is empty or cannot fit the 8 KB state budget. Every turn is gated
 first — kill switches, session override, missing key, an armed `429` cooldown,
-slash-prefixed or marker-prefixed prompts, fewer than 12 non-whitespace
-characters, an in-flight call, and the session cache all skip without a
-request. The cache is an LRU of 50 keyed by prompt hash + catalogue hash +
+slash-prefixed prompts, marker-prefixed prompts once the predicate is wired
+(provisional, plan F18 — the shipped default never marks), fewer than 12
+non-whitespace characters, an in-flight call, and the session cache all skip
+without a request. The cache is an LRU of 50 keyed by prompt hash + catalogue hash +
 model id with no TTL; a catalogue change, a foreign `model_select`, a
 `router-fallback` switch, `/decisions reset` or shutdown invalidates it.
 
@@ -330,8 +331,9 @@ router-fallback switch latch is armed upgrades hold. Routing is
 **shadow-only, with no enforce path at all**: the record
 `{question, choice, confidence, promptHash}` goes to a 20-entry ring that
 `/decisions shadow` prints, and actuation does not exist in the action type.
-The model step is session-only — `setModel` takes a single positional
-`{provider, id}` argument, thinking level follows the landed model — and a
+The model step is session-only — `setModel` takes a single positional full
+registry model resolved from the configured `provider/model-id` target through
+`ctx.modelRegistry.find`, thinking level follows the landed model — and a
 larger async `before_agent_start` can never change `systemPromptOptions`, so
 the tool set is moved through `setActiveTools` alone.
 
