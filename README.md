@@ -36,6 +36,7 @@ bun run check
 | subagent | Background delegation to ai-badger personas (`delegate`, `delegations`, `queue`) |
 | monitor | One-shot predicate monitors and the idle `wait` tool (`monitor`, `/monitors`) |
 | router-fallback | Session-only fallback over OpenRouter `:free`, Groq, Gemini on router failure (`/fallback`) |
+| decision-router | One Jev decision call per turn: additive tool selection, model tier, shadow skill routing (`/decisions`) |
 | update-check | Background notice when a newer integration release exists (`/update-check`) |
 | message-bus | Native pi message-bus on the ai-badger backend (`message-bus` tool with send/reply/whoami, `/messages`) |
 | pi-cron | Cron scheduling inside pi |
