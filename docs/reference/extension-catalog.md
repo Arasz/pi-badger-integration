@@ -359,3 +359,26 @@ probe is **not run in-pipeline** — spawning `pi` is blocked by the
 delegation-skip guard. If a live run ever shows `setModel` declining inside the
 hook, the documented fallback is the thinking-level-only path; the wiring
 already isolates that step from tools and routing.
+
+## The console-capture extension: extension console output out of the TUI
+
+pi does not reroute `console.*` in TUI mode, so extension output written at load, at
+`session_start`, or later renders inside the input area. `console-capture` wraps
+`console.log|info|warn|error|debug` at factory time and appends one
+`<iso> <level> <text>` line per call to `PI_BADGER_CONSOLE_CAPTURE_LOG` or
+`~/.pi/agent/badger-console.log`, rotating at 1 MiB to `.1` (exactly one generation).
+`dir`, `trace` and `table` are deliberately outside the wrapper.
+
+Lifecycle: armed from load, because extension-load-failure diagnostics print before
+`session_start`; a `session_start` with `ctx.mode !== "tui"` disarms it so headless output
+still reaches the terminal, and `session_shutdown` uninstalls it. If pi exits before a TUI
+session_start confirms — the load-failure `process.exit(1)` path — the captured tail is
+flushed to the original stderr on `process.on("exit")`, so startup diagnostics stay
+visible. `process.on("uncaughtExceptionMonitor")` restores console permanently, so pi's
+crash pair reaches the terminal. A throwing sink falls back to the original method once and
+never throws into the caller. `uninstall` restores exactly the functions it captured, so it
+nests with session-signals' vertex filter in either order.
+
+Kill switch: `PI_BADGER_CONSOLE_CAPTURE=0|false|off` leaves `console` untouched and
+registers no handlers. Caveat, by design: disabling the extension or the kill switch means
+the leak returns — nothing else reroutes those call sites.

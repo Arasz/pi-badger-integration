@@ -11,12 +11,9 @@
  *      features/pi/adjustments/adapter/ (dir mirrors ai-badger's vendored path so
  *      tests import unchanged); ai-badger vendors it because its scaffold-freshness
  *      gates require the shipping copy in-repo. Exact-set contract (below).
- *   2. every extension directory under extensions/ (pi-cron, pi-mcp-tools,
- *      session-signals, shift-enter-newline, subagent, monitor, router-fallback,
- *      update-check, message-bus, mem-based-rag, task-rename, decision-router,
- *      query-pipeline): the whole directory is
- *      canonical. Every file EXCEPT the node_modules subtree ships, recursively,
- *      to ~/.pi/agent/extensions/<name>/ (directory name = install name).
+ *   2. every extension directory under extensions/ (every name in EXTENSION_DIRS):
+ *      the whole directory is canonical. Every file EXCEPT the node_modules subtree ships,
+ *      recursively, to ~/.pi/agent/extensions/<name>/ (directory name = install name).
  *
  * Semantics folded in from the plan review (2026-08-29; directory-package model):
  *   - --check NEVER writes; --ai-badger always writes and always announces it.
@@ -69,7 +66,7 @@ export const ADAPTER_FILES = [
 
 const ADAPTER_SOURCE_DIR = "features/pi/adjustments/adapter";
 /** Directory names under extensions/, each installed as ~/.pi/agent/extensions/<name>/. */
-export const EXTENSION_DIRS = ["pi-cron", "pi-mcp-tools", "session-signals", "shift-enter-newline", "subagent", "monitor", "router-fallback", "update-check", "message-bus", "mem-based-rag", "task-rename", "decision-router", "query-pipeline"] as const;
+export const EXTENSION_DIRS = ["pi-cron", "pi-mcp-tools", "session-signals", "shift-enter-newline", "subagent", "monitor", "router-fallback", "update-check", "message-bus", "mem-based-rag", "task-rename", "decision-router", "query-pipeline", "console-capture"] as const;
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const USER_EXTENSIONS_DIR = join(homedir(), ".pi", "agent", "extensions");

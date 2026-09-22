@@ -1,0 +1,11 @@
+{
+  "name": "ai-badger-console-capture",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Console capture for pi: wraps console.log|info|warn|error|debug and appends them to a rotating badger-console.log so extension chatter never renders inside the TUI input area. pi discovers the entry as ~/.pi/agent/extensions/console-capture/index.ts; this manifest records metadata only and does not register the entry.",
+  "main": "index.ts",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

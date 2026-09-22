@@ -124,7 +124,8 @@ export const TICK_MS = 5000;
 const STATUS_KEY = "pi-badger";
 
 export default function (pi: ExtensionAPI) {
-	const uninstallFilter = installVertexDebugFilter();
+	// Installed for the process lifetime; the filter has no session shutdown to restore at.
+	installVertexDebugFilter();
 	const toolNames = new Set(parseToolNames(process.env));
 	const tracker = new DelegationTracker();
 	let ticker: ReturnType<typeof setInterval> | undefined;
