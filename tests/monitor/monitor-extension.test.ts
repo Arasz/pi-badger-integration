@@ -19,6 +19,7 @@ import monitor from "../../extensions/monitor/index.ts";
 import { TRANSITION_CHANNEL } from "../../extensions/subagent/index.ts";
 import subagent from "../../extensions/subagent/index.ts";
 import { createFakePi, type FakePi } from "../helpers/fake-pi.ts";
+import { applyArgumentCompletion } from "../helpers/apply-completion.ts";
 
 const tempDirs: string[] = [];
 
@@ -576,7 +577,7 @@ describe("B-C: the /monitors command (mirrors /delegations)", () => {
     expect(listed.content[0]!.text).toContain("no active monitors"); // the disarm itself still happened
   });
 
-  test("B-C8: completions offer cancel and the armed monitor ids (mirroring /delegations)", async () => {
+  test("B-C8: completions offer cancel and the armed monitor ids as FULL argument text", async () => {
     const { pi } = makeHarness();
     const command = monitorsCommand(pi);
     // first position: the cancel verb only
@@ -589,15 +590,18 @@ describe("B-C: the /monitors command (mirrors /delegations)", () => {
 
     await register(pi, { predicate: "false", name: "wake-1" });
     await register(pi, { predicate: "false" });
+    // pi replaces the WHOLE argument text with item.value — the verb must ride along.
     expect(command.getArgumentCompletions("cancel ")).toEqual([
-      { value: "m-1", label: "m-1 (wake-1)" },
-      { value: "m-2", label: "m-2" },
+      { value: "cancel m-1", label: "m-1 (wake-1)" },
+      { value: "cancel m-2", label: "m-2" },
     ]);
     expect(command.getArgumentCompletions("cancel m")).toHaveLength(2);
+    const cancelIds = command.getArgumentCompletions("cancel m");
+    expect(applyArgumentCompletion("/monitors cancel m", cancelIds![0]!)).toBe("/monitors cancel m-1");
     expect(command.getArgumentCompletions("cancel z")).toBeNull();
     // only the id position completes ids: the bare prefix never leaks them
     const barePrefix = command.getArgumentCompletions("");
-    expect(barePrefix!.every((item) => item.value !== "m-1")).toBe(true);
+    expect(barePrefix!.every((item) => item.value !== "cancel m-1")).toBe(true);
   });
 });
 

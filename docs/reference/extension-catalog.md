@@ -121,24 +121,41 @@ Checking on delegations:
   report position), `abort <id|all>`, `results [id]` (the cached
   structured result — `{parent_id, delegation_id, task_summary, persona, input, output,
   timestamp}` — of one delegation, or, without an id, every result this session parented;
-  an in-memory cache of the LAST 8 results that dies with the session). Results also
+  an in-memory cache of the LAST 8 results that dies with the session), and
+  `resolve <d-N|guid>` (a local run id's global GUID, or a GUID's run, project and log file —
+  the cross-project lookup; `log`/`peek`/`abort` keep local ids). Results also
   arrive on their own — never poll: to spend idle waiting time, use the monitor
   extension's `wait` tool (user input interrupts it) or register a monitor.
-- **`/delegations [log <id>] [peek <id> [--lines N]] [abort <id|all>]`** (human-facing command).
+- **`/delegations [log <id>] [peek <id> [--lines N]] [resolve <id|guid>] [abort <id|all>]`**
+  (human-facing command).
 - **Widget** above the editor: one line per background running run (id, agent, elapsed,
   current activity, usage, trailing `session <id>` when known) plus a queued count, cleared
   when the session's runs end. Completion cards and delegate receipts likewise carry
   `session <id>` when the delegating session is known.
 - **Logs**: every child's raw JSONL event stream is teed to
-  `~/.pi/agent/subagent-logs/<runId>.jsonl` — a `run` header (runId, sessionId, persona,
-  task, argv, cwd, pid, startedAt), the child's events verbatim, stderr as
-  `{"type":"stderr",…}` lines, and a final `exit` line. Byte-capped per run (header + tail
+  `~/.pi/agent/subagent-logs/projects/<projectKey>/<runId>.jsonl` — a `run` header (runId,
+  globalId, sessionId, persona, task, argv, cwd, pid, startedAt), the child's events
+  verbatim, stderr as `{"type":"stderr",…}` lines, and a final `exit` line. The project
+  key is `.ai-badger/project-id` when present (env `AI_BADGER_PROJECT_ID` wins), else a
+  stable hash of the nearest `.ai-badger`/`.git` root (cwd when neither exists), so each
+  project owns its own `d-N` namespace and its ids restart at `d-1`. Byte-capped per run
+  (header + tail
   kept, middle elided). While a run is LIVE the file holds only its `run` header — the
   child's buffered stream lands at close — so `delegations log` falls back to the in-memory
   live preview (the same source `peek` reads) and never prints an empty "showing the tail"
   marker. Logs live at user scope deliberately: they survive reboots and never touch any
-  project's git status. Retention: >14 days pruned at `session_start`, directory capped
-  oldest-first.
+  project's git status. Retention: >14 days pruned at `session_start`, capped
+  oldest-first per project directory.
+- **Global ids and the index**: every run also mints a UUID v7 `globalId` (on the record, in
+  its `run` header and in the receipt details). When the run's log sink opens, the extension
+  appends `{globalId, id, projectKey, projectRoot, logFile, at}` to
+  `~/.pi/agent/subagent-logs/index.jsonl`, compacted to the newest 500 entries. A GUID from
+  another project is answered by `delegations resolve <guid>` from that index; a local
+  `delegations resolve <d-N>` answers from the live registry (or the settled run's header) with
+  its GUID. Two projects may both hold a `d-1` — the GUID is the cross-project handle.
+- **Legacy flat logs** (`~/.pi/agent/subagent-logs/d-N.jsonl`, written before this layout)
+  are left untouched but never read: new sessions neither reconstruct them nor allocate around
+  them, so a flat `d-9` does not reserve `d-9` in any project. There is no migration.
 
 Lifecycle: at most 4 children run at once (env `PI_BADGER_SUBAGENT_MAX_CONCURRENT`), 16
 queued FIFO, loud rejection beyond. `session_shutdown` SIGTERMs running children (SIGKILL
@@ -146,8 +163,10 @@ after a 5 s grace). Delegations do not
 outlive the session — after a restart the log dir is the durable truth: finished runs are
 classified from their `exit` line, receipt-only runs report as lost (stale instead once the
 log has been quiet past the 10-minute stale threshold), and no wake-up message
-is injected after a restart. Run ids are never reused (skip-to-next-free over the log
-directory), so `delegations log d-N` stays unambiguous across restarts. One documented
+is injected after a restart. Run ids are never reused within a project (skip-to-next-free
+over that project's log directory), so `delegations log d-N` stays unambiguous across
+restarts; ids restart at `d-1` in a project that has never run a delegation, and two
+projects may both hold a `d-1`. One documented
 limitation: `/tree` navigation away from the delegating branch hides that branch's
 receipts — the log directory remains the way to find those runs.
 
@@ -402,3 +421,26 @@ probe is **not run in-pipeline** — spawning `pi` is blocked by the
 delegation-skip guard. If a live run ever shows `setModel` declining inside the
 hook, the documented fallback is the thinking-level-only path; the wiring
 already isolates that step from tools and routing.
+
+## The console-capture extension: extension console output out of the TUI
+
+pi does not reroute `console.*` in TUI mode, so extension output written at load, at
+`session_start`, or later renders inside the input area. `console-capture` wraps
+`console.log|info|warn|error|debug` at factory time and appends one
+`<iso> <level> <text>` line per call to `PI_BADGER_CONSOLE_CAPTURE_LOG` or
+`~/.pi/agent/badger-console.log`, rotating at 1 MiB to `.1` (exactly one generation).
+`dir`, `trace` and `table` are deliberately outside the wrapper.
+
+Lifecycle: armed from load, because extension-load-failure diagnostics print before
+`session_start`; a `session_start` with `ctx.mode !== "tui"` disarms it so headless output
+still reaches the terminal, and `session_shutdown` uninstalls it. If pi exits before a TUI
+session_start confirms — the load-failure `process.exit(1)` path — the captured tail is
+flushed to the original stderr on `process.on("exit")`, so startup diagnostics stay
+visible. `process.on("uncaughtExceptionMonitor")` restores console permanently, so pi's
+crash pair reaches the terminal. A throwing sink falls back to the original method once and
+never throws into the caller. `uninstall` restores exactly the functions it captured, so it
+nests with session-signals' vertex filter in either order.
+
+Kill switch: `PI_BADGER_CONSOLE_CAPTURE=0|false|off` leaves `console` untouched and
+registers no handlers. Caveat, by design: disabling the extension or the kill switch means
+the leak returns — nothing else reroutes those call sites.

@@ -14,8 +14,9 @@
  * the P2 runner/registry, so `delegation-core.ts` parses its event stream. In a TUI the tool
  * returns immediately with a receipt and the completion rides one `delegation-result` followUp
  * message (R5); headless modes stay fully blocking (R2). Every delegation tees its raw JSONL to
- * `~/.pi/agent/subagent-logs/<runId>.jsonl` (R4) — that dir is the single source of truth for
- * restart reconstruction (R10) and run-id allocation (T73).
+ * `~/.pi/agent/subagent-logs/projects/<projectKey>/<runId>.jsonl` (R4, PKG-2) — that project
+ * dir is the single source of truth for restart reconstruction (R10) and run-id allocation
+ * (T73); a session sees only its own project's runs.
  *
  * Every failure is loud and degrades to a reported result — a missing agents directory, an
  * unreadable or unparseable persona, an unknown agent name, an invalid `cwd`, or a failed child.
@@ -80,6 +81,9 @@ import {
 import type { DelegationNote, DelegationProgress, SpawnFn } from "./delegation-runner.ts";
 import { registerDelegationStatus } from "./delegation-status.ts";
 import { registerDelegationSkipGuard } from "./delegation-skip-guard.ts";
+import { newGlobalId } from "./global-id.ts";
+import { appendIndexEntry } from "./global-index.ts";
+import { projectLogDir, resolveProject } from "./project-key.ts";
 import { DelegationResultCache } from "./result-cache.ts";
 import { registerDelegationQueue, type DelegationQueueOpts } from "./delegation-queue.ts";
 import { type AgentToolUpdateCallback, type ExtensionAPI, parseFrontmatter } from "@earendil-works/pi-coding-agent";
@@ -175,7 +179,8 @@ export const BATCH_MAX_CARDS = 6;
 /** RR3: separator between cards in a batched delegation-result message (content and renderer). */
 export const BATCH_SEPARATOR = "\n\n———\n\n";
 
-/** R4: the durable per-run log dir, outside every git repo. Injectable via deps for tests. */
+/** R4: the durable log base dir, outside every git repo. Injectable via deps for tests.
+ * PKG-2: runs live under `<base>/projects/<projectKey>/`, so ids and logs are per project. */
 export const DEFAULT_LOG_DIR = join(homedir(), ".pi", "agent", "subagent-logs");
 
 /** Custom entry type of the session_start reconstruction report (R10, row 47). */
@@ -456,6 +461,9 @@ export interface SubagentDeps {
   spawnFn?: SpawnFn;
   /** R4 log dir override (tests). Default `~/.pi/agent/subagent-logs`. */
   logDir?: string;
+  /** PKG-2 project key override (tests); default resolves from `process.cwd()` through
+   * `resolveProjectKey` (env override → nearest `.ai-badger` → nearest `.git` → cwd hash). */
+  projectKey?: string;
   /** Injected clock for records and rendering. */
   now?: () => number;
   /** SIGTERM → SIGKILL grace for the session_shutdown kill path (R8). Default 5000. */
@@ -476,6 +484,8 @@ export interface SubagentDeps {
 /** Receipt details (row 45, §4): the background tool result's `details`. */
 export interface ReceiptDetails {
   id: string;
+  /** PKG-3: the run's global GUID — the cross-project handle for `delegations resolve`. */
+  globalId?: string;
   agent: string;
   state: DelegationState;
   queuePosition?: number;
@@ -773,7 +783,14 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     return;
   }
 
-  const logDir = deps.logDir ?? DEFAULT_LOG_DIR;
+  const baseLogDir = deps.logDir ?? DEFAULT_LOG_DIR;
+  // PKG-2: the project key namespaces every run log and id scan. Resolved once at factory time
+  // (the session's cwd), never per run — a session belongs to one project.
+  const projectIdentity = resolveProject(process.cwd(), process.env);
+  const projectKey = deps.projectKey ?? projectIdentity.key;
+  const runLogDir = projectLogDir(baseLogDir, projectKey);
+  /** PKG-3 D3: the shared global index, written at log-sink creation (never at allocation). */
+  const indexFile = join(baseLogDir, "index.jsonl");
   const now = deps.now ?? Date.now;
   const batchWindowMs = deps.batchWindowMs ?? BATCH_WINDOW_MS;
   const batchMaxCards = deps.batchMaxCards ?? BATCH_MAX_CARDS;
@@ -887,10 +904,27 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     }
   };
 
-  /** R4's per-run log sink factory: `~/.pi/agent/subagent-logs/<runId>.jsonl`, dir 0o700, file 0o600. */
-  const logSink = (init: { id: string; agent: string; task: string }) => {
-    mkdirSync(logDir, { recursive: true, mode: 0o700 });
-    const file = join(logDir, `${init.id}.jsonl`);
+  /** R4's per-run log sink factory: `<base>/projects/<key>/<runId>.jsonl`, dir 0o700, file 0o600.
+   * PKG-3: the global index entry is written HERE — the run's sink opening is the moment the
+   * run actually starts, so a queue-cap-rejected or queued-then-aborted run is never indexed.
+   * The write is fail-open: an index failure never disables the run's log. */
+  const logSink = (init: { id: string; agent: string; task: string; globalId?: string }) => {
+    mkdirSync(runLogDir, { recursive: true, mode: 0o700 });
+    const file = join(runLogDir, `${init.id}.jsonl`);
+    if (init.globalId !== undefined) {
+      try {
+        appendIndexEntry(indexFile, {
+          globalId: init.globalId,
+          id: init.id,
+          projectKey,
+          projectRoot: projectIdentity.root,
+          logFile: file,
+          at: now(),
+        });
+      } catch {
+        // fail-open (D3): the run's log and the delegation itself are unaffected
+      }
+    }
     return {
       logFile: file,
       appendLine: (line: string) => {
@@ -919,8 +953,8 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     ...(typeof pi.events?.emit === "function"
       ? { emit: (transition: DelegationTransition) => pi.events.emit(TRANSITION_CHANNEL, transition) }
       : {}),
-    // T73: ids allocate over the LIVE log dir listing, past the highest id ever seen — a
-    // restarted session never reuses an id, so `delegations log d-N` stays unambiguous. The
+    // T73: ids allocate over the LIVE project log dir listing, past the highest id ever seen —
+    // a restarted session never reuses an id, so `delegations log d-N` stays unambiguous. The
     // closure also excludes the registry's live records: a queued run has no log file yet, so
     // without that check, concurrent queueing (a 7-panel burst) would allocate the same id
     // twice — exposed by T95–T97 and fixed here, not in the frozen core allocator.
@@ -928,20 +962,22 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     // closure additionally remembers every id it has handed out this session — consecutive
     // calls in one batch must be distinct (★M3), which neither the log dir nor the live
     // records can guarantee yet.
-    allocateId: (): string => {
+    allocateId: (): { id: string; globalId: string } => {
       const live: Set<string> = new Set(registry.list().map((record: DelegationRecord) => record.id));
       const id = allocateRunId(
         (() => {
           try {
-            return readdirSync(logDir).filter((name) => name.endsWith(".jsonl")).map((name) => name.replace(/\.jsonl$/, ""));
+            return readdirSync(runLogDir).filter((name) => name.endsWith(".jsonl")).map((name) => name.replace(/\.jsonl$/, ""));
           } catch {
             return [];
           }
         })(),
-        (candidate) => existsSync(join(logDir, `${candidate}.jsonl`)) || live.has(candidate) || allocatedIds.has(candidate),
+        (candidate) => existsSync(join(runLogDir, `${candidate}.jsonl`)) || live.has(candidate) || allocatedIds.has(candidate),
       );
       allocatedIds.add(id);
-      return id;
+      // PKG-3: the allocator mints the global GUID beside the local id; a rejected run's GUID
+      // dies with the rejection (no sink, no index entry — A3.3).
+      return { id, globalId: newGlobalId(now()) };
     },
   });
 
@@ -949,7 +985,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     // RR1/R0: the instance identifies itself at startup, so a stale loaded extension
     // generation is diagnosable from its own output when the registry disagrees with reality.
     console.error(`ai-badger subagent extension v${extensionVersion()}: session started — delegation registry live`);
-    const summaries = reconstructFromLogDir(logDir, now());
+    const summaries = reconstructFromLogDir(runLogDir, now());
     if (summaries.length === 0) return;
     // Row 47: reconstruction only MARKS runs (status surfaces show them); it never notifies
     // (R10: no auto-followUp after restart). The entry is the report; P4's surfaces may read it.
@@ -988,7 +1024,13 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   // frozen signature — the one instance of the registry this session constructed. RR4: the
   // status surface consults the log dir through the same reconstruction session_start uses,
   // so an empty registry still surfaces stale runs (the net that survives a dead runner).
-  const statusApi = registerDelegationStatus(pi, registry, { staleRuns: () => reconstructFromLogDir(logDir, now(), { prune: false }), resultCache });
+  const statusApi = registerDelegationStatus(pi, registry, {
+    staleRuns: () => reconstructFromLogDir(runLogDir, now(), { prune: false }),
+    resultCache,
+    // PKG-3: resolve needs the current project's run dir (a settled local id's header) and the
+    // shared index (a GUID from any project); the registry itself is already in scope.
+    resolveContext: { runLogDir, projectKey, projectRoot: projectIdentity.root, indexFile },
+  });
   registerDelegationSkipGuard(pi);
 
   // Plan v2 R4: the `queue` tool (delegation-queue.ts) rides the SAME registry instance. Its
@@ -1245,6 +1287,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       content: text(line),
       details: {
         id: record.id,
+        ...(record.globalId !== undefined ? { globalId: record.globalId } : {}),
         agent: record.agent,
         state: record.state,
         ...(record.queuePosition !== undefined ? { queuePosition: record.queuePosition } : {}),

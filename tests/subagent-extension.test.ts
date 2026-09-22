@@ -20,13 +20,15 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeChild } from "./helpers/fake-child.ts";
 import { createFakePi, type FakePiHandler, type FakePiRenderer, type FakePiSentMessage } from "./helpers/fake-pi.ts";
 import { AGENTS_DIR, pidAlive } from "../extensions/subagent/index.ts";
 import subagent from "../extensions/subagent/index.ts";
+import { GLOBAL_ID_PATTERN } from "../extensions/subagent/global-id.ts";
+import { readIndex } from "../extensions/subagent/global-index.ts";
 import {
   BATCH_SEPARATOR,
   clampRunTimeoutMs,
@@ -83,7 +85,7 @@ function makeHarness(mode = "tui", deps: Record<string, unknown> = {}): Harness 
     spawnOptions: [],
     notifications: [],
     projectDir: mkdtempSync(join(tmpdir(), "aib-subagent-ext-")),
-    logDir: mkdtempSync(join(tmpdir(), "aib-subagent-ext-logs-")),
+    logDir: (deps.logDir as string | undefined) ?? mkdtempSync(join(tmpdir(), "aib-subagent-ext-logs-")),
     api: undefined,
   };
   mkdirSync(join(h.projectDir, ...AGENTS_DIR), { recursive: true });
@@ -98,19 +100,30 @@ function makeHarness(mode = "tui", deps: Record<string, unknown> = {}): Harness 
 
   // now: () => pi.clock.now — the harness's injected clock is mutable (fake-pi.ts header);
   // the NOW constant below stays for log-dir fixtures.
-  h.api = subagent(pi as never, { spawnFn, logDir: h.logDir, now: () => pi.clock.now, escalateAfterMs: 0, ...deps }) as {
+  // projectKey is pinned so the layout assertions are deterministic; a test overrides it
+  // through deps (the spread below wins over these defaults).
+  h.api = subagent(pi as never, { spawnFn, logDir: h.logDir, projectKey: "test-project", now: () => pi.clock.now, escalateAfterMs: 0, ...deps }) as {
     registry: any;
   };
+  createdHarnesses.push(h);
   return h;
 }
 
 let h: Harness;
+/** Every harness a test built — cleanup walks the list, so a test may run two sessions at once. */
+const createdHarnesses: Harness[] = [];
 afterEach(() => {
-  if (h) {
-    rmSync(h.projectDir, { recursive: true, force: true });
-    rmSync(h.logDir, { recursive: true, force: true });
+  while (createdHarnesses.length) {
+    const harness = createdHarnesses.pop()!;
+    rmSync(harness.projectDir, { recursive: true, force: true });
+    rmSync(harness.logDir, { recursive: true, force: true });
   }
 });
+
+/** The project-local run dir the factory computes from the base `logDir` and the key. */
+function runLogDir(harness: Harness, key = "test-project"): string {
+  return join(harness.logDir, "projects", key);
+}
 
 function makeCtx(mode = "tui", cwd?: string): unknown {
   return {
@@ -407,11 +420,140 @@ describe("row 45 — tool result while running says running (receipt with id/too
 
     expect(contentOf(result)).toContain("Delegation d-1 started");
     expect(result.details).toMatchObject({ id: "d-1", agent: "architect", state: "running", toolCallId: "call-42" });
-    expect(result.details.logFile).toBe(join(h.logDir, "d-1.jsonl"));
-    expect(existsSync(join(h.logDir, "d-1.jsonl"))).toBe(true);
+    expect(result.details.logFile).toBe(join(runLogDir(h), "d-1.jsonl"));
+    expect(existsSync(join(runLogDir(h), "d-1.jsonl"))).toBe(true);
     expect(h.children[0]!.exited).toBe(false);
     // single reachable registry instance (the future P4 registerDelegationStatus seam)
     expect(h.api!.registry.get("d-1").toolCallId).toBe("call-42");
+  });
+});
+
+// ------------------------------------------------------------------ PKG-2: project-local logs
+
+describe("PKG-2 — project-local id allocation and log layout (A2.2)", () => {
+  test("project-local logs: logFile is projects/<key>/d-1.jsonl and exists", async () => {
+    h = makeHarness();
+    const result = await callDelegate({ agent: "architect", task: "t" }, makeCtx(), undefined, "call-42");
+
+    const file = join(h.logDir, "projects", "test-project", "d-1.jsonl");
+    expect(result.details.logFile).toBe(file);
+    expect(existsSync(file)).toBe(true);
+  });
+
+  test("project-local logs: two project keys sharing a base dir both allocate d-1", async () => {
+    const first = makeHarness("tui", { projectKey: "proj-a" });
+    h = first;
+    const firstRun = await callDelegate({ agent: "architect", task: "t" }, makeCtx(), undefined, "call-1");
+    expect(firstRun.details.id).toBe("d-1");
+
+    const second = makeHarness("tui", { logDir: first.logDir, projectKey: "proj-b" });
+    h = second;
+    const secondRun = await callDelegate({ agent: "architect", task: "t" }, makeCtx(), undefined, "call-1");
+    expect(secondRun.details.id).toBe("d-1"); // ids restart per project
+    expect(secondRun.details.logFile).toBe(join(first.logDir, "projects", "proj-b", "d-1.jsonl"));
+    expect(existsSync(join(first.logDir, "projects", "proj-a", "d-1.jsonl"))).toBe(true);
+  });
+});
+
+// ------------------------------------------------------------------ PKG-3: global GUID + index
+
+/** The base index file the extension writes (D3): `<logDir>/index.jsonl`. */
+function indexFile(harness: Harness): string {
+  return join(harness.logDir, "index.jsonl");
+}
+
+describe("PKG-3 — global GUID on record, header and receipt (A3.2)", () => {
+  test("run header carries globalId and the receipt details expose it", async () => {
+    h = makeHarness();
+    const result = await callDelegate({ agent: "architect", task: "t" }, makeCtx(), undefined, "call-42");
+
+    const globalId = result.details.globalId as string;
+    expect(globalId).toMatch(GLOBAL_ID_PATTERN);
+    const header = JSON.parse(readFileSync(join(runLogDir(h), "d-1.jsonl"), "utf8").split("\n")[0]!) as { globalId?: string };
+    expect(header.globalId).toBe(globalId);
+
+    // The extension's own resolve wiring (PKG-3): a local id answers from the live registry
+    // with the project context the factory computed — not only in the status fixture.
+    const tool = h.tools.get("delegations") as {
+      execute(toolCallId: string, params: Record<string, unknown>, signal: undefined, onUpdate: undefined, ctx: unknown): Promise<DelegateResult>;
+    };
+    const resolved = await tool.execute("call-0", { action: "resolve", id: "d-1" }, undefined, undefined, makeCtx());
+    expect(resolved.details).toMatchObject({
+      id: "d-1",
+      globalId,
+      projectKey: "test-project",
+      logFile: join(runLogDir(h), "d-1.jsonl"),
+      source: "registry",
+    });
+  });
+
+  test("run header carries globalId for an explicit-id run too", async () => {
+    h = makeHarness();
+    // Explicit ids bypass the allocator (review M3) — the registry still mints a GUID.
+    const outcome = await h.api!.registry.start({
+      agent: "architect",
+      task: "t",
+      args: ["-p"],
+      cwd: h.projectDir,
+      toolCallId: "tc-explicit",
+      id: "d-99",
+    });
+    expect(outcome.ok).toBe(true);
+
+    const record = h.api!.registry.get("d-99");
+    expect(record.globalId).toMatch(GLOBAL_ID_PATTERN);
+    const header = JSON.parse(readFileSync(join(runLogDir(h), "d-99.jsonl"), "utf8").split("\n")[0]!) as { globalId?: string };
+    expect(header.globalId).toBe(record.globalId);
+    h.children[0]!.exit(0);
+  });
+});
+
+describe("PKG-3 — index timing (A3.3)", () => {
+  test("the global index entry is written when the run's log sink opens, not at allocation", async () => {
+    h = makeHarness("tui", { cap: 1 });
+
+    // openTee runs BEFORE the pre-aborted check, so an aborted-at-spawn run opens a sink and
+    // IS indexed (review M2) — then settles, freeing the single slot.
+    const aborted = await h.api!.registry.start({
+      agent: "architect",
+      task: "abort at spawn",
+      args: ["-p"],
+      cwd: h.projectDir,
+      toolCallId: "tc-aborted",
+      signal: AbortSignal.abort(),
+    });
+    expect(aborted.ok).toBe(true);
+    expect(readIndex(indexFile(h)).some((entry) => entry.id === aborted.id)).toBe(true);
+
+    const first = await callDelegate({ agent: "architect", task: "one" }, makeCtx(), undefined, "call-1");
+    const second = await callDelegate({ agent: "architect", task: "two" }, makeCtx(), undefined, "call-2");
+    expect(second.details.state).toBe("queued");
+
+    // d-1 is indexed because its sink opened; d-2 was allocated but has no sink yet.
+    expect(readIndex(indexFile(h)).some((entry) => entry.id === first.details.id)).toBe(true);
+    expect(readIndex(indexFile(h)).some((entry) => entry.id === second.details.id)).toBe(false);
+
+    h.children[0]!.exit(0); // the drain spawns the queued member — its sink opens now
+    expect(readIndex(indexFile(h)).some((entry) => entry.id === second.details.id)).toBe(true);
+  });
+
+  test("a queue-cap-rejected run and a run aborted while queued leave no index entry", async () => {
+    h = makeHarness("tui", { cap: 1, queueCap: 1 });
+    const first = await callDelegate({ agent: "architect", task: "one" }, makeCtx(), undefined, "call-1");
+    const second = await callDelegate({ agent: "architect", task: "two" }, makeCtx(), undefined, "call-2");
+    const third = await callDelegate({ agent: "architect", task: "three" }, makeCtx(), undefined, "call-3");
+
+    expect(second.details.state).toBe("queued");
+    expect(contentOf(third)).toContain("delegation rejected"); // admission rejected d-3
+    expect(readIndex(indexFile(h)).map((entry) => entry.id)).toEqual([first.details.id as string]);
+
+    // The queued run keeps its minted GUID but aborts before any sink opens.
+    const queuedId = second.details.id as string;
+    h.api!.registry.abort(queuedId);
+    const queuedRecord = h.api!.registry.get(queuedId);
+    expect(queuedRecord.state).toBe("aborted");
+    expect(queuedRecord.globalId).toMatch(GLOBAL_ID_PATTERN);
+    expect(readIndex(indexFile(h)).some((entry) => entry.id === queuedId)).toBe(false);
   });
 });
 
@@ -584,7 +726,7 @@ describe("T72 — delegation-result renderer registered (compact card)", () => {
 describe("rows 47/T73 — session_start reconstruction from the log dir", () => {
   test("row 47: marks lost runs, never notifies", () => {
     h = makeHarness();
-    writeLog(h.logDir, "d-9", [runHeaderLine("d-9", deadPid())]);
+    writeLog(runLogDir(h), "d-9", [runHeaderLine("d-9", deadPid())]);
 
     fireSessionStart();
 
@@ -602,19 +744,19 @@ describe("rows 47/T73 — session_start reconstruction from the log dir", () => 
   test("wiring (R4): session_start prunes logs older than 14 days before classification", () => {
     h = makeHarness();
     const old = new Date(NOW - 20 * 24 * 60 * 60 * 1000);
-    writeLog(h.logDir, "d-1", [runHeaderLine("d-1", 4242), exitLine(0)], old);
-    writeLog(h.logDir, "d-2", [runHeaderLine("d-2", 4242), exitLine(0)]);
+    writeLog(runLogDir(h), "d-1", [runHeaderLine("d-1", 4242), exitLine(0)], old);
+    writeLog(runLogDir(h), "d-2", [runHeaderLine("d-2", 4242), exitLine(0)]);
 
     fireSessionStart();
 
-    expect(existsSync(join(h.logDir, "d-1.jsonl"))).toBe(false);
-    expect(existsSync(join(h.logDir, "d-2.jsonl"))).toBe(true);
+    expect(existsSync(join(runLogDir(h), "d-1.jsonl"))).toBe(false);
+    expect(existsSync(join(runLogDir(h), "d-2.jsonl"))).toBe(true);
   });
 
   test("T73: ids are never reused across restart (d-1..d-3 → d-4, then d-5)", async () => {
     h = makeHarness();
     for (const id of ["d-1", "d-2", "d-3"]) {
-      writeLog(h.logDir, id, [runHeaderLine(id, 4242), exitLine(0)]);
+      writeLog(runLogDir(h), id, [runHeaderLine(id, 4242), exitLine(0)]);
     }
     fireSessionStart();
 
@@ -623,6 +765,32 @@ describe("rows 47/T73 — session_start reconstruction from the log dir", () => 
 
     const second = await callDelegate({ agent: "architect", task: "two" }, makeCtx(), undefined, "call-2");
     expect(second.details.id).toBe("d-5");
+  });
+
+  test("project-local logs: a session reconstructs only its own project's runs", () => {
+    const harness = makeHarness("tui", { projectKey: "proj-a" });
+    h = harness;
+    writeLog(join(harness.logDir, "projects", "proj-a"), "d-1", [runHeaderLine("d-1", deadPid())]);
+    writeLog(join(harness.logDir, "projects", "proj-b"), "d-2", [runHeaderLine("d-2", deadPid())]);
+
+    fireSessionStart();
+
+    const entry = h.entries.find((e) => e.customType === "delegation-reconstruction");
+    expect(entry).toBeDefined();
+    const runs = entry!.data.runs as Array<{ id: string }>;
+    expect(runs.map((run) => run.id)).toEqual(["d-1"]); // proj-b's d-2 is invisible here
+  });
+
+  test("project-local logs: a legacy flat d-9.jsonl is invisible", async () => {
+    h = makeHarness();
+    writeLog(h.logDir, "d-9", [runHeaderLine("d-9", 4242), exitLine(0)]); // the pre-PKG-2 flat layout
+
+    fireSessionStart();
+    expect(h.entries.find((e) => e.customType === "delegation-reconstruction")).toBeUndefined();
+
+    // the flat file neither reserves an id nor feeds the allocator's scan
+    const result = await callDelegate({ agent: "architect", task: "t" }, makeCtx(), undefined, "call-1");
+    expect(result.details.id).toBe("d-1");
   });
 });
 
@@ -1211,17 +1379,17 @@ describe("T118 — empty registry lists reconstructed stale runs with their log 
 
   test("no runs; a stale log file (header-only, dead pid, old mtime) is listed as stale with its path", async () => {
     h = makeHarness();
-    writeLog(h.logDir, "d-9", [runHeaderLine("d-9", deadPid())], new Date(NOW - 700_000));
+    writeLog(runLogDir(h), "d-9", [runHeaderLine("d-9", deadPid())], new Date(NOW - 700_000));
 
     const text = await runList();
     expect(text).toContain("registry empty"); // the registry itself is still empty (RR1 wording stays)
     expect(text).toContain("d-9 architect — stale");
-    expect(text).toContain(join(h.logDir, "d-9.jsonl"));
+    expect(text).toContain(join(runLogDir(h), "d-9.jsonl"));
   });
 
   test("a fresh pid-dead log is not listed — reconstruction's lost runs stay session_start's business", async () => {
     h = makeHarness();
-    writeLog(h.logDir, "d-8", [runHeaderLine("d-8", deadPid())]); // mtime ≈ NOW → not stale
+    writeLog(runLogDir(h), "d-8", [runHeaderLine("d-8", deadPid())]); // mtime ≈ NOW → not stale
 
     const text = await runList();
     expect(text).toContain("registry empty");
@@ -1406,8 +1574,9 @@ describe("review folds (d-38): SHOULD-1 overrun + NIT-2 renderer guard", () => {
 describe("T122 — the stale query is prune-free (d-52 SHOULD-1)", () => {
   test("empty-registry list surfaces a stale log WITHOUT retiring it", async () => {
     h = makeHarness();
-    const stalePath = join(h.logDir, "d-9.jsonl");
+    const stalePath = join(runLogDir(h), "d-9.jsonl");
     // a run header, no terminal line — older than LOG_MAX_AGE_MS (mtime is the evidence)
+    mkdirSync(runLogDir(h), { recursive: true, mode: 0o700 });
     writeFileSync(stalePath, `${JSON.stringify({ type: "run", runId: "d-9", agent: "architect", persona: "architect", task: "lost work", argv: ["-p"], cwd: "/p", pid: 424242, startedAt: NOW - 90 * 24 * 60 * 60 * 1000 })}\n`);
     utimesSync(stalePath, new Date(NOW - 90 * 24 * 60 * 60 * 1000), new Date(NOW - 90 * 24 * 60 * 60 * 1000));
 

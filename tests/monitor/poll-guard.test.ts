@@ -8,6 +8,9 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import monitor from "../../extensions/monitor/index.ts";
 import subagent from "../../extensions/subagent/index.ts";
 import { createFakePi, type FakePi } from "../helpers/fake-pi.ts";
@@ -18,9 +21,15 @@ interface Harness {
   pi: FakePi;
 }
 
+const tempDirs: string[] = [];
+
 function makeCombinedHarness(): Harness {
   const pi = createFakePi();
-  subagent(pi as never, { now: () => pi.clock.now, escalateAfterMs: 0 });
+  // A temp log dir keeps the subagent's session_start reconstruction off the real home
+  // (PKG-2: without one this test read and wrote ~/.pi/agent/subagent-logs).
+  const logDir = mkdtempSync(join(tmpdir(), "aib-poll-guard-"));
+  tempDirs.push(logDir);
+  subagent(pi as never, { now: () => pi.clock.now, escalateAfterMs: 0, logDir, projectKey: "poll-guard" });
   monitor(pi as never, { now: () => pi.clock.now });
   return { pi };
 }
@@ -28,6 +37,7 @@ function makeCombinedHarness(): Harness {
 const POLL_ENV = "PI_BADGER_MONITOR_POLL_MAX";
 afterEach(() => {
   delete process.env[POLL_ENV];
+  while (tempDirs.length) rmSync(tempDirs.pop()!, { recursive: true, force: true });
 });
 
 interface BlockResult {

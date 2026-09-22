@@ -13,10 +13,11 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeChild } from "./helpers/fake-child.ts";
+import { applyArgumentCompletion } from "./helpers/apply-completion.ts";
 import { spawnSync } from "node:child_process";
 import {
   DelegationRegistry,
@@ -40,7 +41,10 @@ import {
   registerDelegationStatus,
   widgetLines,
   type PidLiveness,
+  type ResolveContext,
 } from "../extensions/subagent/delegation-status.ts";
+import { GLOBAL_ID_PATTERN } from "../extensions/subagent/global-id.ts";
+import { appendIndexEntry } from "../extensions/subagent/global-index.ts";
 import { DelegationResultCache, type DelegationResultEntry } from "../extensions/subagent/result-cache.ts";
 import { PEEK_PREVIEW_MAX_CHARS } from "../extensions/subagent/delegation-core.ts";
 import {
@@ -145,7 +149,7 @@ interface Fixture {
 
 function makeFixture(
 	overrides: Partial<DelegationDeps> = {},
-	opts: { widgetKey?: string; probePid?: (pid: number) => PidLiveness } = {},
+	opts: { widgetKey?: string; probePid?: (pid: number) => PidLiveness; resolveContext?: ResolveContext } = {},
 ): Fixture {
 	let clock = NOW;
 	const children: FakeChild[] = [];
@@ -173,6 +177,7 @@ function makeFixture(
 		// M6: the cache→tool seam rides the established opts pattern (like staleRuns); the
 		// cache is constructed here, beside the surface, and exposed for row seeding.
 		resultCache: cache,
+		...(opts.resolveContext ? { resolveContext: opts.resolveContext } : {}),
 	});
 	return {
 		registry,
@@ -756,7 +761,7 @@ describe("T78: the /delegations command shares the registry path with the tool",
 		expect(lastNotification(fx).message).toContain("usage: /delegations");
 	});
 
-	test("getArgumentCompletions offers the subcommands and live registry ids", async () => {
+	test("getArgumentCompletions offers the subcommands and live registry ids as FULL argument text", async () => {
 		const fx = makeFixture({ cap: 2, queueCap: 16 });
 		await fx.registry.start(startRequest({ id: "d-1", toolCallId: "tc-d-1" })); // running
 		await fx.registry.start(startRequest({ id: "d-2", toolCallId: "tc-d-2" })); // running
@@ -765,18 +770,152 @@ describe("T78: the /delegations command shares the registry path with the tool",
 
 		const completions = fx.harness.commands.get("delegations")!.getArgumentCompletions!;
 		const first = completions("") as Array<{ value: string }>;
-		expect(first.map((item) => item.value)).toEqual(["log", "abort", "peek"]);
+		expect(first.map((item) => item.value)).toEqual(["log", "abort", "peek", "resolve"]);
 
+		// pi replaces the WHOLE argument text with item.value, so every id item MUST carry its
+		// verb; a bare id here rewrites `/delegations abort d` into `/delegations d-2`.
 		const ids = completions("abort d") as Array<{ value: string }>;
-		expect(ids.map((item) => item.value)).toEqual(["d-2", "d-0"]); // live ids only — terminal d-1 excluded
+		expect(ids.map((item) => item.value)).toEqual(["abort d-2", "abort d-0"]); // live ids only — terminal d-1 excluded
+
+		const logIds = completions("log d") as Array<{ value: string }>;
+		expect(logIds.map((item) => item.value)).toEqual(["log d-2", "log d-0"]);
 
 		const peekIds = completions("peek d") as Array<{ value: string }>;
-		expect(peekIds.map((item) => item.value)).toEqual(["d-2", "d-0"]); // peek completes live ids, same filter as log/abort
+		expect(peekIds.map((item) => item.value)).toEqual(["peek d-2", "peek d-0"]); // peek completes live ids, same filter as log/abort
 
 		const peekVerb = completions("p") as Array<{ value: string }>;
 		expect(peekVerb.map((item) => item.value)).toEqual(["peek"]);
 
+		// resolve completes live ids through the same id branch as log/abort/peek.
+		const resolveIds = completions("resolve d") as Array<{ value: string }>;
+		expect(resolveIds.map((item) => item.value)).toEqual(["resolve d-2", "resolve d-0"]);
+
+		// A1.2 guard: applying the item through pi's whole-argument splice keeps the verb.
+		expect(applyArgumentCompletion("/delegations log d", logIds[0]!)).toBe("/delegations log d-2");
+		expect(applyArgumentCompletion("/delegations abort d", ids[0]!)).toBe("/delegations abort d-2");
+
 		expect(completions("bogus")).toBeNull();
+	});
+});
+
+// ------------------------------------------------------------------ A3.4: resolve
+
+describe("A3.4 — delegations resolve (local id ↔ global GUID)", () => {
+	/** A resolve context over a temp base: the current project's run dir plus the shared index. */
+	function resolveFixture(overrides: Partial<DelegationDeps> = {}): { fx: Fixture; context: ResolveContext; dir: string } {
+		const dir = mkdtempSync(join(tmpdir(), "aib-resolve-"));
+		const context: ResolveContext = {
+			runLogDir: join(dir, "projects", "proj-a"),
+			projectKey: "proj-a",
+			projectRoot: "/p",
+			indexFile: join(dir, "index.jsonl"),
+		};
+		return { fx: makeFixture(overrides, { resolveContext: context }), context, dir };
+	}
+
+	test("resolve accepts a local id and returns its global id", async () => {
+		const { fx, dir } = resolveFixture();
+		try {
+			await startBackground(fx, "d-1");
+			const globalId = fx.registry.get("d-1")!.globalId!;
+			expect(globalId).toMatch(GLOBAL_ID_PATTERN);
+
+			const result = await delegationsTool(fx).execute({ action: "resolve", id: "d-1" });
+
+			expect(result.details).toMatchObject({ id: "d-1", globalId, projectKey: "proj-a", projectRoot: "/p", source: "registry" });
+			expect(result.content[0]!.text).toContain(globalId);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("resolve accepts a guid from another project", async () => {
+		const { fx, context, dir } = resolveFixture();
+		try {
+			const globalId = "01926b4a-1111-7000-8000-000000000001";
+			const logFile = join(dir, "projects", "proj-b", "d-7.jsonl");
+			appendIndexEntry(context.indexFile, { globalId, id: "d-7", projectKey: "proj-b", projectRoot: "/other", logFile, at: NOW });
+
+			const result = await delegationsTool(fx).execute({ action: "resolve", id: globalId });
+
+			expect(result.details).toMatchObject({ id: "d-7", globalId, projectKey: "proj-b", projectRoot: "/other", logFile, source: "index" });
+			expect(result.content[0]!.text).toContain("proj-b");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("resolve <guid> answers a queued run from the live registry before the index", async () => {
+		const { fx, context, dir } = resolveFixture({ cap: 1 });
+		try {
+			await startBackground(fx, "d-1"); // running
+			await startBackground(fx, "d-2"); // queued — has a GUID, no index entry yet
+			const queued = fx.registry.get("d-2")!;
+			expect(queued.state).toBe("queued");
+			expect(queued.globalId).toMatch(GLOBAL_ID_PATTERN);
+
+			// A conflicting index entry for the same GUID: the live registry must win (review S3).
+			appendIndexEntry(context.indexFile, {
+				globalId: queued.globalId!,
+				id: "d-99",
+				projectKey: "proj-b",
+				projectRoot: "/other",
+				logFile: "/other/d-99.jsonl",
+				at: NOW,
+			});
+
+			const result = await delegationsTool(fx).execute({ action: "resolve", id: queued.globalId! });
+
+			expect(result.details).toMatchObject({ id: "d-2", globalId: queued.globalId, source: "registry" });
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("resolve of an unknown id or guid is loud", async () => {
+		const { fx, dir } = resolveFixture();
+		try {
+			await expect(delegationsTool(fx).execute({ action: "resolve", id: "d-99" })).rejects.toThrow(/unknown delegation id "d-99"/);
+			await expect(
+				delegationsTool(fx).execute({ action: "resolve", id: "01926b4a-2222-7000-8000-000000000002" }),
+			).rejects.toThrow(/delegations resolve/);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	// The /delegations twin shares the same path (T78 parity): the command answers from the
+	// same resolveDelegation the tool action uses.
+	test("the /delegations resolve command answers with the global id", async () => {
+		const { fx, dir } = resolveFixture();
+		try {
+			await startBackground(fx, "d-1");
+			const globalId = fx.registry.get("d-1")!.globalId!;
+
+			await fx.harness.commands.get("delegations")!.handler("resolve d-1", fx.ctx);
+
+			expect(lastNotification(fx).message).toContain(globalId);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("resolve reads a settled local id's global id from its run header", async () => {
+		const { fx, context, dir } = resolveFixture();
+		try {
+			const globalId = "01926b4a-3333-7000-8000-000000000003";
+			mkdirSync(context.runLogDir, { recursive: true });
+			writeFileSync(
+				join(context.runLogDir, "d-5.jsonl"),
+				`${JSON.stringify({ type: "run", runId: "d-5", globalId, agent: "architect", task: "t", startedAt: NOW })}\n`,
+			);
+
+			const result = await delegationsTool(fx).execute({ action: "resolve", id: "d-5" });
+
+			expect(result.details).toMatchObject({ id: "d-5", globalId, projectKey: "proj-a", source: "log" });
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 

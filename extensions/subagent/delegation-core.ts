@@ -151,6 +151,8 @@ export type DelegationState = "queued" | "running" | "completed" | "failed" | "a
  */
 export interface DelegationRecord {
   id: string;
+  /** PKG-3: the queryable global GUID v7 minted for this run beside its local id. */
+  globalId?: string;
   agent: string;
   task: string;
   toolCallId: string;
@@ -242,6 +244,8 @@ export interface LogRunFile {
  */
 export interface LogRunSummary {
   id: string;
+  /** PKG-3: the run header's global GUID, when the log carries one. */
+  globalId?: string;
   state: "running" | "completed" | "failed" | "lost" | "stale";
   exitCode?: number | null;
   agent?: string;
@@ -307,6 +311,7 @@ export function classifyFromLogDir(
 
     const base = {
       id: file.id,
+      globalId: optionalString(header.globalId),
       // R4 names the header field `persona`, the rows read `agent` — accept both spellings.
       agent: optionalString(header.agent) ?? optionalString(header.persona),
       task: optionalString(header.task),

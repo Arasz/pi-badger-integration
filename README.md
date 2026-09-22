@@ -44,6 +44,7 @@ bun run check
 | pi-cron | Cron scheduling inside pi |
 | pi-mcp-tools | Universal MCP tools (fork of [tickernelz/pi-mcp-tools](https://github.com/tickernelz/pi-mcp-tools), flattened for directory installs) |
 | session-signals | Marker importance aborts and delegation footer status |
+| console-capture | Extension `console.*` output captured to a rotating log instead of the TUI |
 | shift-enter-newline | Shift+Enter newline for terminals that cannot report it |
 | ai-badger hooks adapter | PreToolUse gates and PostToolUse arms (vendored into ai-badger) |
 

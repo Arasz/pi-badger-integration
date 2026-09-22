@@ -17,7 +17,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeChild } from "../helpers/fake-child.ts";
@@ -87,7 +87,7 @@ function makeCombinedHarness(): Harness {
     children.push(child);
     return child;
   };
-  subagent(pi as never, { spawnFn, logDir, now: () => pi.clock.now, escalateAfterMs: 0, batchWindowMs: 0 });
+  subagent(pi as never, { spawnFn, logDir, projectKey: "p9", now: () => pi.clock.now, escalateAfterMs: 0, batchWindowMs: 0 });
   monitor(pi as never, { now: () => pi.clock.now, scheduler });
   return { pi, scheduler, children, projectDir, logDir };
 }
@@ -160,6 +160,8 @@ describe("P9: a queue-driven group settle wakes a pending wait through the real 
     expect(queued.details.tasks).toHaveLength(2);
     expect(h.children).toHaveLength(1); // serial group admits exactly its head on an idle system
     const headId = (queued.details.tasks as Array<{ id: string }>)[0]!.id;
+    // PKG-2 double-coverage (review M4): a second harness proves the nested project layout.
+    expect(existsSync(join(h.logDir, "projects", "p9", `${headId}.jsonl`))).toBe(true);
 
     // the spawn transition reached the monitor's fleet map before wait starts
     const pending = tool(pi, "wait")("tc-w", {}, undefined, undefined, makeCtx(h));
