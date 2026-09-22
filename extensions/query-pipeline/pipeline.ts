@@ -196,6 +196,15 @@ export async function runPipeline(deps: QueryPipelineDeps, input: { query: strin
 	const planner = deps.plan ?? createRegistryPlanner({ registry: deps.registry, model: deps.model, env });
 	const scorer = deps.score ?? createJevScorer({ fetchFn: defaultJevFetch, scheduler, now, env });
 
+	/** Convert a synchronous throw from an injected seam into a rejection the race can absorb. */
+	const callSafe = <T>(fn: () => Promise<T>): Promise<T> => {
+		try {
+			return Promise.resolve(fn());
+		} catch (error) {
+			return Promise.reject(error);
+		}
+	};
+
 	/** Race a promise against a scheduler timer; never rejects. */
 	const race = <T>(promise: Promise<T>, ms: number, onTimeout?: () => void): Promise<RaceOutcome<T>> => {
 		if (ms <= 0) {
@@ -251,7 +260,7 @@ export async function runPipeline(deps: QueryPipelineDeps, input: { query: strin
 		if (left < 1_000) return finish({ status: "fallback", reason, mem: [], code: [], ...(lastError !== undefined ? { error: lastError } : {}) });
 		const ms = Math.min(budget.searchMs, Math.max(0, left - budget.scoreMs));
 		emit({ stage: "searching", index: 1, total: 1, query: input.query, concept: "fallback" });
-		const outcome = await race(deps.search(input.query, budget.searchLimit, ms), ms);
+		const outcome = await race(callSafe(() => deps.search(input.query, budget.searchLimit, ms)), ms);
 		if (outcome.timedOut || outcome.error !== undefined || outcome.value === undefined) {
 			return finish({
 				status: "fallback",
@@ -282,7 +291,7 @@ export async function runPipeline(deps: QueryPipelineDeps, input: { query: strin
 		const plannerCap = Math.min(budget.plannerMs, Math.max(0, budget.totalMs - budget.searchMs - budget.scoreMs));
 		const plannerCtl = new AbortController();
 		linkAbort(shared.signal, plannerCtl);
-		const planOutcome = await race(planner(input.query, plannerCtl.signal, plannerCap), plannerCap, () => plannerCtl.abort());
+		const planOutcome = await race(callSafe(() => planner(input.query, plannerCtl.signal, plannerCap)), plannerCap, () => plannerCtl.abort());
 		counters.plannerMs = now() - p0;
 		const plan: PlannerResult = planOutcome.timedOut
 			? { status: "fallback", reason: "timeout" }
@@ -307,7 +316,7 @@ export async function runPipeline(deps: QueryPipelineDeps, input: { query: strin
 			const ms = Math.min(budget.searchMs, Math.max(0, remaining() - budget.scoreMs));
 			if (ms <= 0) break;
 			emit({ stage: "searching", index: i + 1, total: queries.length, query: queries[i]!.q, concept: queries[i]!.concept });
-			const outcome = await race(deps.search(queries[i]!.q, budget.searchLimit, ms), ms);
+			const outcome = await race(callSafe(() => deps.search(queries[i]!.q, budget.searchLimit, ms)), ms);
 			if (outcome.timedOut || outcome.error !== undefined || outcome.value === undefined) {
 				lastError = outcome.error ?? `search timed out after ${ms}ms`;
 				continue;
@@ -338,7 +347,7 @@ export async function runPipeline(deps: QueryPipelineDeps, input: { query: strin
 		linkAbort(shared.signal, scoreCtl);
 		const scoreDeadline = Math.min(deadline, now() + budget.scoreMs);
 		const scoreOutcome = await race(
-			scorer(input.query, pool, scoreCtl.signal, scoreDeadline),
+			callSafe(() => scorer(input.query, pool, scoreCtl.signal, scoreDeadline)),
 			Math.max(0, scoreDeadline - now()),
 			() => scoreCtl.abort(),
 		);
