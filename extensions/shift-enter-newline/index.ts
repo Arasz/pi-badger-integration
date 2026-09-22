@@ -60,25 +60,23 @@ function recordInput(data: string, shift: boolean | null) {
  * pi installation. Returns undefined when unavailable (non-macOS, unsupported
  * arch, or unknown install layout) and the editor then behaves exactly like the
  * default one.
+ *
+ * pi-tui renamed the darwin prebuild in 0.87.1: older versions ship
+ * `darwin-modifiers.node`, 0.87+ ships `darwin-platform.node`. Both names are tried,
+ * newest first, because the extension's vendored pi-tui may lag the running pi.
  */
 export function loadShiftHelper(): ModifierHelper | undefined {
 	if (process.platform !== "darwin") return undefined;
 	if (process.arch !== "arm64" && process.arch !== "x64") return undefined;
-	const relative = path.join(
-		"@earendil-works",
-		"pi-tui",
-		"native",
-		"darwin",
-		"prebuilds",
-		`darwin-${process.arch}`,
-		"darwin-modifiers.node",
-	);
+	const prebuilds = path.join("native", "darwin", "prebuilds", `darwin-${process.arch}`);
+	const helperNames = ["darwin-platform.node", "darwin-modifiers.node"];
 	const nodeRequire = createRequire(import.meta.url);
 	const candidates: string[] = [];
+	// The pi-tui package this extension resolves for its own imports (its vendored copy
+	// first, then any node_modules chain above it).
 	try {
-		candidates.push(
-			path.join(path.dirname(nodeRequire.resolve("@earendil-works/pi-tui/package.json")), relative),
-		);
+		const packageDir = path.dirname(nodeRequire.resolve("@earendil-works/pi-tui/package.json"));
+		for (const name of helperNames) candidates.push(path.join(packageDir, prebuilds, name));
 	} catch {
 		// No node_modules chain above the extension; rely on the install-layout roots below.
 	}
@@ -88,7 +86,9 @@ export function loadShiftHelper(): ModifierHelper | undefined {
 		path.join("/opt", "homebrew", "lib", "node_modules"),
 		path.join("/usr/local", "lib", "node_modules"),
 	]) {
-		candidates.push(path.join(root, relative));
+		for (const name of helperNames) {
+			candidates.push(path.join(root, "@earendil-works", "pi-tui", prebuilds, name));
+		}
 	}
 	for (const candidate of candidates) {
 		try {
