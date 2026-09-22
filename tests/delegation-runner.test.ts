@@ -625,9 +625,9 @@ describe("log tee (rows 41, T62)", () => {
     await h.registry.start(startRequest({ task: "two" }));
     const [c1, c2] = h.children;
 
-    c1!.write("a1\n");
-    c2!.write("b1\n");
-    c1!.write("a2\n");
+    c1!.write("a-one\n");
+    c2!.write("b-one\n");
+    c1!.write("a-two\n");
     c2!.emitEvent(assistantEnd("answer two"));
     c2!.exit(0);
     c1!.emitEvent(assistantEnd("answer one"));
@@ -636,19 +636,21 @@ describe("log tee (rows 41, T62)", () => {
     const log1 = (h.logs.get("d-1") ?? []).join("\n");
     const log2 = (h.logs.get("d-2") ?? []).join("\n");
 
-    // each run's own lines, in order, with no cross-contamination
+    // each run's own lines, in order, with no cross-contamination. The markers carry letters
+    // outside the hex alphabet so the run header's random globalId can never collide with
+    // them (the old "a1"/"b1" did, ~1 run in 10).
     expect(log1.indexOf('"type":"run"')).toBeGreaterThanOrEqual(0);
-    expect(log1.indexOf("a1")).toBeGreaterThan(-1);
-    expect(log1.indexOf("a1")).toBeLessThan(log1.indexOf("a2"));
-    expect(log1.indexOf("a2")).toBeLessThan(log1.indexOf("answer one"));
+    expect(log1.indexOf("a-one")).toBeGreaterThan(-1);
+    expect(log1.indexOf("a-one")).toBeLessThan(log1.indexOf("a-two"));
+    expect(log1.indexOf("a-two")).toBeLessThan(log1.indexOf("answer one"));
     expect(log1.indexOf("answer one")).toBeLessThan(log1.indexOf('"type":"exit"'));
-    expect(log1).not.toContain("b1");
+    expect(log1).not.toContain("b-one");
     expect(log1).not.toContain("answer two");
 
-    expect(log2.indexOf("b1")).toBeGreaterThan(-1);
-    expect(log2.indexOf("b1")).toBeLessThan(log2.indexOf("answer two"));
+    expect(log2.indexOf("b-one")).toBeGreaterThan(-1);
+    expect(log2.indexOf("b-one")).toBeLessThan(log2.indexOf("answer two"));
     expect(log2.indexOf("answer two")).toBeLessThan(log2.indexOf('"type":"exit"'));
-    expect(log2).not.toContain("a1");
+    expect(log2).not.toContain("a-one");
     expect(log2).not.toContain("answer one");
   });
 

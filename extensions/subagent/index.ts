@@ -81,6 +81,8 @@ import {
 import type { DelegationNote, DelegationProgress, SpawnFn } from "./delegation-runner.ts";
 import { registerDelegationStatus } from "./delegation-status.ts";
 import { registerDelegationSkipGuard } from "./delegation-skip-guard.ts";
+import { newGlobalId } from "./global-id.ts";
+import { appendIndexEntry } from "./global-index.ts";
 import { projectLogDir, resolveProject } from "./project-key.ts";
 import { DelegationResultCache } from "./result-cache.ts";
 import { registerDelegationQueue, type DelegationQueueOpts } from "./delegation-queue.ts";
@@ -482,6 +484,8 @@ export interface SubagentDeps {
 /** Receipt details (row 45, §4): the background tool result's `details`. */
 export interface ReceiptDetails {
   id: string;
+  /** PKG-3: the run's global GUID — the cross-project handle for `delegations resolve`. */
+  globalId?: string;
   agent: string;
   state: DelegationState;
   queuePosition?: number;
@@ -785,6 +789,8 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   const projectIdentity = resolveProject(process.cwd(), process.env);
   const projectKey = deps.projectKey ?? projectIdentity.key;
   const runLogDir = projectLogDir(baseLogDir, projectKey);
+  /** PKG-3 D3: the shared global index, written at log-sink creation (never at allocation). */
+  const indexFile = join(baseLogDir, "index.jsonl");
   const now = deps.now ?? Date.now;
   const batchWindowMs = deps.batchWindowMs ?? BATCH_WINDOW_MS;
   const batchMaxCards = deps.batchMaxCards ?? BATCH_MAX_CARDS;
@@ -898,10 +904,27 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     }
   };
 
-  /** R4's per-run log sink factory: `<base>/projects/<key>/<runId>.jsonl`, dir 0o700, file 0o600. */
-  const logSink = (init: { id: string; agent: string; task: string }) => {
+  /** R4's per-run log sink factory: `<base>/projects/<key>/<runId>.jsonl`, dir 0o700, file 0o600.
+   * PKG-3: the global index entry is written HERE — the run's sink opening is the moment the
+   * run actually starts, so a queue-cap-rejected or queued-then-aborted run is never indexed.
+   * The write is fail-open: an index failure never disables the run's log. */
+  const logSink = (init: { id: string; agent: string; task: string; globalId?: string }) => {
     mkdirSync(runLogDir, { recursive: true, mode: 0o700 });
     const file = join(runLogDir, `${init.id}.jsonl`);
+    if (init.globalId !== undefined) {
+      try {
+        appendIndexEntry(indexFile, {
+          globalId: init.globalId,
+          id: init.id,
+          projectKey,
+          projectRoot: projectIdentity.root,
+          logFile: file,
+          at: now(),
+        });
+      } catch {
+        // fail-open (D3): the run's log and the delegation itself are unaffected
+      }
+    }
     return {
       logFile: file,
       appendLine: (line: string) => {
@@ -939,7 +962,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     // closure additionally remembers every id it has handed out this session — consecutive
     // calls in one batch must be distinct (★M3), which neither the log dir nor the live
     // records can guarantee yet.
-    allocateId: (): string => {
+    allocateId: (): { id: string; globalId: string } => {
       const live: Set<string> = new Set(registry.list().map((record: DelegationRecord) => record.id));
       const id = allocateRunId(
         (() => {
@@ -952,7 +975,9 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         (candidate) => existsSync(join(runLogDir, `${candidate}.jsonl`)) || live.has(candidate) || allocatedIds.has(candidate),
       );
       allocatedIds.add(id);
-      return id;
+      // PKG-3: the allocator mints the global GUID beside the local id; a rejected run's GUID
+      // dies with the rejection (no sink, no index entry — A3.3).
+      return { id, globalId: newGlobalId(now()) };
     },
   });
 
@@ -999,7 +1024,13 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   // frozen signature — the one instance of the registry this session constructed. RR4: the
   // status surface consults the log dir through the same reconstruction session_start uses,
   // so an empty registry still surfaces stale runs (the net that survives a dead runner).
-  const statusApi = registerDelegationStatus(pi, registry, { staleRuns: () => reconstructFromLogDir(runLogDir, now(), { prune: false }), resultCache });
+  const statusApi = registerDelegationStatus(pi, registry, {
+    staleRuns: () => reconstructFromLogDir(runLogDir, now(), { prune: false }),
+    resultCache,
+    // PKG-3: resolve needs the current project's run dir (a settled local id's header) and the
+    // shared index (a GUID from any project); the registry itself is already in scope.
+    resolveContext: { runLogDir, projectKey, projectRoot: projectIdentity.root, indexFile },
+  });
   registerDelegationSkipGuard(pi);
 
   // Plan v2 R4: the `queue` tool (delegation-queue.ts) rides the SAME registry instance. Its
@@ -1256,6 +1287,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       content: text(line),
       details: {
         id: record.id,
+        ...(record.globalId !== undefined ? { globalId: record.globalId } : {}),
         agent: record.agent,
         state: record.state,
         ...(record.queuePosition !== undefined ? { queuePosition: record.queuePosition } : {}),

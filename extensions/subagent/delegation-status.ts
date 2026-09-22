@@ -35,10 +35,13 @@
  */
 
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Type, type Static } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { clampPeekLines, formatDuration, formatUsage, renderDelegationStatus, tailLines, type DelegationRecord, type LogRunSummary } from "./delegation-core.ts";
 import type { DelegationRegistry } from "./delegation-registry.ts";
+import { isGlobalId } from "./global-id.ts";
+import { findIndexEntry } from "./global-index.ts";
 import type { DelegationResultEntry } from "./result-cache.ts";
 
 // ------------------------------------------------------------------ contract constants
@@ -210,7 +213,7 @@ export function widgetLines(
 	return lines;
 }
 
-const USAGE_LINE = "usage: /delegations [peek <id> [--lines N]] [log <id>] [abort <id|all>]";
+const USAGE_LINE = "usage: /delegations [peek <id> [--lines N]] [log <id>] [resolve <id|guid>] [abort <id|all>]";
 
 function unknownIdError(id: string): Error {
 	// Same wording the registry's abort throws — one loud unknown-id message everywhere.
@@ -219,6 +222,24 @@ function unknownIdError(id: string): Error {
 
 /** Where a peek answer came from: the result cache, the live in-memory preview, or the queue. */
 export type PeekSource = "cache" | "live" | "queued";
+
+/** PKG-3 resolve wiring: the current project's run dir, key/root and the shared index file. */
+export interface ResolveContext {
+	runLogDir: string;
+	projectKey: string;
+	projectRoot: string;
+	indexFile: string;
+}
+
+/** The structured `resolve` answer: both ids, the owning project, the log and where it came from. */
+export interface ResolveDetails {
+	id: string;
+	globalId: string;
+	projectKey: string;
+	projectRoot: string;
+	logFile?: string;
+	source: "registry" | "log" | "index";
+}
 
 /** Assertable peek payload — id, applied lines and source without string-parsing (P2-A4). */
 export interface PeekDetails {
@@ -287,6 +308,10 @@ export function registerDelegationStatus(
 			byId(id: string): DelegationResultEntry | undefined;
 			byParent(parentId: string): DelegationResultEntry[];
 		};
+		/** PKG-3: what `resolve` reads beyond the live registry — the current project's run dir
+		 * (a settled local id's header carries its global id) and the shared index file (a GUID
+		 * from any project). Absent → resolve answers only from the live registry. */
+		resolveContext?: ResolveContext;
 	},
 ): { contextWindow(): number | undefined } {
 	const widgetKey = opts?.widgetKey ?? DEFAULT_WIDGET_KEY;
@@ -361,15 +386,103 @@ export function registerDelegationStatus(
 		return `abort requested for ${live.length} live delegation${live.length === 1 ? "" : "s"}`;
 	}
 
+	/** The global id of one run header line, or undefined for a missing/unreadable/guid-less log. */
+	function headerGlobalId(logFile: string): string | undefined {
+		try {
+			const first = readFileSync(logFile, "utf8").split("\n")[0];
+			if (!first?.trim()) return undefined;
+			const parsed = JSON.parse(first) as { type?: unknown; globalId?: unknown };
+			return parsed.type === "run" && typeof parsed.globalId === "string" ? parsed.globalId : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	function unknownResolveError(input: string): Error {
+		// The existing loud unknown-id wording plus the resolve hint (plan §2).
+		return new Error(
+			`ai-badger: unknown delegation id "${input}" — use delegations list for current ids, or delegations resolve <d-N|guid> to look up a global id`,
+		);
+	}
+
+	/**
+	 * A3.4: one input, two id spaces. A local `d-N` answers from the live registry first, then
+	 * the current project's run dir (a settled run's header carries its global id). A GUID
+	 * answers from the live registry by `globalId` first — a queued run has a GUID but no index
+	 * entry yet (review S3) — then the shared index, which reaches other projects. Unknown input
+	 * is loud.
+	 */
+	function resolveDelegation(input: string): { message: string; details: ResolveDetails } {
+		const context = opts?.resolveContext;
+		const describe = (details: ResolveDetails): { message: string; details: ResolveDetails } => {
+			const lines = [
+				`${details.id} — global id ${details.globalId}`,
+				`project: ${details.projectKey} (${details.projectRoot})`,
+				`source: ${details.source}`,
+			];
+			if (details.logFile) lines.push(`log: ${details.logFile}`);
+			return { message: lines.join("\n"), details };
+		};
+		const fromRecord = (record: DelegationRecord): { message: string; details: ResolveDetails } =>
+			describe({
+				id: record.id,
+				globalId: record.globalId!,
+				projectKey: context!.projectKey,
+				projectRoot: context!.projectRoot,
+				...(record.logFile !== undefined ? { logFile: record.logFile } : {}),
+				source: "registry",
+			});
+
+		const live = registry.get(input);
+		if (live?.globalId && context) return fromRecord(live);
+		const byGlobal = registry.list().find((record) => record.globalId === input);
+		if (byGlobal?.globalId && context) return fromRecord(byGlobal);
+
+		if (isGlobalId(input)) {
+			const entry = context ? findIndexEntry(context.indexFile, input) : undefined;
+			if (entry) {
+				return describe({
+					id: entry.id,
+					globalId: entry.globalId,
+					projectKey: entry.projectKey,
+					projectRoot: entry.projectRoot,
+					logFile: entry.logFile,
+					source: "index",
+				});
+			}
+			throw unknownResolveError(input);
+		}
+
+		if (context) {
+			const logFile = join(context.runLogDir, `${input}.jsonl`);
+			const globalId = headerGlobalId(logFile);
+			if (globalId) {
+				return describe({
+					id: input,
+					globalId,
+					projectKey: context.projectKey,
+					projectRoot: context.projectRoot,
+					logFile,
+					source: "log",
+				});
+			}
+		}
+		throw unknownResolveError(input);
+	}
+
 	function logTailResult(
 		id: string,
 		perCallBytes?: number,
 	): { ok: boolean; message: string; logFile?: string; source?: "log" | "live" } {
 		const record = requireRecord(id);
+		const globalIdLine = record.globalId !== undefined ? `global id: ${record.globalId}` : undefined;
 		if (!record.logFile) {
 			return {
 				ok: false,
-				message: `delegation ${id}: log unavailable — no log file was written for this run (the sink was disabled or failed); the delegation itself is unaffected`,
+				message: [
+					`delegation ${id}: log unavailable — no log file was written for this run (the sink was disabled or failed); the delegation itself is unaffected`,
+					...(globalIdLine ? [globalIdLine] : []),
+				].join("\n"),
 			};
 		}
 		// A live run's on-disk log holds ONLY its `run` header — the runner flushes the child's
@@ -381,7 +494,7 @@ export function registerDelegationStatus(
 			if (live.trim().length > 0) {
 				return {
 					ok: true,
-					message: [live, LIVE_PREVIEW_NOTE, `full log: ${record.logFile}`].join("\n"),
+					message: [live, LIVE_PREVIEW_NOTE, ...(globalIdLine ? [globalIdLine] : []), `full log: ${record.logFile}`].join("\n"),
 					logFile: record.logFile,
 					source: "live",
 				};
@@ -412,6 +525,7 @@ export function registerDelegationStatus(
 		} else {
 			parts.push(`delegation ${id}: no complete line in the last ${bytes} bytes — nothing to show`);
 		}
+		if (globalIdLine) parts.push(globalIdLine);
 		parts.push(`full log: ${record.logFile}`);
 		return { ok: true, message: parts.join("\n"), logFile: record.logFile, source: "log" };
 	}
@@ -460,10 +574,10 @@ export function registerDelegationStatus(
 
 	const DelegationsParams = Type.Object({
 		action: Type.Union(
-			[Type.Literal("list"), Type.Literal("log"), Type.Literal("abort"), Type.Literal("results"), Type.Literal("peek")],
-			{ description: "list: every delegation with its state; log: tail one run's log (a running run's file holds only its run header, so log answers with the in-memory live preview until it settles); abort: stop one run or all; results: one delegation's cached structured result, or (without an id) every cached result this session parented; peek: the answer tail — the cached output for settled runs, the live preview while running" },
+			[Type.Literal("list"), Type.Literal("log"), Type.Literal("abort"), Type.Literal("results"), Type.Literal("peek"), Type.Literal("resolve")],
+			{ description: "list: every delegation with its state; log: tail one run's log (a running run's file holds only its run header, so log answers with the in-memory live preview until it settles); abort: stop one run or all; results: one delegation's cached structured result, or (without an id) every cached result this session parented; peek: the answer tail — the cached output for settled runs, the live preview while running; resolve: a local run id's global GUID, or a global GUID's run/project/log — the cross-project lookup" },
 		),
-		id: Type.Optional(Type.String({ description: 'Run id for log/abort/peek/results (abort also accepts "all"; results without an id means this session)' })),
+		id: Type.Optional(Type.String({ description: 'Run id for log/abort/peek/results (abort also accepts "all"; results without an id means this session); resolve accepts a local run id or a global GUID' })),
 		bytes: Type.Optional(Type.Number({ description: `log: tail size in bytes (${MIN_LOG_TAIL_BYTES}–${MAX_LOG_TAIL_BYTES}, default ${DEFAULT_LOG_TAIL_BYTES})` })),
 		lines: Type.Optional(Type.Number({ description: "peek: answer tail in lines (1–100, default 20)" })),
 	});
@@ -571,8 +685,15 @@ export function registerDelegationStatus(
 				const result = peekResult(params.id.trim(), typeof linesParam === "number" ? linesParam : undefined);
 				return textResult(result.message, result.details);
 			}
+			case "resolve": {
+				if (typeof params.id !== "string" || !params.id.trim()) {
+					throw new Error(`delegations resolve needs a local run id or a global GUID; ${USAGE_LINE}`);
+				}
+				const result = resolveDelegation(params.id.trim());
+				return textResult(result.message, result.details);
+			}
 			default:
-				throw new Error(`delegations action must be one of list, log, abort, results, peek`);
+				throw new Error(`delegations action must be one of list, log, abort, results, peek, resolve`);
 		}
 	}
 
@@ -586,6 +707,7 @@ export function registerDelegationStatus(
 			'abort id|"all" (stop one delegation or every live one),',
 			"results [id] (one delegation's cached structured result — without an id, every result this session parented; the cache keeps the last 8 results and dies with the session).",
 			"peek id [lines N] (the answer tail: the cached output for settled runs, the live preview while running).",
+			"resolve id|guid (a local run id's global GUID, or a global GUID's run, project and log file — the cross-project lookup; log/peek/abort keep local ids).",
 			"Completion results arrive as followUp messages on their own — never poll with list/log (repeated polling is blocked). There is NO wait verb (removed f: 2026-09-02 — it blocked the main loop and ignored user input): to spend waiting time use the monitor extension's wait tool (user input interrupts it) or register a monitor, or simply end your turn and let the followUps wake you.",
 			'A run is unbounded unless the delegate call passes timeoutMs: on expiry the run is aborted through the normal kill path and settles aborted (timeout) — use abort to stop one yourself.',
 		].join(" "),
@@ -604,13 +726,13 @@ export function registerDelegationStatus(
 	}
 
 	pi.registerCommand(DELEGATIONS_COMMAND_NAME, {
-		description: "Delegation status; `peek <id> [--lines N]` shows the answer tail; `log <id>` tails a run's log (live runs answer from the in-memory preview); `abort <id|all>` stops runs.",
+		description: "Delegation status; `peek <id> [--lines N]` shows the answer tail; `log <id>` tails a run's log (live runs answer from the in-memory preview); `resolve <id|guid>` maps a local id to its global GUID and a GUID back to its run; `abort <id|all>` stops runs.",
 		getArgumentCompletions(argumentPrefix) {
 			// pi's argument completion replaces the WHOLE argument text with item.value
 			// (CombinedAutocompleteProvider.applyCompletion: beforePrefix + item.value +
 			// afterCursor, prefix = the full argument text). Every id item therefore carries
 			// its verb — `d-2` alone would rewrite `/delegations log d` into `/delegations d-2`.
-			const idPosition = /^(log|abort|peek)\s+(\S*)$/.exec(argumentPrefix);
+			const idPosition = /^(log|abort|peek|resolve)\s+(\S*)$/.exec(argumentPrefix);
 			if (idPosition) {
 				const verb = idPosition[1]!;
 				const token = idPosition[2]!;
@@ -626,8 +748,9 @@ export function registerDelegationStatus(
 				log: "tail a run's log (live preview while running)",
 				abort: "stop a run or all",
 				peek: "show the answer tail",
+				resolve: "map a local id ↔ its global GUID",
 			};
-			const subcommands = ["log", "abort", "peek"]
+			const subcommands = ["log", "abort", "peek", "resolve"]
 				.filter((verb) => verb.startsWith(first))
 				.map((verb) => ({ value: verb, label: verb, description: subcommandDescriptions[verb] }));
 			return subcommands.length > 0 ? subcommands : null;
@@ -639,7 +762,7 @@ export function registerDelegationStatus(
 				commandResult(ctx, statusPanel(elapsedNow()), "info");
 				return;
 			}
-			const match = /^(log|abort)\s+(\S+)\s*$/.exec(trimmed);
+			const match = /^(log|abort|resolve)\s+(\S+)\s*$/.exec(trimmed);
 			const peekMatch = /^peek\s+(\S+)(?:\s+--lines\s+(\S+))?\s*$/.exec(trimmed);
 			if (!match && !peekMatch) {
 				commandResult(ctx, USAGE_LINE, "info");
@@ -664,6 +787,10 @@ export function registerDelegationStatus(
 				if (verb === "log") {
 					const result = logTailResult(target!);
 					commandResult(ctx, result.message, result.ok ? "info" : "warning");
+					return;
+				}
+				if (verb === "resolve") {
+					commandResult(ctx, resolveDelegation(target!).message, "info");
 					return;
 				}
 				commandResult(ctx, target === "all" ? abortEverything() : abortDelegation(target!), "info");

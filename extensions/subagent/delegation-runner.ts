@@ -105,6 +105,9 @@ export interface LogSinkInit {
   id: string;
   agent: string;
   task: string;
+  /** PKG-3: the run's global GUID — the sink factory writes the index entry from it at
+   * creation, so a rejected or queued-then-aborted run (no sink) is never indexed. */
+  globalId?: string;
 }
 
 export type LogSinkFactory = (init: LogSinkInit) => RunLogSink | undefined;
@@ -185,6 +188,8 @@ export const defaultNow = (): number => Date.now();
 
 export interface RunRequest {
   id: string;
+  /** PKG-3: the registry-minted global GUID, passed through to the record and run header. */
+  globalId?: string;
   agent: string;
   task: string;
   /** Full child argv; the runner never builds argv (that is the tool layer's job, row 1). */
@@ -304,6 +309,7 @@ export class DelegationRunner {
     const deferred = createDeferred<DelegationRecord>();
     const record: DelegationRecord = {
       id: request.id,
+      ...(request.globalId !== undefined ? { globalId: request.globalId } : {}),
       agent: request.agent,
       task: request.task,
       // P1's record requires toolCallId (identity field); P3 always supplies one — "" marks a
@@ -604,7 +610,7 @@ export class DelegationRunner {
   private openTee(state: RunState): TeeState | undefined {
     if (!this.deps.logSink) return undefined;
     try {
-      const sink = this.deps.logSink({ id: state.record.id, agent: state.record.agent, task: state.record.task });
+      const sink = this.deps.logSink({ id: state.record.id, agent: state.record.agent, task: state.record.task, ...(state.record.globalId !== undefined ? { globalId: state.record.globalId } : {}) });
       return { sink, headerLine: "", stderrLines: [] };
     } catch (error) {
       this.warnOnce(state, error); // the factory itself is a sink operation (T62)
@@ -630,6 +636,7 @@ export class DelegationRunner {
     tee.headerLine = JSON.stringify({
       type: "run",
       runId: state.record.id,
+      ...(state.record.globalId !== undefined ? { globalId: state.record.globalId } : {}),
       agent: state.record.agent,
       persona: state.record.agent, // R4 names the field `persona`; both spellings ride the header
       task: state.record.task,

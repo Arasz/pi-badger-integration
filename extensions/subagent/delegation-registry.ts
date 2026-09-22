@@ -27,8 +27,17 @@ import {
   type GroupMode,
 } from "./delegation-core.ts";
 import { DelegationRunner, defaultNow, type DelegationNote, type RunnerDeps, type RunHandle } from "./delegation-runner.ts";
+import { newGlobalId } from "./global-id.ts";
 
 // ------------------------------------------------------------------ public shapes
+
+/** One allocated run id: the bare id (legacy allocators) or the richer allocator return. */
+export type AllocatedRunId = string | { id: string; globalId?: string };
+
+/** Normalize an allocator return — one helper for BOTH registry call sites (review M3). */
+export function allocationOf(value: AllocatedRunId): { id: string; globalId?: string } {
+  return typeof value === "string" ? { id: value } : value;
+}
 
 /** Sketch §4 shape plus the additive hooks P2 needs (warn/now/emit/allocateId). */
 export type DelegationDeps = Omit<RunnerDeps, "onSettle"> & {
@@ -38,8 +47,13 @@ export type DelegationDeps = Omit<RunnerDeps, "onSettle"> & {
   queueCap?: number;
   /** Injectable pi.events wire (P3): one serializable snapshot per state transition (T60). */
   emit?: (transition: DelegationTransition) => void;
-  /** Run-id allocation; default is an in-memory `d-<n>` counter (P3 injects the log-dir-aware allocator, T53/T73). */
-  allocateId?: () => string;
+  /** Run-id allocation; default is an in-memory `d-<n>` counter (P3 injects the log-dir-aware
+   * allocator, T53/T73). The richer return lets the allocator mint the run's global GUID too
+   * (PKG-3); a bare string is normalized through `allocationOf`. */
+  allocateId?: () => AllocatedRunId;
+  /** PKG-3 global-GUID minting for runs the allocator did not mint for (explicit ids, or a
+   * legacy string-returning allocator). Defaults to `newGlobalId`; injectable for tests. */
+  mintGlobalId?: () => string;
 };
 
 /** Frozen at P2 landing (plan §4 freeze point 2): serializable snapshot per state transition. */
@@ -166,7 +180,12 @@ export class DelegationRegistry {
       return { ok: false, reason: `duplicate delegation id "${request.id}"` };
     }
     const id = request.id ?? this.deps.allocateId?.() ?? this.nextInternalId();
-    const step = admitRequest(this.admission, id, this.caps);
+    // PKG-3: one allocation per run — the allocator's id + global GUID when it returns both,
+    // a minted GUID for explicit-id runs (they bypass the allocator; review M3).
+    const allocation = allocationOf(id);
+    const runId = allocation.id;
+    const globalId = allocation.globalId ?? this.mintGlobalId();
+    const step = admitRequest(this.admission, runId, this.caps);
     if (step.decision.action === "reject") {
       // T58: loud rejection with guidance, for background and blocking callers alike (blocking
       // rejection renders as an error result in P3 — never a receipt).
@@ -177,11 +196,12 @@ export class DelegationRegistry {
     }
     this.admission = step.state;
     const deferred = createDeferred<DelegationRecord>();
-    this.deferreds.set(id, deferred);
+    this.deferreds.set(runId, deferred);
 
     if (step.decision.action === "queue") {
       const record: DelegationRecord = {
-        id,
+        id: runId,
+        globalId,
         agent: request.agent,
         task: request.task,
         toolCallId: request.toolCallId ?? "", // P1 requires the identity field; P3 always supplies one
@@ -191,13 +211,13 @@ export class DelegationRegistry {
         exitCode: null,
         queuePosition: step.decision.queuePosition,
       };
-      this.records.set(id, record);
-      this.queuedRequests.set(id, request);
+      this.records.set(runId, record);
+      this.queuedRequests.set(runId, request);
       this.emitTransition(record);
-      return { ok: true, id, record: snapshotRecord(record), done: deferred.promise };
+      return { ok: true, id: runId, record: snapshotRecord(record), done: deferred.promise };
     }
 
-    return this.spawnNow(id, request);
+    return this.spawnNow(runId, request, undefined, globalId);
   }
 
   /**
@@ -219,8 +239,11 @@ export class DelegationRegistry {
       const reason = "the delegation runner is shut down — no new delegations can start";
       return requests.map(() => ({ ok: false as const, reason }));
     }
-    // Allocate-then-register: every id exists before any registration or spawn.
-    const ids = requests.map(() => this.deps.allocateId?.() ?? this.nextInternalId());
+    // Allocate-then-register: every id — and its global GUID — exists before any registration
+    // or spawn.
+    const allocations = requests.map(() => allocationOf(this.deps.allocateId?.() ?? this.nextInternalId()));
+    const ids = allocations.map((allocation) => allocation.id);
+    const globalIds = allocations.map((allocation) => allocation.globalId ?? this.mintGlobalId());
     const groupId = `g-${++this.groupCounter}`;
     const step = enqueueGroupInCore(this.admission, groupId, mode, ids, this.caps);
     if (step.decision.action === "reject") {
@@ -246,6 +269,7 @@ export class DelegationRegistry {
       const request = requests[i]!;
       const record: DelegationRecord = {
         id,
+        globalId: globalIds[i]!,
         agent: request.agent,
         task: request.task,
         toolCallId: request.toolCallId ?? "", // P3 always supplies one; "" marks none
@@ -265,7 +289,7 @@ export class DelegationRegistry {
     for (let i = 0; i < ids.length; i++) {
       const id = ids[i]!;
       if (!admittedNow.has(id)) continue;
-      const spawned = this.spawnNow(id, requests[i]!);
+      const spawned = this.spawnNow(id, requests[i]!, undefined, globalIds[i]);
       outcomes.push({ ok: true, id, groupId, mode, record: spawned.record, done: spawned.done });
     }
     // Phase 3 — outcomes for the queued members, built AFTER the spawns so a member the
@@ -398,13 +422,14 @@ export class DelegationRegistry {
   // ------------------------------------------------------------------ internals
 
   /** Always admits — admission was committed by the caller; the receipt shape is unconditional. */
-  private spawnNow(id: string, request: StartRequest, startedAt?: number): DelegationReceipt {
+  private spawnNow(id: string, request: StartRequest, startedAt?: number, globalId?: string): DelegationReceipt {
     // The deferred already exists; a run that settles inside runner.run() (pre-aborted signal,
     // spawn error) fires onSettle synchronously — which resolves AND deletes the deferred — so
     // the promise is captured before spawning.
     const done = this.deferreds.get(id)?.promise ?? Promise.resolve(this.snapshotFor(id));
     const handle = this.runner.run({
       id,
+      ...(globalId !== undefined ? { globalId } : {}),
       agent: request.agent,
       task: request.task,
       args: request.args,
@@ -462,7 +487,7 @@ export class DelegationRegistry {
     if (record.state !== "queued") return; // aborted while queued — never spawned
     this.queuedRequests.delete(id);
     // Queued runs keep their request time so start-order sorting stays stable (R7).
-    this.spawnNow(id, request, record.startedAt);
+    this.spawnNow(id, request, record.startedAt, record.globalId);
   }
 
   private snapshotFor(id: string): DelegationRecord {
@@ -500,11 +525,15 @@ export class DelegationRegistry {
     };
   }
 
-  private nextInternalId(): string {
+  private mintGlobalId(): string {
+    return this.deps.mintGlobalId?.() ?? newGlobalId();
+  }
+
+  private nextInternalId(): { id: string } {
     let candidate: string;
     do {
       candidate = `d-${++this.counter}`;
     } while (this.records.has(candidate));
-    return candidate;
+    return { id: candidate };
   }
 }

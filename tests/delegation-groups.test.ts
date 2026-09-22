@@ -108,14 +108,14 @@ class SyncFailChild extends FakeChild {
 // ------------------------------------------------------------------ Q-B1: allocate-then-register
 
 describe("registry enqueueGroup (Q-B1, Q-B4 — plan v2 R2/★M3)", () => {
-  test("Q-B1: enqueueing 3 members allocates 3 distinct ids — every id allocated before any spawn", async () => {
+  test("Q-B1: ids and global ids are allocated before any spawn", async () => {
     const allocations: string[] = [];
     const allocationCountAtSpawn: number[] = [];
     const h = makeRegistry({
       allocateId: () => {
         const id = `x-${allocations.length + 1}`;
         allocations.push(id);
-        return id;
+        return { id, globalId: `01926b4a-0000-7000-8000-${String(allocations.length).padStart(12, "0")}` };
       },
       spawnFn: () => {
         allocationCountAtSpawn.push(allocations.length);
@@ -131,6 +131,12 @@ describe("registry enqueueGroup (Q-B1, Q-B4 — plan v2 R2/★M3)", () => {
     );
 
     expect(idsOf(outcomes)).toEqual(["x-1", "x-2", "x-3"]); // 3 members, 3 distinct ids (★M3)
+    // The richer allocator return (PKG-3): every member's minted global id rides its record.
+    expect(outcomes.map((outcome) => (outcome.ok ? outcome.record.globalId : undefined))).toEqual([
+      "01926b4a-0000-7000-8000-000000000001",
+      "01926b4a-0000-7000-8000-000000000002",
+      "01926b4a-0000-7000-8000-000000000003",
+    ]);
     expect(h.children).toHaveLength(3); // idle system → the whole parallel group dequeues now
     for (const outcome of outcomes) {
       expect(outcome.ok && outcome.record.state).toBe("running");

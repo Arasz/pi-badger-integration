@@ -20,13 +20,15 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeChild } from "./helpers/fake-child.ts";
 import { createFakePi, type FakePiHandler, type FakePiRenderer, type FakePiSentMessage } from "./helpers/fake-pi.ts";
 import { AGENTS_DIR, pidAlive } from "../extensions/subagent/index.ts";
 import subagent from "../extensions/subagent/index.ts";
+import { GLOBAL_ID_PATTERN } from "../extensions/subagent/global-id.ts";
+import { readIndex } from "../extensions/subagent/global-index.ts";
 import {
   BATCH_SEPARATOR,
   clampRunTimeoutMs,
@@ -450,6 +452,108 @@ describe("PKG-2 — project-local id allocation and log layout (A2.2)", () => {
     expect(secondRun.details.id).toBe("d-1"); // ids restart per project
     expect(secondRun.details.logFile).toBe(join(first.logDir, "projects", "proj-b", "d-1.jsonl"));
     expect(existsSync(join(first.logDir, "projects", "proj-a", "d-1.jsonl"))).toBe(true);
+  });
+});
+
+// ------------------------------------------------------------------ PKG-3: global GUID + index
+
+/** The base index file the extension writes (D3): `<logDir>/index.jsonl`. */
+function indexFile(harness: Harness): string {
+  return join(harness.logDir, "index.jsonl");
+}
+
+describe("PKG-3 — global GUID on record, header and receipt (A3.2)", () => {
+  test("run header carries globalId and the receipt details expose it", async () => {
+    h = makeHarness();
+    const result = await callDelegate({ agent: "architect", task: "t" }, makeCtx(), undefined, "call-42");
+
+    const globalId = result.details.globalId as string;
+    expect(globalId).toMatch(GLOBAL_ID_PATTERN);
+    const header = JSON.parse(readFileSync(join(runLogDir(h), "d-1.jsonl"), "utf8").split("\n")[0]!) as { globalId?: string };
+    expect(header.globalId).toBe(globalId);
+
+    // The extension's own resolve wiring (PKG-3): a local id answers from the live registry
+    // with the project context the factory computed — not only in the status fixture.
+    const tool = h.tools.get("delegations") as {
+      execute(toolCallId: string, params: Record<string, unknown>, signal: undefined, onUpdate: undefined, ctx: unknown): Promise<DelegateResult>;
+    };
+    const resolved = await tool.execute("call-0", { action: "resolve", id: "d-1" }, undefined, undefined, makeCtx());
+    expect(resolved.details).toMatchObject({
+      id: "d-1",
+      globalId,
+      projectKey: "test-project",
+      logFile: join(runLogDir(h), "d-1.jsonl"),
+      source: "registry",
+    });
+  });
+
+  test("run header carries globalId for an explicit-id run too", async () => {
+    h = makeHarness();
+    // Explicit ids bypass the allocator (review M3) — the registry still mints a GUID.
+    const outcome = await h.api!.registry.start({
+      agent: "architect",
+      task: "t",
+      args: ["-p"],
+      cwd: h.projectDir,
+      toolCallId: "tc-explicit",
+      id: "d-99",
+    });
+    expect(outcome.ok).toBe(true);
+
+    const record = h.api!.registry.get("d-99");
+    expect(record.globalId).toMatch(GLOBAL_ID_PATTERN);
+    const header = JSON.parse(readFileSync(join(runLogDir(h), "d-99.jsonl"), "utf8").split("\n")[0]!) as { globalId?: string };
+    expect(header.globalId).toBe(record.globalId);
+    h.children[0]!.exit(0);
+  });
+});
+
+describe("PKG-3 — index timing (A3.3)", () => {
+  test("the global index entry is written when the run's log sink opens, not at allocation", async () => {
+    h = makeHarness("tui", { cap: 1 });
+
+    // openTee runs BEFORE the pre-aborted check, so an aborted-at-spawn run opens a sink and
+    // IS indexed (review M2) — then settles, freeing the single slot.
+    const aborted = await h.api!.registry.start({
+      agent: "architect",
+      task: "abort at spawn",
+      args: ["-p"],
+      cwd: h.projectDir,
+      toolCallId: "tc-aborted",
+      signal: AbortSignal.abort(),
+    });
+    expect(aborted.ok).toBe(true);
+    expect(readIndex(indexFile(h)).some((entry) => entry.id === aborted.id)).toBe(true);
+
+    const first = await callDelegate({ agent: "architect", task: "one" }, makeCtx(), undefined, "call-1");
+    const second = await callDelegate({ agent: "architect", task: "two" }, makeCtx(), undefined, "call-2");
+    expect(second.details.state).toBe("queued");
+
+    // d-1 is indexed because its sink opened; d-2 was allocated but has no sink yet.
+    expect(readIndex(indexFile(h)).some((entry) => entry.id === first.details.id)).toBe(true);
+    expect(readIndex(indexFile(h)).some((entry) => entry.id === second.details.id)).toBe(false);
+
+    h.children[0]!.exit(0); // the drain spawns the queued member — its sink opens now
+    expect(readIndex(indexFile(h)).some((entry) => entry.id === second.details.id)).toBe(true);
+  });
+
+  test("a queue-cap-rejected run and a run aborted while queued leave no index entry", async () => {
+    h = makeHarness("tui", { cap: 1, queueCap: 1 });
+    const first = await callDelegate({ agent: "architect", task: "one" }, makeCtx(), undefined, "call-1");
+    const second = await callDelegate({ agent: "architect", task: "two" }, makeCtx(), undefined, "call-2");
+    const third = await callDelegate({ agent: "architect", task: "three" }, makeCtx(), undefined, "call-3");
+
+    expect(second.details.state).toBe("queued");
+    expect(contentOf(third)).toContain("delegation rejected"); // admission rejected d-3
+    expect(readIndex(indexFile(h)).map((entry) => entry.id)).toEqual([first.details.id as string]);
+
+    // The queued run keeps its minted GUID but aborts before any sink opens.
+    const queuedId = second.details.id as string;
+    h.api!.registry.abort(queuedId);
+    const queuedRecord = h.api!.registry.get(queuedId);
+    expect(queuedRecord.state).toBe("aborted");
+    expect(queuedRecord.globalId).toMatch(GLOBAL_ID_PATTERN);
+    expect(readIndex(indexFile(h)).some((entry) => entry.id === queuedId)).toBe(false);
   });
 });
 
