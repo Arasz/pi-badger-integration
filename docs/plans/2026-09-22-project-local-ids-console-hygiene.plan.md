@@ -53,8 +53,9 @@ Status: ready to implement; no code changed by this plan.
 - **Decision**: a dedicated TUI-only capture extension writing to a bounded log file, with an
   env kill-switch and a fatal carve-out.
 - **Consequences**: positive — one systemic fix, per-site edits unnecessary; negative — a new
-  extension to publish and one more wrapper in the console chain; neutral — vertex chatter
-  lands in the capture file when session-signals is off.
+  extension to publish and one more wrapper in the console chain, and disabling it (kill-switch
+  or extension off) silently restores the leak by design — documented, not free (review S5);
+  neutral — vertex chatter lands in the capture file when session-signals is off.
 - **Alternatives**: host in `session-signals` (rejected: disableable, wrong ownership);
   per-site removal (rejected: 49 sites, recurs); patch `process.stdout.write` (rejected: pi's
   RPC `takeOverStdout` owns that surface).
@@ -84,12 +85,25 @@ Status: ready to implement; no code changed by this plan.
 Host: `extensions/console-capture/`. Gate: install at factory unless
 `PI_BADGER_CONSOLE_CAPTURE` is `0|false|off`; at `session_start`, disarm when
 `ctx.mode !== "tui"`; uninstall at `session_shutdown` (the factory re-runs next session).
+**Factory arming + exit flush (review M1)**: factories load before the TUI starts
+(`dist/main.js:653` vs `interactive-mode.js:698`), so factory-window output is pre-TUI and
+cannot corrupt the input, but pi's extension-load-failure diagnostics (`dist/main.js:475,725`)
+print there and `process.exit(1)` before `session_start` — the capture must therefore
+register `process.on("exit")` and, when `session_start` never confirmed a TUI session,
+synchronously flush the capture file tail to the original stderr so startup diagnostics reach
+the terminal. Arming at capture's own `session_start` handler instead (Shape B) is REJECTED:
+pi iterates extensions unsorted, and `subagent` logs on every `session_start`
+(`extensions/subagent/index.ts:951`) — a late handler leaves that line leaking.
 Log: `PI_BADGER_CONSOLE_CAPTURE_LOG` or `<getAgentDir()>/badger-console.log`; rotate at 1 MiB
-to `.1` (one generation). Composition: capture wraps and restores exactly the functions it
-captured, so it nests with `installVertexDebugFilter` in either order; it never touches
-`google-logging-utils`. Fatal: `uncaughtExceptionMonitor` disarms permanently. Tested without
-a TUI by injecting the append sink and calling the install/gate/rotate/fatal functions
-directly with swapped `console` methods.
+to `.1` (one generation). Wrapped set: `log|info|warn|error|debug` (Node 26 has
+`console.info !== console.log`); `dir|trace|table` are documented as outside the wrapper
+(review S2). The wrapper must never throw into a caller: a throwing append sink falls back to
+the original method once and never rethrows. Composition: capture wraps and restores exactly
+the functions it captured, so it nests with `installVertexDebugFilter` in either order; it
+never touches `google-logging-utils`. Fatal: `uncaughtExceptionMonitor` disarms permanently
+(pi's crash pair prints at `interactive-mode.js:3280-3281` after the monitor fires). Tested
+without a TUI by injecting the append sink and calling the install/gate/rotate/flush/fatal
+functions directly with swapped `console` methods.
 
 ## 4. Packages
 
@@ -102,8 +116,11 @@ new test helper `tests/helpers/apply-completion.ts` (pi's whole-argument algorit
 **Deltas**: capture the verb (`/^(log|abort|peek)\s+(\S*)$/`) and return `value` as
 `verb + " " + record.id`; monitor returns `value` as `"cancel " + view.id`.
 **Acceptance**: A1.1 id items are `log d-2` / `abort d-2` / `peek d-2`; A1.2 applying any item
-through pi's algorithm keeps the verb; A1.3 first-token verb lists unchanged; A1.4 monitor
-items are `cancel m-1`.
+through pi's algorithm keeps the verb (GUARD ONLY — the helper mirrors pi's algorithm, so it
+cannot falsify a misreading of the contract; review S1); A1.3 first-token verb lists unchanged;
+A1.4 monitor items are `cancel m-1`; A1.5 the independent evidence is a manual TUI check
+recorded in the task notes (`/delegations log d`, Tab → `/delegations log d-2`, Enter runs it) —
+the helper's header cites the bundle line it mirrors as a future-drift guard.
 **Tests first**: `tests/subagent-status.test.ts` — `"completion: id items carry the verb
 (value === 'abort d-2')"`, `"completion: applying an item through pi's whole-argument
 replacement keeps the verb"`, `"completion: first-token verbs are unchanged"`;
@@ -123,7 +140,12 @@ assertions (which pin the buggy values) flip first and must go red.
 `tests/subagent-model-level.test.ts`, `tests/subagent-queue-model-level.test.ts`,
 `tests/subagent-queue-tool.test.ts`, `tests/subagent-real-child.test.ts`,
 `tests/subagent/delegation-skip-guard.test.ts`, `tests/monitor/cross-extension-queue.test.ts`,
-`tests/monitor/monitor-extension.test.ts`, `tests/monitor/wait-tool.test.ts`.
+`tests/monitor/monitor-extension.test.ts`, `tests/monitor/wait-tool.test.ts`, plus the
+review-found additions `tests/router-fallback/router-fallback-extension.test.ts:931-933`
+(passes `logDir`; breaks silently otherwise) and `tests/monitor/poll-guard.test.ts:23` (passes
+NO `logDir` today — PKG-2 must give it one so it stops reading/writing the real home).
+`tests/subagent-real-child.test.ts:47-63,114` does not use the extension's `logDir` at all
+(its own `logSink`) and is unaffected.
 **Deltas**: add `SubagentDeps.projectKey?`; compute
 `const runLogDir = projectLogDir(logDir, deps.projectKey ?? resolveProjectKey(process.cwd()))`;
 point sink, allocator scan, reconstruction and `staleRuns` at `runLogDir`. `allocateRunId`
@@ -156,29 +178,45 @@ back to a stable hash"`, `"project key: no .ai-badger walks to .git; no .git has
 (command verb + completions).
 **Deltas**: `newGlobalId(now?)` = 48-bit ms timestamp + `randomBytes`, version 7/variant 10
 (no Node-version dependency); `GLOBAL_ID_PATTERN`; index helpers `appendIndexEntry` /
-`readIndex` / `findIndexEntry` / `compactIndex(entries, 500)`;
-`DelegationDeps.allocateId?: () => {id: string; globalId?: string}`; registry sets
-`record.globalId` and passes it through `RunRequest` → `LogSinkInit` → header; the sink factory
-writes the index entry from its `id → globalId` map at sink creation (fail-open); `resolve`
-joins the action union and the command; completions for `resolve` reuse the id branch.
+`readIndex` / `findIndexEntry` / `compactIndex(entries, 500)` with threshold-triggered
+atomic compaction (temp file + rename; append-only otherwise — review S4);
+`DelegationDeps.allocateId?: () => string | {id: string; globalId?: string}` normalized by one
+`allocationOf(value)` helper at BOTH call sites (`delegation-registry.ts:168` and `:223`),
+`nextInternalId` (`:503`) migrated to the richer return, and an explicit `request.id` run
+(path that bypasses the allocator) still mints a GUID via `mintGlobalId`/`newGlobalId`
+(review M3); registry sets `record.globalId` and passes it through `RunRequest` →
+`LogSinkInit` → header; the sink factory writes the index entry from its `id → globalId` map
+at sink creation (fail-open; `openTee` runs before the pre-aborted check at
+`delegation-runner.ts:350` vs `:353`, so an aborted-at-spawn run IS indexed — D3's
+"aborted-while-queued" wording does not cover it); `resolve` joins the action union and the
+command and consults the live registry by `globalId` before the index (review S3);
+completions for `resolve` reuse the id branch.
 **Acceptance**: A3.1 GUID matches the v7 pattern (version/variant) and is ordered by the
-injected clock; A3.2 record, header and receipt details carry `globalId`; A3.3 the index entry
-appears when the sink opens, and never for a rejected/aborted-while-queued run; A3.4
-`resolve d-N` returns its GUID and `resolve <guid>` from another project returns its
-`projectKey`/`projectRoot`/`logFile`, unknown input is loud; A3.5 the index keeps the newest
-500 entries.
+injected clock; A3.2 record, header and receipt details carry `globalId` for allocator-ALLOCATED
+and explicit-id runs alike (review M3/S6 — explicit ids mint a GUID after the fact); A3.3 the
+index entry appears when the sink opens, and an allocation-time implementation fails because
+no entry exists for a queue-cap-rejected run or a run aborted while queued (review M2 — the
+test asserts the NEGATIVE too); A3.4 `resolve d-N` returns its GUID, `resolve <guid>` checks
+the live registry by `globalId` before the index (queued runs have a GUID but no index entry,
+review S3), a GUID from another project returns its `projectKey`/`projectRoot`/`logFile`, and
+unknown input is loud; A3.5 the index compacts only above a threshold via temp-file + atomic
+rename (append-only otherwise, last-writer-wins documented — two live sessions share it,
+review S4), keeping the newest 500 entries.
 **Tests first**: new `tests/subagent/global-id.test.ts` — `"global id: is a v7 UUID (version
 and variant nibbles)"`, `"global id: the timestamp prefix orders ids by the injected clock"`,
 `"global id: two ids in the same millisecond differ"`; new
 `tests/subagent/global-index.test.ts` — `"global index: append writes one JSONL entry with
 project and log path"`, `"global index: lookup by guid returns the newest entry"`,
-`"global index: compaction keeps the newest N entries"`; `tests/subagent-extension.test.ts` —
-`"run header carries globalId and the receipt details expose it"`, `"the global index entry is
-written when the run's log sink opens, not at allocation"`; `tests/subagent-status.test.ts` —
-`"resolve accepts a local id and returns its global id"`, `"resolve accepts a guid from another
-project"`, `"resolve of an unknown id or guid is loud"`; `tests/delegation-groups.test.ts:110-130`
-fixture updated to the richer `allocateId` return (rename to `"Q-B1: ids and global ids are
-allocated before any spawn"`).
+`"global index: compaction keeps the newest N entries"`, `"global index: append-only below the
+threshold, atomic rename above it"`; `tests/subagent-extension.test.ts` — `"run header carries
+globalId and the receipt details expose it"`, `"run header carries globalId for an explicit-id
+run too"`, `"the global index entry is written when the run's log sink opens, not at
+allocation"` PLUS the negative half `"a queue-cap-rejected run and a run aborted while queued
+leave no index entry"`; `tests/subagent-status.test.ts` — `"resolve accepts a local id and
+returns its global id"`, `"resolve accepts a guid from another project"`, `"resolve <guid>
+answers a queued run from the live registry before the index"`, `"resolve of an unknown id or
+guid is loud"`; `tests/delegation-groups.test.ts:110-130` fixture updated to the richer
+`allocateId` return (rename to `"Q-B1: ids and global ids are allocated before any spawn"`).
 **Prove**: `bun test tests/subagent tests/subagent-status.test.ts tests/subagent-extension.test.ts
 tests/delegation-core.test.ts tests/delegation-groups.test.ts` + `bunx tsc --noEmit -p .`.
 
@@ -191,22 +229,29 @@ tests/delegation-core.test.ts tests/delegation-groups.test.ts` + `bunx tsc --noE
 `publish.ts:70` (`EXTENSION_DIRS`); `README.md:36` table; `docs/reference/extension-catalog.md`
 (new section). Optional one-line cleanup: remove the unused `uninstallFilter` binding at
 `extensions/session-signals/index.ts:127`.
-**Deltas**: capture wraps `log|warn|error|debug`, formats one line per call
+**Deltas**: capture wraps `log|info|warn|error|debug` (review S2), formats one line per call
 (`<iso> <level> <text>`), appends via an injectable sink, rotates at 1 MiB; kill-switch and
-path override env; `uncaughtExceptionMonitor` → disarm permanently; `uninstall` restores
-exactly the captured functions (vertex-filter composition is order-independent).
+path override env; a throwing sink falls back to the original method once, never rethrows;
+`process.on("exit")` flushes the capture tail to the original stderr when `session_start`
+never confirmed a TUI session (review M1 — pi's load-failure diagnostics otherwise disappear);
+`uncaughtExceptionMonitor` → disarm permanently; `uninstall` restores exactly the captured
+functions (vertex-filter composition is order-independent).
 **Acceptance**: A4.1 console levels reach the log and not the terminal; A4.2 the env
 kill-switch leaves console untouched; A4.3 non-TUI `session_start` disarms; A4.4 rotation keeps
 one `.1` generation; A4.5 the fatal monitor restores console and never re-arms; A4.6 composed
-with the vertex filter in either order, neither message reaches the terminal.
+with the vertex filter in either order, neither message reaches the terminal; A4.7 a throwing
+sink falls back to the original console and never throws; A4.8 a pre-`session_start` failure
+flush reaches the original stderr and the file keeps the line.
 **Tests first**: new `tests/console-capture/console-capture.test.ts` — `"capture: routes
 console levels to the log and not the terminal"`, `"capture: the env kill-switch leaves console
 untouched"`, `"capture: uninstall restores exactly the captured functions"`, `"capture:
 rotation at the byte cap keeps one generation"`, `"capture: the fatal guard restores console
-and never re-arms"`, `"capture: composed with the vertex filter in either order, neither writes
+and never re-arms"`, `"capture: a throwing sink falls back to the original console and does
+not throw"`, `"capture: composed with the vertex filter in either order, neither writes
 to the terminal"`; new `tests/console-capture/console-capture-extension.test.ts` —
 `"extension: installs on load and stays armed in tui"`, `"extension: disarms at session_start
-when the mode is not tui"`.
+when the mode is not tui"`, `"extension: a failure exit before session_start flushes captured
+diagnostics to the original stderr"`.
 **Prove**: `bun test tests/console-capture tests/session-signals` + `bunx tsc --noEmit -p .`.
 
 ### PKG-5 — integration (last package, cross-package tests)
@@ -242,13 +287,14 @@ tests/session-signals`), `bunx tsc --noEmit -p .`, `bun publish.ts && bun publis
 | Criterion | Test file | Test name | Run |
 |---|---|---|---|
 | A1.1 | tests/subagent-status.test.ts | completion: id items carry the verb (value === 'abort d-2') | `bun test tests/subagent-status.test.ts` |
-| A1.2 | tests/subagent-status.test.ts | completion: applying an item through pi's whole-argument replacement keeps the verb | same |
+| A1.2 | tests/subagent-status.test.ts | completion: applying an item through pi's whole-argument replacement keeps the verb | same (guard only; A1.5 manual TUI check is the independent evidence) |
 | A1.3 | tests/subagent-status.test.ts | completion: first-token verbs are unchanged | same |
 | A1.4 | tests/monitor/monitor-extension.test.ts | B-C8: cancel completions carry the verb (value === 'cancel m-1') | `bun test tests/monitor/monitor-extension.test.ts` |
 | A2.1 | tests/subagent/project-key.test.ts | project key: AI_BADGER_PROJECT_ID wins and is sanitized | `bun test tests/subagent/project-key.test.ts` |
 | A2.1 | tests/subagent/project-key.test.ts | project key: .ai-badger/project-id is the key; missing file falls back to a stable hash | same |
 | A2.1 | tests/subagent/project-key.test.ts | project key: no .ai-badger walks to .git; no .git hashes cwd | same |
-| A2.2 | tests/subagent/project-key.test.ts | project log dir: base/projects/<key> | same |
+| A2.2 | tests/subagent-extension.test.ts | project-local logs: logFile is projects/<key>/d-1.jsonl and exists | `bun test tests/subagent-extension.test.ts` |
+| A2.2 | tests/subagent/project-key.test.ts | project log dir: base/projects/<key> | `bun test tests/subagent/project-key.test.ts` |
 | A2.3 | tests/subagent-extension.test.ts | project-local logs: two project keys sharing a base dir both allocate d-1 | `bun test tests/subagent-extension.test.ts` |
 | A2.4 | tests/subagent-extension.test.ts | project-local logs: a session reconstructs only its own project's runs | same |
 | A2.5 | tests/subagent-extension.test.ts | project-local logs: a legacy flat d-9.jsonl is invisible | same |
@@ -256,9 +302,12 @@ tests/session-signals`), `bunx tsc --noEmit -p .`, `bun publish.ts && bun publis
 | A3.1 | tests/subagent/global-id.test.ts | global id: the timestamp prefix orders ids by the injected clock | same |
 | A3.1 | tests/subagent/global-id.test.ts | global id: two ids in the same millisecond differ | same |
 | A3.2 | tests/subagent-extension.test.ts | run header carries globalId and the receipt details expose it | `bun test tests/subagent-extension.test.ts` |
+| A3.2 | tests/subagent-extension.test.ts | run header carries globalId for an explicit-id run too | same |
 | A3.3 | tests/subagent-extension.test.ts | the global index entry is written when the run's log sink opens, not at allocation | same |
+| A3.3 | tests/subagent-extension.test.ts | a queue-cap-rejected run and a run aborted while queued leave no index entry | same |
 | A3.4 | tests/subagent-status.test.ts | resolve accepts a local id and returns its global id | `bun test tests/subagent-status.test.ts` |
 | A3.4 | tests/subagent-status.test.ts | resolve accepts a guid from another project | same |
+| A3.4 | tests/subagent-status.test.ts | resolve <guid> answers a queued run from the live registry before the index | same |
 | A3.4 | tests/subagent-status.test.ts | resolve of an unknown id or guid is loud | same |
 | A3.5 | tests/subagent/global-index.test.ts | global index: compaction keeps the newest N entries | `bun test tests/subagent/global-index.test.ts` |
 | A4.1 | tests/console-capture/console-capture.test.ts | capture: routes console levels to the log and not the terminal | `bun test tests/console-capture` |
@@ -267,6 +316,8 @@ tests/session-signals`), `bunx tsc --noEmit -p .`, `bun publish.ts && bun publis
 | A4.4 | tests/console-capture/console-capture.test.ts | capture: rotation at the byte cap keeps one generation | same |
 | A4.5 | tests/console-capture/console-capture.test.ts | capture: the fatal guard restores console and never re-arms | same |
 | A4.6 | tests/console-capture/console-capture.test.ts | capture: composed with the vertex filter in either order | same |
+| A4.7 | tests/console-capture/console-capture.test.ts | capture: a throwing sink falls back to the original console and does not throw | same |
+| A4.8 | tests/console-capture/console-capture-extension.test.ts | extension: a failure exit before session_start flushes captured diagnostics to the original stderr | same |
 | A5.1 | tests/integration/project-local-ids-console-hygiene.test.ts | completion round-trip | `bun test tests/integration` |
 | A5.2 | tests/integration/project-local-ids-console-hygiene.test.ts | project isolation end-to-end | same |
 | A5.3 | tests/integration/project-local-ids-console-hygiene.test.ts | global round-trip | same |
@@ -286,8 +337,13 @@ tests/session-signals`), `bunx tsc --noEmit -p .`, `bun publish.ts && bun publis
 
 - **Mid-run upgrade**: a child running at upgrade time keeps its flat log path; after restart
   it is invisible (accepted, documented). Rollback: revert PKG-2/PKG-3; flat logs remain.
-- **Wide test churn**: 10 harness files reference `logDir` paths; a missed harness fails loudly,
-  not silently.
+- **Wide test churn**: 10+ harness files reference `logDir` paths. Only
+  `tests/subagent-extension.test.ts:410-411` (explicit `join(logDir, "d-1.jsonl")`) and
+  `:587/:605` (flat logs written then reconstructed) fail LOUDLY; the rest pass `logDir` only
+  to avoid the real home and assert nothing about the path, so PKG-2 adds one nested-path
+  assertion to a second harness (monitor-extension or cross-extension-queue) and fixes
+  `tests/monitor/poll-guard.test.ts:23` (no `logDir` today). `tests/subagent-real-child.test.ts`
+  is unaffected (own sink).
 - **Index growth/corruption**: bounded at 500 lines, malformed lines skipped on read, writes
   fail-open; a corrupt index never affects run logging.
 - **Capture swallowing a diagnostic**: log file + `PI_BADGER_CONSOLE_CAPTURE=0` +
