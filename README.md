@@ -39,6 +39,8 @@ bun run check
 | decision-router | One Jev decision call per turn: additive tool selection, model tier, shadow skill routing (`/decisions`) |
 | update-check | Background notice when a newer integration release exists (`/update-check`) |
 | message-bus | Native pi message-bus on the ai-badger backend (`message-bus` tool with send/reply/whoami, `/messages`) |
+| mem-based-rag | Skill-call prompt enrichment from the ai-raccoon bank (top-5 memory + top-5 code; `/rag`, `/ask`) |
+| query-pipeline | Multi-query retrieval engine behind mem-based-rag: delegator-persona query planning, Jev scoring, document-aware merge |
 | pi-cron | Cron scheduling inside pi |
 | pi-mcp-tools | Universal MCP tools (fork of [tickernelz/pi-mcp-tools](https://github.com/tickernelz/pi-mcp-tools), flattened for directory installs) |
 | session-signals | Marker importance aborts and delegation footer status |
