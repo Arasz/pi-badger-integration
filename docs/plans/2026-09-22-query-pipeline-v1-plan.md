@@ -118,7 +118,7 @@ export function toEnvelope(result: PipelineResult): string;   // {"data":{"resul
 
 `retrieve` resolves the exact `memory_search` envelope string (`{"data":{"results":[...],"code":[...]}}`) so mem-based-rag's `JSON.parse → pruneHits → slice` path is untouched. It **never rejects**: every failure degrades to a fallback/partial/empty envelope. `projectId`/`sessionId` are bound in the `search` closure; the pipeline never sees them.
 
-**R3 (slots):** the owner's "5 results" is **5 slots total across mem+code**, not 5 per section. `mergeSelect` counts across kinds and splits by kind only for rendering; env `PI_BADGER_QUERY_PIPELINE_SLOTS` (default 5) makes it adjustable.
+**R3 (slots):** the owner's "5 results" is **5 slots total across mem+code**, not 5 per section. `mergeSelect` counts across kinds and splits by kind only for rendering; the budget is the hardcoded `MERGE_SLOTS = 5` (no env knob in v1).
 
 ## 2. Merge algorithm (`merge.ts`, pure)
 
