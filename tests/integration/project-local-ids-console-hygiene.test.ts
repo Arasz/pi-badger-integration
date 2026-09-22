@@ -292,9 +292,9 @@ describe("A5.3 — global round-trip", () => {
   });
 });
 
-// ------------------------------------------------------------------ A5.4 legacy flat logs
+// ------------------------------------------------------------------ legacy flat logs (integration)
 
-describe("A5.4 — legacy flat logs", () => {
+describe("legacy flat logs — integration", () => {
   test("legacy flat logs stay invisible to new sessions", async () => {
     const base = tempDir("aib-integration-legacy-");
     const flat = join(base, "d-9.jsonl");
@@ -327,9 +327,9 @@ describe("A5.4 — legacy flat logs", () => {
   });
 });
 
-// ------------------------------------------------------------------ A5.5 console capture
+// ------------------------------------------------------------------ A5.4 console capture
 
-describe("A5.5 — console capture", () => {
+describe("A5.4 — console capture", () => {
   test("console capture: a leaky extension error never reaches the terminal and the log has it", () => {
     const dir = tempDir("aib-integration-console-");
     const logPath = join(dir, "badger-console.log");

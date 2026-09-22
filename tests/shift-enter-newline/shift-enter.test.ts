@@ -3,6 +3,7 @@
  * Each test names the failure mode it targets; see README for the mutation table.
  */
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import {
 	type EditorHarness,
 	loadExtension,
@@ -123,6 +124,23 @@ describe("ESC+CR — the bytes JetBrains terminals send for Shift+Enter", () => 
 });
 
 describe("native helper", () => {
+	test("candidate paths try the renamed 0.87 prebuild first, without a doubled path segment", async () => {
+		// Failure mode: only the pre-0.87 filename is tried (pi-tui renamed it), or the
+		// package-dir candidate repeats `@earendil-works/pi-tui` and never exists.
+		const ext = await loadExtension();
+		const prebuilds = join("native", "darwin", "prebuilds", "darwin-arm64");
+		expect(ext.shiftHelperCandidatePaths("/pkg", ["/root"], "arm64")).toEqual([
+			join("/pkg", prebuilds, "darwin-platform.node"),
+			join("/pkg", prebuilds, "darwin-modifiers.node"),
+			join("/root", "@earendil-works", "pi-tui", prebuilds, "darwin-platform.node"),
+			join("/root", "@earendil-works", "pi-tui", prebuilds, "darwin-modifiers.node"),
+		]);
+		expect(ext.shiftHelperCandidatePaths(undefined, ["/root"], "x64")).toEqual([
+			join("/root", "@earendil-works", "pi-tui", "native", "darwin", "prebuilds", "darwin-x64", "darwin-platform.node"),
+			join("/root", "@earendil-works", "pi-tui", "native", "darwin", "prebuilds", "darwin-x64", "darwin-modifiers.node"),
+		]);
+	});
+
 	test.skipIf(process.platform !== "darwin")("loadShiftHelper returns a callable helper", async () => {
 		// Failure mode: native module not found in any install layout.
 		// Skipped off-macOS or on unsupported arch where undefined is correct.

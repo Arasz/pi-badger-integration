@@ -232,6 +232,13 @@ test("capture: composed with the vertex filter in either order, neither writes t
 			console.error(vertexMessage);
 
 			expect(terminal.calls).toHaveLength(0);
+
+			// The vertex filter alone also satisfies "terminal empty"; a NON-vertex message must
+			// land in the capture lines, or this test would pass with capture broken.
+			const plainMessage = "plain extension diagnostic";
+			console.error(plainMessage);
+			expect(terminal.calls).toHaveLength(0);
+			expect(lines.some((line) => line.includes(plainMessage))).toBe(true);
 		} finally {
 			// Reverse install order restores each layer's exact captured reference.
 			if (order === "capture-first") {

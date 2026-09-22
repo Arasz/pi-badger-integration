@@ -56,40 +56,56 @@ function recordInput(data: string, shift: boolean | null) {
 }
 
 /**
+ * The candidate `.node` paths for the darwin modifier helper, in preference order.
+ *
+ * pi-tui renamed the prebuild in 0.87.1: older versions ship `darwin-modifiers.node`,
+ * 0.87+ ships `darwin-platform.node`. Both are tried, newest first, because the
+ * extension's vendored pi-tui may lag the running pi. Exported so the filename/order contract
+ * is pinned without depending on what the test machine's install happens to ship.
+ */
+export function shiftHelperCandidatePaths(
+	packageDir: string | undefined,
+	roots: string[],
+	arch: string,
+): string[] {
+	const prebuilds = path.join("native", "darwin", "prebuilds", `darwin-${arch}`);
+	const names = ["darwin-platform.node", "darwin-modifiers.node"];
+	const candidates: string[] = [];
+	if (packageDir !== undefined) {
+		for (const name of names) candidates.push(path.join(packageDir, prebuilds, name));
+	}
+	for (const root of roots) {
+		for (const name of names) {
+			candidates.push(path.join(root, "@earendil-works", "pi-tui", prebuilds, name));
+		}
+	}
+	return candidates;
+}
+
+/**
  * Locate pi-tui's native modifier helper (CGEventSource-backed) shipped with the
  * pi installation. Returns undefined when unavailable (non-macOS, unsupported
  * arch, or unknown install layout) and the editor then behaves exactly like the
  * default one.
- *
- * pi-tui renamed the darwin prebuild in 0.87.1: older versions ship
- * `darwin-modifiers.node`, 0.87+ ships `darwin-platform.node`. Both names are tried,
- * newest first, because the extension's vendored pi-tui may lag the running pi.
  */
 export function loadShiftHelper(): ModifierHelper | undefined {
 	if (process.platform !== "darwin") return undefined;
 	if (process.arch !== "arm64" && process.arch !== "x64") return undefined;
-	const prebuilds = path.join("native", "darwin", "prebuilds", `darwin-${process.arch}`);
-	const helperNames = ["darwin-platform.node", "darwin-modifiers.node"];
 	const nodeRequire = createRequire(import.meta.url);
-	const candidates: string[] = [];
 	// The pi-tui package this extension resolves for its own imports (its vendored copy
 	// first, then any node_modules chain above it).
+	let packageDir: string | undefined;
 	try {
-		const packageDir = path.dirname(nodeRequire.resolve("@earendil-works/pi-tui/package.json"));
-		for (const name of helperNames) candidates.push(path.join(packageDir, prebuilds, name));
+		packageDir = path.dirname(nodeRequire.resolve("@earendil-works/pi-tui/package.json"));
 	} catch {
 		// No node_modules chain above the extension; rely on the install-layout roots below.
 	}
-	for (const root of [
+	const candidates = shiftHelperCandidatePaths(packageDir, [
 		path.join(homedir(), ".bun", "install", "global", "node_modules"),
 		path.join(path.dirname(process.execPath), "..", "lib", "node_modules"),
 		path.join("/opt", "homebrew", "lib", "node_modules"),
 		path.join("/usr/local", "lib", "node_modules"),
-	]) {
-		for (const name of helperNames) {
-			candidates.push(path.join(root, "@earendil-works", "pi-tui", prebuilds, name));
-		}
-	}
+	], process.arch);
 	for (const candidate of candidates) {
 		try {
 			if (!existsSync(candidate)) continue;

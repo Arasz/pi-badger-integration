@@ -828,7 +828,7 @@ export function liveQueuePosition(state: GroupAdmissionState, id: string): numbe
 
 // ------------------------------------------------------------------ run-id allocation
 
-const RUN_ID_PATTERN = /^d-(\d+)$/;
+export const RUN_ID_PATTERN = /^d-(\d+)$/;
 export const RUN_ID_PREFIX = "d-";
 
 /**

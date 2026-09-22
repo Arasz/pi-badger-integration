@@ -879,6 +879,28 @@ describe("A3.4 — delegations resolve (local id ↔ global GUID)", () => {
 			await expect(
 				delegationsTool(fx).execute({ action: "resolve", id: "01926b4a-2222-7000-8000-000000000002" }),
 			).rejects.toThrow(/delegations resolve/);
+			// Shape gate: neither `d-N` nor a GUID is named loudly without touching the disk.
+			for (const garbage of ["not-an-id", "d-", "d-1x", "..", "../../etc/passwd"]) {
+				await expect(delegationsTool(fx).execute({ action: "resolve", id: garbage })).rejects.toThrow(/unknown delegation id/);
+			}
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("resolve rejects traversal-shaped input instead of reading outside the run dir", async () => {
+		const { fx, context, dir } = resolveFixture();
+		try {
+			// Without the shape gate, join(runLogDir, `${input}.jsonl`) would happily read this
+			// file one level above the project's run dir and report its global id.
+			mkdirSync(join(dir, "projects"), { recursive: true });
+			writeFileSync(
+				join(dir, "projects", "evil.jsonl"),
+				`${JSON.stringify({ type: "run", runId: "evil", globalId: "01926b4a-3333-7000-8000-000000000003" })}\n`,
+			);
+			expect(context.runLogDir).toBe(join(dir, "projects", "proj-a"));
+
+			await expect(delegationsTool(fx).execute({ action: "resolve", id: "../evil" })).rejects.toThrow(/unknown delegation id/);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

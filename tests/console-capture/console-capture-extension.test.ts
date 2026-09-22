@@ -38,7 +38,9 @@ type ProcListener = (...args: unknown[]) => void;
 
 interface FakeProc {
 	on(event: string, listener: ProcListener): void;
+	off(event: string, listener: ProcListener): void;
 	fire(event: string, ...args: unknown[]): void;
+	listenerCount(event: string): number;
 }
 
 function fakeProc(): FakeProc {
@@ -49,8 +51,18 @@ function fakeProc(): FakeProc {
 			list.push(listener);
 			handlers.set(event, list);
 		},
+		off(event, listener) {
+			const list = handlers.get(event) ?? [];
+			handlers.set(
+				event,
+				list.filter((entry) => entry !== listener),
+			);
+		},
 		fire(event, ...args) {
 			for (const listener of handlers.get(event) ?? []) listener(...args);
+		},
+		listenerCount(event) {
+			return (handlers.get(event) ?? []).length;
 		},
 	};
 }
@@ -58,6 +70,12 @@ function fakeProc(): FakeProc {
 async function fireSessionStart(pi: FakePi, mode: string): Promise<void> {
 	for (const handler of pi.handlers.get("session_start") ?? []) {
 		await handler({ type: "session_start", reason: "startup" }, { mode });
+	}
+}
+
+async function fireSessionShutdown(pi: FakePi): Promise<void> {
+	for (const handler of pi.handlers.get("session_shutdown") ?? []) {
+		await handler({ type: "session_shutdown", reason: "quit" }, { mode: "tui" });
 	}
 }
 
@@ -147,5 +165,46 @@ describe("console-capture factory wiring", () => {
 		terminal.error("captured for the log only");
 		proc.fire("exit");
 		expect(stderr).toHaveLength(0);
+	});
+
+	test("extension: session_shutdown removes both process listeners — no per-session accumulation", async () => {
+		// pi re-runs extension factories per session; leaking a listener per factory run hits
+		// Node's 11-listener MaxListenersExceededWarning, which prints into the TUI.
+		const proc = fakeProc();
+		for (let session = 0; session < 3; session++) {
+			const pi = createFakePi();
+			consoleCapture(pi as never, { env: {}, console: fakeConsole(), sink: () => {}, proc });
+			expect(proc.listenerCount("exit")).toBe(1);
+			expect(proc.listenerCount("uncaughtExceptionMonitor")).toBe(1);
+			await fireSessionShutdown(pi);
+			expect(proc.listenerCount("exit")).toBe(0);
+			expect(proc.listenerCount("uncaughtExceptionMonitor")).toBe(0);
+		}
+		expect(proc.listenerCount("exit")).toBe(0);
+		expect(proc.listenerCount("uncaughtExceptionMonitor")).toBe(0);
+	});
+
+	test("extension: the kill-switch registers no listener and creates no log file", () => {
+		const dir = mkdtempSync(join(tmpdir(), "aib-console-capture-off-"));
+		try {
+			const logPath = join(dir, "nested", "badger-console.log");
+			const terminal = fakeConsole();
+			const proc = fakeProc();
+			const pi = createFakePi();
+			consoleCapture(pi as never, {
+				env: { PI_BADGER_CONSOLE_CAPTURE: "0" },
+				console: terminal,
+				logPath,
+				proc,
+			});
+
+			expect(proc.listenerCount("exit")).toBe(0);
+			expect(proc.listenerCount("uncaughtExceptionMonitor")).toBe(0);
+			expect(existsSync(join(dir, "nested"))).toBe(false);
+			terminal.error("still goes to the terminal");
+			expect(terminal.calls).toEqual([{ level: "error", args: ["still goes to the terminal"] }]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

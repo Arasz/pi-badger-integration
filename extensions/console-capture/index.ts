@@ -17,12 +17,15 @@ import {
 	defaultLogPath,
 	flushTail,
 	installConsoleCapture,
+	isCaptureDisabled,
 	type ConsoleLike,
 } from "./console-capture.ts";
 
 /** The process surface the factory touches; injectable so tests never exit a real process. */
 export interface ProcessLike {
 	on(event: string, listener: (...args: unknown[]) => void): unknown;
+	/** Removal counterpart; optional for minimal fakes, `process.off` in production. */
+	off?(event: string, listener: (...args: unknown[]) => void): unknown;
 }
 
 export interface ConsoleCaptureDeps {
@@ -46,6 +49,9 @@ export interface ConsoleCaptureDeps {
 
 export default function consoleCapture(pi: ExtensionAPI, deps: ConsoleCaptureDeps = {}): void {
 	const env = deps.env ?? process.env;
+	// Kill-switch BEFORE anything else: a disabled capture must not create the log dir or
+	// register a single listener (review SHOULD 9 — createFileSink pipes the parent dir).
+	if (isCaptureDisabled(env)) return;
 	const logPath = deps.logPath ?? defaultLogPath(env, getAgentDir());
 	const sink = deps.sink ?? createFileSink(logPath, deps.maxBytes);
 	const capture = installConsoleCapture({ sink, env, console: deps.console, now: deps.now });
@@ -54,6 +60,18 @@ export default function consoleCapture(pi: ExtensionAPI, deps: ConsoleCaptureDep
 	const proc: ProcessLike = deps.proc ?? process;
 	const stderr = deps.stderr ?? ((text: string) => process.stderr.write(text));
 	let tuiConfirmed = false;
+
+	// Named listeners removed at session_shutdown: pi re-runs extension factories per session
+	// (/new, session replacement), and Node warns (into the TUI!) at the 11th listener on one
+	// event — the exact leak class this extension exists to prevent (impl-review MUST 1).
+	const onExit = (): void => {
+		// Startup diagnostics were captured before a TUI ever confirmed; hand them back to
+		// the terminal. Once the TUI owns the screen, the log file is the only destination.
+		if (!tuiConfirmed) flushTail(stderr, capture.tail());
+	};
+	const onFatal = (): void => {
+		capture.fatal();
+	};
 
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode === "tui") {
@@ -66,15 +84,10 @@ export default function consoleCapture(pi: ExtensionAPI, deps: ConsoleCaptureDep
 
 	pi.on("session_shutdown", () => {
 		capture.uninstall();
+		proc.off?.("exit", onExit);
+		proc.off?.("uncaughtExceptionMonitor", onFatal);
 	});
 
-	proc.on("exit", () => {
-		// Startup diagnostics were captured before a TUI ever confirmed; hand them back to
-		// the terminal. Once the TUI owns the screen, the log file is the only destination.
-		if (!tuiConfirmed) flushTail(stderr, capture.tail());
-	});
-
-	proc.on("uncaughtExceptionMonitor", () => {
-		capture.fatal();
-	});
+	proc.on("exit", onExit);
+	proc.on("uncaughtExceptionMonitor", onFatal);
 }

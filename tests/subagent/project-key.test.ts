@@ -63,6 +63,32 @@ describe("A2.1 — project key resolution", () => {
     const loose = tempDir();
     expect(resolveProjectKey(loose, {})).toBe(hashProjectKey(loose));
   });
+
+  test("project key: traversal-shaped and over-long overrides fall back or cap", () => {
+    const root = tempDir();
+    // `.` and `..` sanitize to nothing usable — a path segment must never be traversal.
+    expect(resolveProjectKey(root, { AI_BADGER_PROJECT_ID: "." })).toBe(hashProjectKey(root));
+    expect(resolveProjectKey(root, { AI_BADGER_PROJECT_ID: ".." })).toBe(hashProjectKey(root));
+    // The 64-char cap is part of the contract (one path segment, no NAME_MAX surprises).
+    expect(resolveProjectKey(root, { AI_BADGER_PROJECT_ID: "a".repeat(70) })).toBe("a".repeat(64));
+    // Two spellings that sanitize to the same segment share the key — documented collapse.
+    expect(resolveProjectKey(root, { AI_BADGER_PROJECT_ID: "My Project" })).toBe("My-Project");
+    expect(resolveProjectKey(root, { AI_BADGER_PROJECT_ID: "My-Project" })).toBe("My-Project");
+  });
+
+  test("project key: a bare child .ai-badger stops the walk at the child, not the parent's id", () => {
+    const parent = tempDir();
+    mkdirSync(join(parent, ".ai-badger"));
+    writeFileSync(join(parent, ".ai-badger", "project-id"), "parent-id\n");
+    const child = join(parent, "child");
+    mkdirSync(join(child, ".ai-badger"), { recursive: true });
+
+    expect(resolveProjectKey(parent, {})).toBe("parent-id");
+    // The child's own `.ai-badger` wins the walk (message-bus semantics): the parent's id
+    // must NOT leak down into the child's namespace.
+    expect(resolveProjectKey(child, {})).toBe(hashProjectKey(child));
+    expect(resolveProjectKey(child, {})).not.toBe("parent-id");
+  });
 });
 
 describe("A2.2 support — project log layout", () => {

@@ -38,7 +38,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Type, type Static } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { clampPeekLines, formatDuration, formatUsage, renderDelegationStatus, tailLines, type DelegationRecord, type LogRunSummary } from "./delegation-core.ts";
+import { clampPeekLines, formatDuration, formatUsage, renderDelegationStatus, RUN_ID_PATTERN, tailLines, type DelegationRecord, type LogRunSummary } from "./delegation-core.ts";
 import type { DelegationRegistry } from "./delegation-registry.ts";
 import { isGlobalId } from "./global-id.ts";
 import { findIndexEntry } from "./global-index.ts";
@@ -310,7 +310,9 @@ export function registerDelegationStatus(
 		};
 		/** PKG-3: what `resolve` reads beyond the live registry — the current project's run dir
 		 * (a settled local id's header carries its global id) and the shared index file (a GUID
-		 * from any project). Absent → resolve answers only from the live registry. */
+		 * from any project). REQUIRED for every `resolve` answer: a registry hit is reported with
+		 * the project key/root from here, so an absent context makes resolve refuse rather than
+		 * answer without project metadata. */
 		resolveContext?: ResolveContext;
 	},
 ): { contextWindow(): number | undefined } {
@@ -414,6 +416,9 @@ export function registerDelegationStatus(
 	 */
 	function resolveDelegation(input: string): { message: string; details: ResolveDetails } {
 		const context = opts?.resolveContext;
+		// Shape gate first: `resolve` is a lookup, not a general id parse — garbage is named
+		// loudly instead of falling through to an empty registry miss (impl-review SHOULD 6).
+		if (!isGlobalId(input) && !RUN_ID_PATTERN.test(input)) throw unknownResolveError(input);
 		const describe = (details: ResolveDetails): { message: string; details: ResolveDetails } => {
 			const lines = [
 				`${details.id} — global id ${details.globalId}`,
