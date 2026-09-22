@@ -11,7 +11,7 @@
  * fixture level.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -533,5 +533,20 @@ describe("installedMarker: per-install version state for update-check", () => {
 		expect(written.version).toBeNull();
 		expect(written.describe).toBeNull();
 		expect(typeof written.sha).toBe("string");
+	});
+});
+
+describe("extension registry (PKG-4)", () => {
+	test("EXTENSION_DIRS contains query-pipeline", async () => {
+		const { EXTENSION_DIRS } = await import("../../publish.ts");
+		expect(EXTENSION_DIRS).toContain("query-pipeline");
+	});
+
+	test("every EXTENSION_DIRS entry exists as a canonical directory with an index.ts", async () => {
+		const { EXTENSION_DIRS } = await import("../../publish.ts");
+		const root = rootDir();
+		for (const name of EXTENSION_DIRS) {
+			expect(existsSync(join(root, "extensions", name, "index.ts"))).toBe(true);
+		}
 	});
 });

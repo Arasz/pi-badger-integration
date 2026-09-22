@@ -1,0 +1,11 @@
+{
+  "name": "ai-badger-query-pipeline",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Delegate-planned multi-query RAG: the delegator persona plans concept-grouped queries via a direct model call, the bank is searched once per query, Jev scores the candidates, and a 5-slot document-aware merge is injected through mem-based-rag. pi discovers the entry as ~/.pi/agent/extensions/<name>/index.ts; this manifest records metadata only and does not register the entry.",
+  "main": "index.ts",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

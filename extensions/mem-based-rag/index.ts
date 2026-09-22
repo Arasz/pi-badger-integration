@@ -37,6 +37,19 @@ import {
 	toMemoryContext,
 	type MemoryHit,
 } from "./rag-core.ts";
+import {
+	createQueryPipeline,
+	formatProgress,
+	QP_STATUS_KEY,
+	toEnvelope,
+} from "../query-pipeline/pipeline.ts";
+import {
+	QUERY_PIPELINE_ENV,
+	QP_WIDGET_KEY,
+	type PipelinePlannerFn,
+	type PipelineScorerFn,
+	type PipelineScheduler,
+} from "../query-pipeline/types.ts";
 
 /** Custom message type of the injected context block. */
 export const MEM_RAG_CUSTOM_TYPE = "mem-based-rag";
@@ -441,6 +454,13 @@ export type RaccoonClientLike = Pick<RaccoonClient, "call" | "stop">;
 export interface MemRagDeps {
 	createClient?: (bin: string) => RaccoonClientLike;
 	spawnAsk?: SpawnAskFn;
+	/** Query-pipeline seam (INT-7): tests inject plan/score/scheduler/now — no network, no real timers. */
+	pipeline?: {
+		plan?: PipelinePlannerFn;
+		score?: PipelineScorerFn;
+		scheduler?: PipelineScheduler;
+		now?: () => number;
+	};
 }
 
 export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
@@ -461,6 +481,10 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 	let skipped = 0;
 	let lastMs = 0;
 	let lastReason = "none yet";
+	/** Last query-pipeline outcome reason, surfaced by /rag status (INT-6). */
+	let lastPipeline = "n/a";
+	/** Progress ownership token: an earlier finisher must not clear a later run's status (INT-8). */
+	let progressToken = 0;
 	let asked = 0;
 	let skippedAsk = 0;
 	let lastAskReason = "none yet";
@@ -591,6 +615,16 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 		}
 	};
 
+	/** Never-throwing progress surface (INT-2) — a stale/missing ui must never throw the turn. */
+	const setStatusSafely = (ctx: ExtensionContext, text: string | undefined): void => {
+		try {
+			ctx.ui?.setStatus?.(QP_STATUS_KEY, text);
+			ctx.ui?.setWidget?.(QP_WIDGET_KEY, text === undefined ? undefined : [text]);
+		} catch {
+			// progress must never throw the turn
+		}
+	};
+
 	const getClient = async (bin: string): Promise<RaccoonClientLike> => {
 		if (!client) {
 			const fresh = createClient(bin);
@@ -616,6 +650,46 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 			() => undefined,
 		);
 		return next;
+	};
+
+	/**
+	 * Query-pipeline retrieval (INT-3): plan -> search-per-query -> Jev score ->
+	 * merge, with a single-query fallback inside the pipeline. The pipeline never
+	 * rejects; a dead bank surfaces through its `search-error` reason, which is
+	 * rethrown here so the hook's existing `bank error` diagnostics survive.
+	 * Searches still travel through `searchCall`, so single-flight is preserved.
+	 */
+	const retrieveViaPipeline = async (
+		ctx: ExtensionContext,
+		raccoon: RaccoonClientLike,
+		projectId: string,
+		sessionId: string,
+		query: string,
+		timeoutMs: number,
+	): Promise<string> => {
+		const token = ++progressToken;
+		const pipeline = createQueryPipeline({
+			search: (q, limit, ms) =>
+				searchCall(raccoon, "memory_search", { projectId, sessionId, query: q, limit }, Math.min(ms, timeoutMs)),
+			registry: (ctx as { modelRegistry?: unknown }).modelRegistry,
+			model: (ctx as { model?: unknown }).model,
+			env: process.env,
+			onProgress: (progress) => {
+				if (token !== progressToken) return;
+				setStatusSafely(ctx, formatProgress(progress));
+			},
+			...(deps?.pipeline ?? {}),
+		});
+		try {
+			const result = await pipeline.retrieveResult({ query });
+			if (token === progressToken) lastPipeline = result.reason;
+			if (result.status === "fallback" && result.reason === "search-error") {
+				throw new Error(result.error ?? "search failed");
+			}
+			return toEnvelope(result);
+		} finally {
+			if (token === progressToken) setStatusSafely(ctx, undefined);
+		}
 	};
 
 	const queueKeyFor = (ctx: ExtensionContext): string => {
@@ -661,6 +735,8 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 		skipped = 0;
 		lastMs = 0;
 		lastReason = "none yet";
+		lastPipeline = "n/a";
+		progressToken += 1;
 		asked = 0;
 		skippedAsk = 0;
 		lastAskReason = "none yet";
@@ -727,12 +803,16 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 				return undefined;
 			}
 			const raccoon = await getClient(config.bin);
-			const searchText = await searchCall(
-				raccoon,
-				"memory_search",
-				{ projectId, sessionId, query: decision.query, limit: 5 },
-				config.timeoutMs,
-			);
+			// Kill switch (INT-4): off = today's single search, pipeline never constructed.
+			const searchText =
+				process.env[QUERY_PIPELINE_ENV] === "0"
+					? await searchCall(
+							raccoon,
+							"memory_search",
+							{ projectId, sessionId, query: decision.query, limit: 5 },
+							config.timeoutMs,
+						)
+					: await retrieveViaPipeline(ctx, raccoon, projectId, sessionId, decision.query, config.timeoutMs);
 			const envelope = JSON.parse(searchText) as {
 				data?: { results?: MemoryHit[]; code?: MemoryHit[] };
 			};
@@ -843,6 +923,7 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 					`mem-based-rag: ${config.enabled ? `on (${config.mode})` : "off"} — enriched ${enriched}, skipped ${skipped}, last: ${lastReason}. ` +
 						`Ask: asked ${asked}, skippedAsk ${skippedAsk}, last: ${lastAskReason}. ` +
 						`Project: ${project}, child: ${isChildAlive(client) ? "alive" : "idle"}. ` +
+						`Pipeline: ${lastPipeline}. ` +
 						`Floors: ≥${config.minWords} unique words (≥3 chars ex-noise), ≥${config.minChars} chars, timeout ${config.timeoutMs}ms, child ${config.askChildTimeoutMs}ms. ` +
 						`Auto-enrich: skill calls only (/skill:<id> <text>); all other turns skip.`,
 					"info",

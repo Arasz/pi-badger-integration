@@ -40,6 +40,19 @@ const RAG_KEYS = [
 	"PI_BADGER_MEM_RAG_SNIPPET_CHARS",
 	"PI_BADGER_MEM_RAG_BIN",
 	"AI_BADGER_PROJECT_ID",
+	// Query-pipeline hygiene (PKG-5): an ambient key would otherwise make the
+	// existing suite issue real Jev fetches once the auto path routes through it.
+	"OPENROUTER_API_KEY",
+	"PI_BADGER_JEV_ENDPOINT",
+	"PI_BADGER_JEV_MODEL",
+	"PI_BADGER_JEV_SCORE_TIMEOUT_MS",
+	"PI_BADGER_QUERY_PIPELINE",
+	"PI_BADGER_QUERY_PIPELINE_TOTAL_MS",
+	"PI_BADGER_QUERY_PIPELINE_PLANNER_MS",
+	"PI_BADGER_QUERY_PIPELINE_SEARCH_MS",
+	"PI_BADGER_QUERY_PIPELINE_SCORE_MS",
+	"PI_BADGER_QUERY_PIPELINE_SEARCH_LIMIT",
+	"PI_BADGER_QUERY_PIPELINE_PLANNER_MODEL",
 ] as const;
 
 const ORIG_ENV: Record<string, string | undefined> = {};
@@ -134,6 +147,10 @@ function install(behavior: FakeBehavior = {}): { pi: FakePi; calls: ToolCall[] }
 	const fake = makeFakeRaccoon(calls, behavior);
 	(factory as (pi: unknown, deps: unknown) => void)(pi as never, {
 		createClient: () => fake,
+		// PKG-5: the pre-existing rows pin today's single-search behaviour; a
+		// deterministic fallback planner routes the pipeline down that exact path
+		// with no planner model, no Jev fetch and no real timers.
+		pipeline: { plan: async () => ({ status: "fallback", reason: "no-model" }) },
 	});
 	return { pi, calls };
 }
