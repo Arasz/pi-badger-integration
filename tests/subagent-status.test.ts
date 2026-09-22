@@ -17,6 +17,7 @@ import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeChild } from "./helpers/fake-child.ts";
+import { applyArgumentCompletion } from "./helpers/apply-completion.ts";
 import { spawnSync } from "node:child_process";
 import {
   DelegationRegistry,
@@ -756,7 +757,7 @@ describe("T78: the /delegations command shares the registry path with the tool",
 		expect(lastNotification(fx).message).toContain("usage: /delegations");
 	});
 
-	test("getArgumentCompletions offers the subcommands and live registry ids", async () => {
+	test("getArgumentCompletions offers the subcommands and live registry ids as FULL argument text", async () => {
 		const fx = makeFixture({ cap: 2, queueCap: 16 });
 		await fx.registry.start(startRequest({ id: "d-1", toolCallId: "tc-d-1" })); // running
 		await fx.registry.start(startRequest({ id: "d-2", toolCallId: "tc-d-2" })); // running
@@ -767,14 +768,23 @@ describe("T78: the /delegations command shares the registry path with the tool",
 		const first = completions("") as Array<{ value: string }>;
 		expect(first.map((item) => item.value)).toEqual(["log", "abort", "peek"]);
 
+		// pi replaces the WHOLE argument text with item.value, so every id item MUST carry its
+		// verb; a bare id here rewrites `/delegations abort d` into `/delegations d-2`.
 		const ids = completions("abort d") as Array<{ value: string }>;
-		expect(ids.map((item) => item.value)).toEqual(["d-2", "d-0"]); // live ids only — terminal d-1 excluded
+		expect(ids.map((item) => item.value)).toEqual(["abort d-2", "abort d-0"]); // live ids only — terminal d-1 excluded
+
+		const logIds = completions("log d") as Array<{ value: string }>;
+		expect(logIds.map((item) => item.value)).toEqual(["log d-2", "log d-0"]);
 
 		const peekIds = completions("peek d") as Array<{ value: string }>;
-		expect(peekIds.map((item) => item.value)).toEqual(["d-2", "d-0"]); // peek completes live ids, same filter as log/abort
+		expect(peekIds.map((item) => item.value)).toEqual(["peek d-2", "peek d-0"]); // peek completes live ids, same filter as log/abort
 
 		const peekVerb = completions("p") as Array<{ value: string }>;
 		expect(peekVerb.map((item) => item.value)).toEqual(["peek"]);
+
+		// A1.2 guard: applying the item through pi's whole-argument splice keeps the verb.
+		expect(applyArgumentCompletion("/delegations log d", logIds[0]!)).toBe("/delegations log d-2");
+		expect(applyArgumentCompletion("/delegations abort d", ids[0]!)).toBe("/delegations abort d-2");
 
 		expect(completions("bogus")).toBeNull();
 	});

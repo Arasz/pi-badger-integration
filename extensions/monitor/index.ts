@@ -1154,12 +1154,14 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 	pi.registerCommand(MONITOR_COMMAND_NAME, {
 		description: "Armed monitor status; `cancel <id>` disarms one.",
 		getArgumentCompletions(argumentPrefix) {
+			// Same whole-argument contract as /delegations: item.value replaces the entire
+			// argument text, so the cancel verb must ride along with the id.
 			const idPosition = /^cancel\s+(\S*)$/.exec(argumentPrefix);
 			if (idPosition) {
 				const token = idPosition[1]!;
 				const items = armedList()
 					.filter((view) => view.id.startsWith(token))
-					.map((view) => ({ value: view.id, label: `${view.id}${view.name !== undefined ? ` (${view.name})` : ""}` }));
+					.map((view) => ({ value: `cancel ${view.id}`, label: `${view.id}${view.name !== undefined ? ` (${view.name})` : ""}` }));
 				return items.length > 0 ? items : null;
 			}
 			const first = argumentPrefix.trim();

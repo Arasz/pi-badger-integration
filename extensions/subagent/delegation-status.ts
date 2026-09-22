@@ -606,14 +606,19 @@ export function registerDelegationStatus(
 	pi.registerCommand(DELEGATIONS_COMMAND_NAME, {
 		description: "Delegation status; `peek <id> [--lines N]` shows the answer tail; `log <id>` tails a run's log (live runs answer from the in-memory preview); `abort <id|all>` stops runs.",
 		getArgumentCompletions(argumentPrefix) {
-			const idPosition = /^(?:log|abort|peek)\s+(\S*)$/.exec(argumentPrefix);
+			// pi's argument completion replaces the WHOLE argument text with item.value
+			// (CombinedAutocompleteProvider.applyCompletion: beforePrefix + item.value +
+			// afterCursor, prefix = the full argument text). Every id item therefore carries
+			// its verb — `d-2` alone would rewrite `/delegations log d` into `/delegations d-2`.
+			const idPosition = /^(log|abort|peek)\s+(\S*)$/.exec(argumentPrefix);
 			if (idPosition) {
-				const token = idPosition[1]!;
+				const verb = idPosition[1]!;
+				const token = idPosition[2]!;
 				const items = registry
 					.list()
 					.filter(isLive)
 					.filter((record) => record.id.startsWith(token))
-					.map((record) => ({ value: record.id, label: `${record.id} ${record.agent} (${record.state})` }));
+					.map((record) => ({ value: `${verb} ${record.id}`, label: `${record.id} ${record.agent} (${record.state})` }));
 				return items.length > 0 ? items : null;
 			}
 			const first = argumentPrefix.trim();
