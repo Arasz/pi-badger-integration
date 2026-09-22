@@ -160,10 +160,8 @@ export type PlannerParseResult =
 	| { status: "ok"; plan: PlannerPlan }
 	| { status: "fallback"; reason: PlannerParseReason };
 
-// ------------------------------------------------------------------ shape limits (plan §3)
+// ------------------------------------------------------------------ shape limits (plan §3, MG-2 amendment)
 
-const CONCEPTS_MIN = 2;
-const CONCEPTS_MAX = 6;
 const CONCEPT_NAME_MAX = 120;
 const CONCEPT_QUERIES_MIN = 1;
 const CONCEPT_QUERIES_MAX = 4;
@@ -220,34 +218,46 @@ function collectObjectSpans(text: string): ObjectSpan[] {
 	return matches;
 }
 
-function validatePlan(value: unknown): PlannerPlan | null {
+/**
+ * Normalize a parsed object into a plan: keep concepts in order, take at most
+ * TOTAL_QUERIES_MAX queries in total, drop malformed concepts/queries and
+ * ignore unknown keys. Returns null when fewer than TOTAL_QUERIES_MIN usable
+ * queries remain.
+ *
+ * MG-2 amendment (2026-09-22): the direct planner measured on
+ * deepseek-v4.1-flash reliably emits 4 concepts / 7-9 queries — structurally
+ * valid but over the "2 to 6 queries total" contract. Strict rejection
+ * discarded ~50% of usable plans (5/10 runs fell back to the single query), so
+ * the parser now truncates to the contract instead of rejecting.
+ */
+function normalizePlan(value: unknown): PlannerPlan | null {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
 	const conceptsRaw = (value as Record<string, unknown>)["concepts"];
 	if (!Array.isArray(conceptsRaw)) return null;
-	if (conceptsRaw.length < CONCEPTS_MIN || conceptsRaw.length > CONCEPTS_MAX) return null;
 	const concepts: Array<{ name: string; queries: string[] }> = [];
 	let totalQueries = 0;
 	for (const entry of conceptsRaw) {
-		if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return null;
+		if (totalQueries >= TOTAL_QUERIES_MAX) break;
+		if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
 		const record = entry as Record<string, unknown>;
 		const nameRaw = record["name"];
 		const queriesRaw = record["queries"];
-		if (typeof nameRaw !== "string") return null;
-		if (!Array.isArray(queriesRaw)) return null;
-		if (queriesRaw.length < CONCEPT_QUERIES_MIN || queriesRaw.length > CONCEPT_QUERIES_MAX) return null;
+		if (typeof nameRaw !== "string" || !Array.isArray(queriesRaw)) continue;
 		const name = nameRaw.trim();
-		if (name.length < 1 || name.length > CONCEPT_NAME_MAX) return null;
+		if (name.length < 1 || name.length > CONCEPT_NAME_MAX) continue;
 		const queries: string[] = [];
 		for (const queryRaw of queriesRaw) {
-			if (typeof queryRaw !== "string") return null;
+			if (queries.length >= CONCEPT_QUERIES_MAX || totalQueries + queries.length >= TOTAL_QUERIES_MAX) break;
+			if (typeof queryRaw !== "string") continue;
 			const query = queryRaw.trim();
-			if (query.length < 1 || query.length > QUERY_MAX) return null;
+			if (query.length < 1 || query.length > QUERY_MAX) continue;
 			queries.push(query);
 		}
-		totalQueries += queries.length;
+		if (queries.length < CONCEPT_QUERIES_MIN) continue;
 		concepts.push({ name, queries });
+		totalQueries += queries.length;
 	}
-	if (totalQueries < TOTAL_QUERIES_MIN || totalQueries > TOTAL_QUERIES_MAX) return null;
+	if (concepts.length === 0 || totalQueries < TOTAL_QUERIES_MIN) return null;
 	return { concepts };
 }
 
@@ -273,7 +283,7 @@ export function parsePlan(text: string): PlannerParseResult {
 			continue;
 		}
 		parsedAny = true;
-		const plan = validatePlan(value);
+		const plan = normalizePlan(value);
 		if (plan !== null) return { status: "ok", plan };
 	}
 	return { status: "fallback", reason: parsedAny ? "invalid-shape" : "no-json-object" };

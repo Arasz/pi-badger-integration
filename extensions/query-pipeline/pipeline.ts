@@ -131,7 +131,14 @@ function dedupeQueries(
 }
 
 function serverRank(hit: PipelineCandidate): number {
-	return typeof hit.ranking === "number" && Number.isFinite(hit.ranking) ? hit.ranking : Number.POSITIVE_INFINITY;
+	// Plan §2: finite number → itself; numeric string → parsed; anything else → +Infinity.
+	const raw = hit.ranking;
+	if (typeof raw === "number") return Number.isFinite(raw) ? raw : Number.POSITIVE_INFINITY;
+	if (typeof raw === "string" && raw.trim() !== "") {
+		const parsed = Number(raw);
+		if (Number.isFinite(parsed)) return parsed;
+	}
+	return Number.POSITIVE_INFINITY;
 }
 
 function annotate(

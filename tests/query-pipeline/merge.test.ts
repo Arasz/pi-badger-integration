@@ -336,3 +336,19 @@ describe("docKey — document identity", () => {
 		expect(docKey({ hash: " h " })).toBe("hash:h");
 	});
 });
+
+describe("server rank parsing (plan §2)", () => {
+	test("M21 a numeric-string ranking sorts as its number, not as +Infinity", () => {
+		const numeric = { hash: "n", score: null, path: "docs/n.md", snippet: "s", ranking: "2", kind: "memory" } as MergeCandidate;
+		const other = { hash: "o", score: null, path: "docs/o.md", snippet: "s", ranking: 5, kind: "memory" } as MergeCandidate;
+		const { mem } = mergeSelect([other, numeric]);
+		expect(mem.map((hit) => hit.hash)).toEqual(["n", "o"]);
+	});
+
+	test("M22 a non-numeric ranking sorts last", () => {
+		const bad = { hash: "bad", score: null, path: "docs/bad.md", snippet: "s", ranking: "not-a-number", kind: "memory" } as MergeCandidate;
+		const good = { hash: "good", score: null, path: "docs/good.md", snippet: "s", ranking: 9, kind: "memory" } as MergeCandidate;
+		const { mem } = mergeSelect([bad, good]);
+		expect(mem.map((hit) => hit.hash)).toEqual(["good", "bad"]);
+	});
+});

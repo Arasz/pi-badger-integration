@@ -81,9 +81,14 @@ function scoreOf(hit: MergeCandidate): number | null {
 
 /** Numeric server rank, or +Infinity when absent/non-numeric. */
 function serverRankOf(hit: MergeCandidate): number {
-	return typeof hit.ranking === "number" && Number.isFinite(hit.ranking)
-		? hit.ranking
-		: Number.POSITIVE_INFINITY;
+	// Plan §2: finite number → itself; numeric string → parsed; anything else → +Infinity.
+	const raw = hit.ranking;
+	if (typeof raw === "number") return Number.isFinite(raw) ? raw : Number.POSITIVE_INFINITY;
+	if (typeof raw === "string" && raw.trim() !== "") {
+		const parsed = Number(raw);
+		if (Number.isFinite(parsed)) return parsed;
+	}
+	return Number.POSITIVE_INFINITY;
 }
 
 /** Total order: scored before null, score desc, server rank asc, insertion order (stable). */

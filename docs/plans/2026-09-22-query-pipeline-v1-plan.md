@@ -324,3 +324,11 @@ Full RED-first rows (M1–M12, P1–P10, S1–S16, R1–R12, E1–E8, I1–I8), 
 - **Wave 4:** PKG-5 — `api-engineer`, branched from PKG-4; integration + manual gates (MG-1/MG-3 run by the orchestrator with the lane's harness).
 - **Review (MoE):** `code-reviewer` + `qa` + one `architect` (different from plan authors) after PKG-5; QA test-quality pass on the new test files.
 - Every lane: self-contained brief, TDD RED pasted, mutations applied/reverted with pasted red, no memory writes, no always-loaded context edits, report with evidence per criterion.
+
+## 12. Implementation amendments (recorded 2026-09-23)
+
+**A1 — Planner shape tolerance (MG-2 measurement, 2026-09-23).** Measured on the direct planner (deepseek-v4.1-flash, N=10): the model reliably emits **4 concepts / 7–9 queries** — structurally valid but over the "2 to 6 queries total" contract. The plan's strict rejection discarded **5/10 usable plans** (silent fallback to the single query), which would have erased most of the pipeline's win. Amended: `parsePlan` now **normalizes** — drops malformed concepts/queries, ignores unknown keys, truncates to 6 total and 4 per concept; `invalid-shape` only when fewer than 2 usable queries remain. Re-measured: **10/10 parse**, p50 4.2 s / p95 5.6 s, ≈$0.0003/call, planner cap 15 s holds with 2.7× headroom. Test rows P5–P9 updated to the tolerant semantics.
+
+**A2 — Numeric-string server rank.** Plan §2 required `ranking` numeric strings to parse; `merge.ts`/`pipeline.ts` initially treated them as `+Infinity`. Fixed in both; rows M21/M22 added, M21 mutation-proven red.
+
+**A3 — Review-rigor note.** The implementation-review MoE could not run: five consecutive delegated review lanes stalled on established provider connections (2026-09-22 23:54 → 2026-09-23 00:14) while the orchestrating session stayed live; the machine had 6+ concurrent children from a sibling session. The plan-review MoE (three independent reviewers) and the per-package mutation ledgers did run. The implementation review was completed **in-session** against the plan ACs (reduced rigor, recorded).

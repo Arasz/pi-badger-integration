@@ -95,70 +95,69 @@ describe("parsePlan — last complete JSON object wins", () => {
 		expect(parsePlan("\n\t  ")).toEqual({ status: "fallback", reason: "empty-text" });
 	});
 
-	test("P5 missing concepts, non-array concepts, missing queries and non-string queries are invalid", () => {
-		const corpus = [
-			"{}",
-			'{"concepts":"x"}',
-			// Each row isolates one broken field: the other concept is well-formed.
-			'{"concepts":[{"name":"a"},{"name":"b","queries":["q1","q2"]}]}',
-			'{"concepts":[{"name":"a","queries":[1,"q2"]},{"name":"b","queries":["q3"]}]}',
-		];
-		for (const entry of corpus) {
+	test("P5 missing concepts, non-array concepts, missing queries and non-string queries are invalid or dropped (MG-2 amendment)", () => {
+		for (const entry of ["{}", '{"concepts":"x"}', '{"concepts":[{"name":"a"}]}']) {
 			expect(parsePlan(entry)).toEqual({ status: "fallback", reason: "invalid-shape" });
 		}
+		// Isolated broken entry: the non-string query is dropped, the concept's valid query survives.
+		const dropped = parsePlan('{"concepts":[{"name":"a","queries":[1,"q2"]},{"name":"b","queries":["q3","q4"]}]}');
+		expect(dropped.status).toBe("ok");
+		if (dropped.status !== "ok") return;
+		expect(dropped.plan.concepts.flatMap((concept) => concept.queries)).toEqual(["q2", "q3", "q4"]);
 	});
 
-	test("P6 empty concepts and empty queries arrays are invalid", () => {
+	test("P6 empty concepts is invalid; an empty queries array is dropped (MG-2 amendment)", () => {
 		expect(parsePlan('{"concepts":[]}')).toEqual({ status: "fallback", reason: "invalid-shape" });
-		// Isolated: two valid concepts, but the first carries an empty queries array.
-		expect(parsePlan('{"concepts":[{"name":"a","queries":[]},{"name":"b","queries":["q2","q3"]}]}')).toEqual({
-			status: "fallback",
-			reason: "invalid-shape",
-		});
+		const dropped = parsePlan('{"concepts":[{"name":"a","queries":[]},{"name":"b","queries":["q2","q3"]}]}');
+		expect(dropped.status).toBe("ok");
+		if (dropped.status !== "ok") return;
+		expect(dropped.plan.concepts.flatMap((concept) => concept.queries)).toEqual(["q2", "q3"]);
 	});
 
-	test("P7 a query over 300 chars is invalid; exactly 300 is valid", () => {
+	test("P7 a query over 300 chars is dropped; exactly 300 is kept (MG-2 amendment)", () => {
 		const exactly300 = "x".repeat(300);
 		const over300 = "x".repeat(301);
 		const plan = (query: string): string =>
-			JSON.stringify({ concepts: [{ name: "a", queries: [query] }, { name: "b", queries: ["q2"] }] });
+			JSON.stringify({ concepts: [{ name: "a", queries: [query, "q1"] }, { name: "b", queries: ["q2"] }] });
 		const valid = parsePlan(plan(exactly300));
 		expect(valid.status).toBe("ok");
 		if (valid.status !== "ok") return;
 		expect(valid.plan.concepts[0]?.queries[0]).toHaveLength(300);
-		expect(parsePlan(plan(over300))).toEqual({
-			status: "fallback",
-			reason: "invalid-shape",
-		});
+		const dropped = parsePlan(plan(over300));
+		expect(dropped.status).toBe("ok");
+		if (dropped.status !== "ok") return;
+		expect(dropped.plan.concepts.flatMap((concept) => concept.queries)).toEqual(["q1", "q2"]);
 	});
 
-	test("P8 more than six queries across concepts is invalid; six is valid", () => {
+	test("P8 more than six queries are truncated to six (MG-2 amendment)", () => {
 		const eight = JSON.stringify({
 			concepts: [1, 2, 3, 4].map((n) => ({ name: `c${n}`, queries: [`q${n}a`, `q${n}b`] })),
 		});
 		const six = JSON.stringify({
 			concepts: [1, 2, 3].map((n) => ({ name: `c${n}`, queries: [`q${n}a`, `q${n}b`] })),
 		});
-		expect(parsePlan(eight)).toEqual({ status: "fallback", reason: "invalid-shape" });
+		const truncated = parsePlan(eight);
+		expect(truncated.status).toBe("ok");
+		if (truncated.status !== "ok") return;
+		expect(truncated.plan.concepts.flatMap((concept) => concept.queries)).toHaveLength(6);
+		expect(truncated.plan.concepts.map((concept) => concept.name)).toEqual(["c1", "c2", "c3"]);
 		const result = parsePlan(six);
 		expect(result.status).toBe("ok");
 		if (result.status !== "ok") return;
 		expect(result.plan.concepts.flatMap((concept) => concept.queries)).toHaveLength(6);
 	});
 
-	test("P9 queries are trimmed and a whitespace-only query is invalid", () => {
+	test("P9 queries are trimmed and a whitespace-only query is dropped (MG-2 amendment)", () => {
 		const trimmed = parsePlan('{"concepts":[{"name":"  a  ","queries":["  q1  "]},{"name":"b","queries":["q2"]}]}');
 		expect(trimmed.status).toBe("ok");
 		if (trimmed.status !== "ok") return;
 		expect(trimmed.plan.concepts[0]?.name).toBe("a");
 		expect(trimmed.plan.concepts[0]?.queries[0]).toBe("q1");
-		// Isolated: two valid concepts, but the first query is whitespace-only.
-		expect(
-			parsePlan('{"concepts":[{"name":"a","queries":["   "]},{"name":"b","queries":["q2","q3"]}]}'),
-		).toEqual({
-			status: "fallback",
-			reason: "invalid-shape",
-		});
+		// Isolated whitespace-only query: dropped, the remaining concepts survive.
+		const dropped = parsePlan('{"concepts":[{"name":"a","queries":["   "]},{"name":"b","queries":["q2","q3"]}]}');
+		expect(dropped.status).toBe("ok");
+		if (dropped.status !== "ok") return;
+		expect(dropped.plan.concepts.flatMap((concept) => concept.queries)).toEqual(["q2", "q3"]);
 	});
 
 	test("P10 every malformed corpus entry returns a typed result, never throws", () => {
