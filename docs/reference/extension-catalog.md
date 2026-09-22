@@ -35,6 +35,49 @@ Config (env defaults, read per call; `/rag` for session scope):
 reports enriched/skipped counts and the last reason; `/rag mode
 default|expanded|off` overrides for the session.
 
+Auto-enrichment routes through the query-pipeline extension (plan -> per-query
+search -> Jev scoring -> document-aware merge). `PI_BADGER_QUERY_PIPELINE=0`
+keeps the single-search behaviour above; any planner or scoring failure degrades
+to that same single search, so a dead bank still reports `bank error` and a turn
+is never failed by retrieval.
+
+## The query-pipeline extension: multi-query retrieval behind mem-based-rag
+
+One prompt becomes several focused queries. The `group` stage sends the query
+(the `/skill:<id>`-stripped prompt) to the session model — or
+`PI_BADGER_QUERY_PIPELINE_PLANNER_MODEL` — with the delegator persona as the
+system prompt, and parses a `{"concepts":[{"name","queries"}]}` plan
+(normalizing over-long plans to at most 6 queries rather than rejecting them).
+The `split` stage runs one `memory_search` per query, sequentially through
+mem-based-rag's single-flight transport. The `rank` stage scores every candidate
+with Jev (`type:"score"` questions, batches of 12, copied by contract from the
+decision-router client). The `merge` stage fills **five slots total**: the best
+chunk per distinct document first, and only when fewer than five documents match
+does it backfill with the next-best chunks of the already-included documents.
+The result is the bank's own `memory_search` envelope, so the injected block and
+its card are unchanged.
+
+While the pipeline runs, the footer shows `query-pipeline: planning queries…`,
+`searching i/n — "…"`, `scoring N candidates…`, `merging N candidates…` and
+clears when the block is injected (Esc does not cancel it — the hook is not
+cancellable, and the budget bounds it).
+
+Config (read per call): `PI_BADGER_QUERY_PIPELINE=0` disables,
+`PI_BADGER_QUERY_PIPELINE_TOTAL_MS` (default 90000, 5000–300000), `_PLANNER_MS`
+(15000, 1000–60000), `_SEARCH_MS` (15000, 500–60000), `_SCORE_MS` (8000,
+1000–60000), `_SEARCH_LIMIT` (5, 1–20), `_PLANNER_MODEL` (unset -> the session
+model), and `PI_BADGER_JEV_SCORE_TIMEOUT_MS` (15000, 1000–120000) plus the shared
+`PI_BADGER_JEV_ENDPOINT` / `PI_BADGER_JEV_MODEL` / `OPENROUTER_API_KEY`. A missing
+key skips scoring and merges by server rank.
+
+Data egress: the query text goes to the planner model provider, and the query
+text plus up to 500 characters of each candidate excerpt go to OpenRouter for
+Jev scoring. `PI_BADGER_QUERY_PIPELINE=0` keeps everything local.
+
+This extension ships as a pair with mem-based-rag, which statically imports it —
+installing mem-based-rag alone fails at extension load (the publish flow installs
+all owned directories together).
+
 ## The subagent extension: background delegation
 
 
