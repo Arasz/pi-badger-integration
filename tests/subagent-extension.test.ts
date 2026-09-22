@@ -83,7 +83,7 @@ function makeHarness(mode = "tui", deps: Record<string, unknown> = {}): Harness 
     spawnOptions: [],
     notifications: [],
     projectDir: mkdtempSync(join(tmpdir(), "aib-subagent-ext-")),
-    logDir: mkdtempSync(join(tmpdir(), "aib-subagent-ext-logs-")),
+    logDir: (deps.logDir as string | undefined) ?? mkdtempSync(join(tmpdir(), "aib-subagent-ext-logs-")),
     api: undefined,
   };
   mkdirSync(join(h.projectDir, ...AGENTS_DIR), { recursive: true });
@@ -98,19 +98,30 @@ function makeHarness(mode = "tui", deps: Record<string, unknown> = {}): Harness 
 
   // now: () => pi.clock.now — the harness's injected clock is mutable (fake-pi.ts header);
   // the NOW constant below stays for log-dir fixtures.
-  h.api = subagent(pi as never, { spawnFn, logDir: h.logDir, now: () => pi.clock.now, escalateAfterMs: 0, ...deps }) as {
+  // projectKey is pinned so the layout assertions are deterministic; a test overrides it
+  // through deps (the spread below wins over these defaults).
+  h.api = subagent(pi as never, { spawnFn, logDir: h.logDir, projectKey: "test-project", now: () => pi.clock.now, escalateAfterMs: 0, ...deps }) as {
     registry: any;
   };
+  createdHarnesses.push(h);
   return h;
 }
 
 let h: Harness;
+/** Every harness a test built — cleanup walks the list, so a test may run two sessions at once. */
+const createdHarnesses: Harness[] = [];
 afterEach(() => {
-  if (h) {
-    rmSync(h.projectDir, { recursive: true, force: true });
-    rmSync(h.logDir, { recursive: true, force: true });
+  while (createdHarnesses.length) {
+    const harness = createdHarnesses.pop()!;
+    rmSync(harness.projectDir, { recursive: true, force: true });
+    rmSync(harness.logDir, { recursive: true, force: true });
   }
 });
+
+/** The project-local run dir the factory computes from the base `logDir` and the key. */
+function runLogDir(harness: Harness, key = "test-project"): string {
+  return join(harness.logDir, "projects", key);
+}
 
 function makeCtx(mode = "tui", cwd?: string): unknown {
   return {
@@ -407,11 +418,38 @@ describe("row 45 — tool result while running says running (receipt with id/too
 
     expect(contentOf(result)).toContain("Delegation d-1 started");
     expect(result.details).toMatchObject({ id: "d-1", agent: "architect", state: "running", toolCallId: "call-42" });
-    expect(result.details.logFile).toBe(join(h.logDir, "d-1.jsonl"));
-    expect(existsSync(join(h.logDir, "d-1.jsonl"))).toBe(true);
+    expect(result.details.logFile).toBe(join(runLogDir(h), "d-1.jsonl"));
+    expect(existsSync(join(runLogDir(h), "d-1.jsonl"))).toBe(true);
     expect(h.children[0]!.exited).toBe(false);
     // single reachable registry instance (the future P4 registerDelegationStatus seam)
     expect(h.api!.registry.get("d-1").toolCallId).toBe("call-42");
+  });
+});
+
+// ------------------------------------------------------------------ PKG-2: project-local logs
+
+describe("PKG-2 — project-local id allocation and log layout (A2.2)", () => {
+  test("project-local logs: logFile is projects/<key>/d-1.jsonl and exists", async () => {
+    h = makeHarness();
+    const result = await callDelegate({ agent: "architect", task: "t" }, makeCtx(), undefined, "call-42");
+
+    const file = join(h.logDir, "projects", "test-project", "d-1.jsonl");
+    expect(result.details.logFile).toBe(file);
+    expect(existsSync(file)).toBe(true);
+  });
+
+  test("project-local logs: two project keys sharing a base dir both allocate d-1", async () => {
+    const first = makeHarness("tui", { projectKey: "proj-a" });
+    h = first;
+    const firstRun = await callDelegate({ agent: "architect", task: "t" }, makeCtx(), undefined, "call-1");
+    expect(firstRun.details.id).toBe("d-1");
+
+    const second = makeHarness("tui", { logDir: first.logDir, projectKey: "proj-b" });
+    h = second;
+    const secondRun = await callDelegate({ agent: "architect", task: "t" }, makeCtx(), undefined, "call-1");
+    expect(secondRun.details.id).toBe("d-1"); // ids restart per project
+    expect(secondRun.details.logFile).toBe(join(first.logDir, "projects", "proj-b", "d-1.jsonl"));
+    expect(existsSync(join(first.logDir, "projects", "proj-a", "d-1.jsonl"))).toBe(true);
   });
 });
 
@@ -584,7 +622,7 @@ describe("T72 — delegation-result renderer registered (compact card)", () => {
 describe("rows 47/T73 — session_start reconstruction from the log dir", () => {
   test("row 47: marks lost runs, never notifies", () => {
     h = makeHarness();
-    writeLog(h.logDir, "d-9", [runHeaderLine("d-9", deadPid())]);
+    writeLog(runLogDir(h), "d-9", [runHeaderLine("d-9", deadPid())]);
 
     fireSessionStart();
 
@@ -602,19 +640,19 @@ describe("rows 47/T73 — session_start reconstruction from the log dir", () => 
   test("wiring (R4): session_start prunes logs older than 14 days before classification", () => {
     h = makeHarness();
     const old = new Date(NOW - 20 * 24 * 60 * 60 * 1000);
-    writeLog(h.logDir, "d-1", [runHeaderLine("d-1", 4242), exitLine(0)], old);
-    writeLog(h.logDir, "d-2", [runHeaderLine("d-2", 4242), exitLine(0)]);
+    writeLog(runLogDir(h), "d-1", [runHeaderLine("d-1", 4242), exitLine(0)], old);
+    writeLog(runLogDir(h), "d-2", [runHeaderLine("d-2", 4242), exitLine(0)]);
 
     fireSessionStart();
 
-    expect(existsSync(join(h.logDir, "d-1.jsonl"))).toBe(false);
-    expect(existsSync(join(h.logDir, "d-2.jsonl"))).toBe(true);
+    expect(existsSync(join(runLogDir(h), "d-1.jsonl"))).toBe(false);
+    expect(existsSync(join(runLogDir(h), "d-2.jsonl"))).toBe(true);
   });
 
   test("T73: ids are never reused across restart (d-1..d-3 → d-4, then d-5)", async () => {
     h = makeHarness();
     for (const id of ["d-1", "d-2", "d-3"]) {
-      writeLog(h.logDir, id, [runHeaderLine(id, 4242), exitLine(0)]);
+      writeLog(runLogDir(h), id, [runHeaderLine(id, 4242), exitLine(0)]);
     }
     fireSessionStart();
 
@@ -623,6 +661,32 @@ describe("rows 47/T73 — session_start reconstruction from the log dir", () => 
 
     const second = await callDelegate({ agent: "architect", task: "two" }, makeCtx(), undefined, "call-2");
     expect(second.details.id).toBe("d-5");
+  });
+
+  test("project-local logs: a session reconstructs only its own project's runs", () => {
+    const harness = makeHarness("tui", { projectKey: "proj-a" });
+    h = harness;
+    writeLog(join(harness.logDir, "projects", "proj-a"), "d-1", [runHeaderLine("d-1", deadPid())]);
+    writeLog(join(harness.logDir, "projects", "proj-b"), "d-2", [runHeaderLine("d-2", deadPid())]);
+
+    fireSessionStart();
+
+    const entry = h.entries.find((e) => e.customType === "delegation-reconstruction");
+    expect(entry).toBeDefined();
+    const runs = entry!.data.runs as Array<{ id: string }>;
+    expect(runs.map((run) => run.id)).toEqual(["d-1"]); // proj-b's d-2 is invisible here
+  });
+
+  test("project-local logs: a legacy flat d-9.jsonl is invisible", async () => {
+    h = makeHarness();
+    writeLog(h.logDir, "d-9", [runHeaderLine("d-9", 4242), exitLine(0)]); // the pre-PKG-2 flat layout
+
+    fireSessionStart();
+    expect(h.entries.find((e) => e.customType === "delegation-reconstruction")).toBeUndefined();
+
+    // the flat file neither reserves an id nor feeds the allocator's scan
+    const result = await callDelegate({ agent: "architect", task: "t" }, makeCtx(), undefined, "call-1");
+    expect(result.details.id).toBe("d-1");
   });
 });
 
@@ -1211,17 +1275,17 @@ describe("T118 — empty registry lists reconstructed stale runs with their log 
 
   test("no runs; a stale log file (header-only, dead pid, old mtime) is listed as stale with its path", async () => {
     h = makeHarness();
-    writeLog(h.logDir, "d-9", [runHeaderLine("d-9", deadPid())], new Date(NOW - 700_000));
+    writeLog(runLogDir(h), "d-9", [runHeaderLine("d-9", deadPid())], new Date(NOW - 700_000));
 
     const text = await runList();
     expect(text).toContain("registry empty"); // the registry itself is still empty (RR1 wording stays)
     expect(text).toContain("d-9 architect — stale");
-    expect(text).toContain(join(h.logDir, "d-9.jsonl"));
+    expect(text).toContain(join(runLogDir(h), "d-9.jsonl"));
   });
 
   test("a fresh pid-dead log is not listed — reconstruction's lost runs stay session_start's business", async () => {
     h = makeHarness();
-    writeLog(h.logDir, "d-8", [runHeaderLine("d-8", deadPid())]); // mtime ≈ NOW → not stale
+    writeLog(runLogDir(h), "d-8", [runHeaderLine("d-8", deadPid())]); // mtime ≈ NOW → not stale
 
     const text = await runList();
     expect(text).toContain("registry empty");
@@ -1406,8 +1470,9 @@ describe("review folds (d-38): SHOULD-1 overrun + NIT-2 renderer guard", () => {
 describe("T122 — the stale query is prune-free (d-52 SHOULD-1)", () => {
   test("empty-registry list surfaces a stale log WITHOUT retiring it", async () => {
     h = makeHarness();
-    const stalePath = join(h.logDir, "d-9.jsonl");
+    const stalePath = join(runLogDir(h), "d-9.jsonl");
     // a run header, no terminal line — older than LOG_MAX_AGE_MS (mtime is the evidence)
+    mkdirSync(runLogDir(h), { recursive: true, mode: 0o700 });
     writeFileSync(stalePath, `${JSON.stringify({ type: "run", runId: "d-9", agent: "architect", persona: "architect", task: "lost work", argv: ["-p"], cwd: "/p", pid: 424242, startedAt: NOW - 90 * 24 * 60 * 60 * 1000 })}\n`);
     utimesSync(stalePath, new Date(NOW - 90 * 24 * 60 * 60 * 1000), new Date(NOW - 90 * 24 * 60 * 60 * 1000));
 
