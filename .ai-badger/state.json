@@ -1,7 +1,51 @@
 {
-  "lastUpdated": "2026-09-21T22:35:00Z",
+  "lastUpdated": "2026-09-22T22:55:00Z",
   "next": null,
   "completedTasks": [
+    {
+      "taskId": "pbi-project-local-ids-console-hygiene",
+      "title": "Project-local delegation ids + global GUID v7, completion fix, extension console capture",
+      "finishedAt": "2026-09-22T22:47:16Z",
+      "summary": "Three user items plus one feedback hotfix. (1) Delegation ids are project-local: logs moved to ~/.pi/agent/subagent-logs/projects/<projectKey>/d-N.jsonl (key = AI_BADGER_PROJECT_ID env, else .ai-badger/project-id, else sha256 of the nearest .ai-badger/.git root, else cwd), allocation/reconstruction/prune scoped per project, legacy flat logs left untouched and unread. Every run also mints a UUID v7 globalId (record, run header, receipt) indexed at log-sink creation into ~/.pi/agent/subagent-logs/index.jsonl (append-only, compacted above 1000 to newest 500, atomic rename); delegations resolve <d-N|guid> bridges local<->global (live registry first, then the index). (2) The autocomplete provider splices an argument completion's value over the WHOLE argument, so /delegations log|abort|peek and /monitors cancel id items now return '<verb> <id>' — Tab no longer deletes the verb. (3) New extensions/console-capture: wraps console.log|info|warn|error|debug while the TUI owns the terminal, appending to ~/.pi/agent/badger-console.log (1 MiB rotation), armed at factory, disarmed when session_start is not TUI, flushed to the original stderr on a pre-session exit, permanently disarmed by uncaughtExceptionMonitor, kill-switch PI_BADGER_CONSOLE_CAPTURE=0; composes with the session-signals vertex filter in either order. Hotfix (f: feedback): pi-tui 0.87.1 renamed the darwin prebuild to darwin-platform.node and the shift-enter loader's local candidate had a doubled path segment, so Shift+Enter degraded to follow-up in JetBrains terminals; both names are now tried from the resolved package dir. Evidence: plan review GO-WITH-FOLDS (M1-M4, S1-S6 folded), 852 pass/0 fail on the touched surface, 5-test integration suite, tsc only the 10 baseline pi-mcp-tools TS2307s, publish + --check in sync (14 extensions incl. console-capture), PR #30 squash-merged 5606f4c (release 1.1.19).",
+      "decisions": [
+        "Project key: AI_BADGER_PROJECT_ID wins, then .ai-badger/project-id, then a stable hash of the nearest .ai-badger/.git root, then cwd; sanitized to [A-Za-z0-9._-]",
+        "Log layout: projects/<key>/ under the existing log root; the SubagentDeps.logDir seam stays the base dir; allocateRunId and reconstructFromLogDir are reused unchanged",
+        "Global index entry is written at log-sink creation (not allocation), so queue-cap-rejected and queued-aborted runs get none while aborted-at-spawn is indexed (openTee precedes the pre-aborted check)",
+        "Global id is a local UUID v7 mint (48-bit ms + randomBytes) with no Node-version dependency; explicit-id runs mint one after the fact via allocationOf normalization at both registry call sites",
+        "resolve semantics: local id answers from the live registry then the run header; a foreign GUID answers from the index with source 'index'; unknown input is loud",
+        "Dedicated console-capture extension over hosting in session-signals: console hygiene must not disappear when an unrelated feature is disabled; disabled = leak returns by design (documented)",
+        "Capture wraps log|info|warn|error|debug only (dir/trace/table documented as outside); a throwing sink falls back to the original method once and never throws into the caller",
+        "Completion tests keep direct exact-value assertions; the apply-completion helper is a drift guard only — the independent witness is the manual TUI check"
+      ],
+      "followUps": [
+        "Manual TUI confirmation of /delegations log <Tab> in a live session (automated evidence applies the provider algorithm exactly)",
+        "Phase-4 reviews d-1551 (implementation) and d-1552 (test quality) were still running at merge; triage findings into a follow-up PR if any MUST/blocker lands",
+        "console-capture is a new publish target: users must /reload or restart pi to load it",
+        "decision-router node_modules warning from publish --check is pre-existing (derived state)"
+      ]
+    },
+    {
+      "taskId": "pbi-multi-query-rag-pipeline-v1",
+      "title": "Multi-query RAG pipeline v1: query-pipeline extension, Jev preload, document-aware merge",
+      "finishedAt": "2026-09-22T22:35:52Z",
+      "summary": "Shipped extensions/query-pipeline (group: delegator-persona direct ctx.modelRegistry.complete call -> split: one memory_search per planned query, sequential through mem-based-rag's single-flight searchCall -> rank: Jev score client copied by contract, batched <=12, own 15s attempt timeout -> merge: 5 slots total, best chunk per distinct document first, backfill only from already-included documents -> the bank's memory_search envelope). mem-based-rag auto-enrichment routes through it with PI_BADGER_QUERY_PIPELINE=0 falling back to today's single search; a search-error rethrow preserves the existing bank-error/timed-out diagnostics; progress paints via ctx.ui.setStatus/setWidget with a per-run token and clears in finally; one gated session-scoped fail-open Jev warm call at session_start; publish.ts EXTENSION_DIRS + export. Evidence: full suite 1870 pass/6 skip/4 fail (the 4 pre-existing pi-mcp-tools fork-parity + native-helper failures, identical on main); typecheck clean; publish --check in sync; per-package mutation ledgers pasted (PKG-1..PKG-5); MG-2 direct planner N=10 p50 4.2s/p95 5.6s ~$0.0003/call; MG-3 real MCP end-to-end 5 queries -> 29 candidates in 19.0s -> Jev 1.7s -> 5 distinct docs, 3 absent from the baseline top-5; MG-1 render mechanism verified from installed pi source (setStatus -> interactive-mode.setExtensionStatus -> footerDataProvider + ui.requestRender -> TUI.requestRender -> process.nextTick(scheduleRender)). PR #29 squash-merged ee5f1c6.",
+      "decisions": [
+        "Planner seam is ctx.modelRegistry.complete (pi 0.84.4 ModelRegistry has no streamSimple); text extracted inline from AssistantMessage.content, no pi-ai dependency",
+        "MG-2 amendment: parsePlan normalizes instead of rejecting - drops malformed concepts/queries, ignores unknown keys, truncates to 6 total / 4 per concept; strict shape rejection discarded 5/10 measured plans (the model reliably emits 4 concepts / 7-9 queries)",
+        "Merge budget is 5 slots total across mem+code (not per section); null-scored distinct documents take pass-1 slots (document-first); droppable ?/empty hits are dropped before selection (pruneHits parity, per kind)",
+        "Budget defaults 90s total / 15s planner / 15s search / 8s score; the planner cap is min(plannerMs, total-search-score) so it can never eat the search window; a single search timeout does not abort the shared controller",
+        "v1 routes auto-enrichment only (/ask unchanged) and has no HTTP planner fallback - any planner failure degrades to the single-query path",
+        "Jev scoring is a copy-by-contract client (the frozen decision-router client cannot express type:score); same env names/error vocabulary, own 15s per-attempt timeout, no backoff",
+        "A dead bank surfaces through the pipeline's search-error reason, which mem-based-rag rethrows into its existing bank-error skip path, so both pre-existing wiring tests pass unchanged",
+        "Progress uses ctx.ui.setStatus + setWidget with a monotonic per-run token; an earlier finisher never clears a later run's status"
+      ],
+      "followUps": [
+        "Live pixel confirmation of MG-1 progress visibility (mechanism verified from source; not yet observed in a live TUI)",
+        "Parallelize the N searches without breaking searchCall single-flight (owner-deferred optimization pass)",
+        "Route /ask through the pipeline; direct HTTP planner fallback; mechanical-chunking baseline (may cut the planner); planner stability/recall repeats; independent relevance labels",
+        "Tune the default planner model (env PI_BADGER_QUERY_PIPELINE_PLANNER_MODEL unset -> ctx.model) from measured cost/latency"
+      ]
+    },
     {
       "taskId": "pbi-jev-routing-tool-model-selection",
       "title": "Jev 1.13 decision-router: tool selection, model selection, shadow prompt routing",
