@@ -526,7 +526,9 @@ export class DelegationRegistry {
   }
 
   private mintGlobalId(): string {
-    return this.deps.mintGlobalId?.() ?? newGlobalId();
+    // The injected clock reaches explicit-id runs too: a GUID's timestamp prefix must agree
+    // with the run's record time under a test clock (impl-review SHOULD 5).
+    return this.deps.mintGlobalId?.() ?? newGlobalId(this.now());
   }
 
   private nextInternalId(): { id: string } {

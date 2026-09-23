@@ -464,6 +464,9 @@ export interface SubagentDeps {
   /** PKG-2 project key override (tests); default resolves from `process.cwd()` through
    * `resolveProjectKey` (env override → nearest `.ai-badger` → nearest `.git` → cwd hash). */
   projectKey?: string;
+  /** PKG-2 project-root override (tests); the directory the project walk starts from.
+   * Defaults to `process.cwd()`, so production keeps deriving the session's real root. */
+  cwd?: string;
   /** Injected clock for records and rendering. */
   now?: () => number;
   /** SIGTERM → SIGKILL grace for the session_shutdown kill path (R8). Default 5000. */
@@ -786,7 +789,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
   const baseLogDir = deps.logDir ?? DEFAULT_LOG_DIR;
   // PKG-2: the project key namespaces every run log and id scan. Resolved once at factory time
   // (the session's cwd), never per run — a session belongs to one project.
-  const projectIdentity = resolveProject(process.cwd(), process.env);
+  const projectIdentity = resolveProject(deps.cwd ?? process.cwd(), process.env);
   const projectKey = deps.projectKey ?? projectIdentity.key;
   const runLogDir = projectLogDir(baseLogDir, projectKey);
   /** PKG-3 D3: the shared global index, written at log-sink creation (never at allocation). */

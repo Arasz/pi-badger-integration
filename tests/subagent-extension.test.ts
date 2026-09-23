@@ -453,6 +453,24 @@ describe("PKG-2 — project-local id allocation and log layout (A2.2)", () => {
     expect(secondRun.details.logFile).toBe(join(first.logDir, "projects", "proj-b", "d-1.jsonl"));
     expect(existsSync(join(first.logDir, "projects", "proj-a", "d-1.jsonl"))).toBe(true);
   });
+
+  test("project-local logs: key resolution starts from deps.cwd, not the process cwd", async () => {
+    // Production hard-wired process.cwd(); every other test pins projectKey, so the real
+    // resolution path needs its own witness (impl-review SHOULD 4).
+    const root = mkdtempSync(join(tmpdir(), "aib-subagent-cwd-"));
+    try {
+      mkdirSync(join(root, ".ai-badger"));
+      writeFileSync(join(root, ".ai-badger", "project-id"), "cwd-key\n");
+      h = makeHarness("tui", { cwd: root, projectKey: undefined });
+
+      const result = await callDelegate({ agent: "architect", task: "t" }, makeCtx(), undefined, "call-cwd");
+
+      expect(result.details.logFile).toBe(join(h.logDir, "projects", "cwd-key", "d-1.jsonl"));
+      expect(existsSync(join(h.logDir, "projects", "cwd-key", "d-1.jsonl"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 // ------------------------------------------------------------------ PKG-3: global GUID + index

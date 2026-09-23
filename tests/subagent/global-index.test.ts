@@ -6,13 +6,14 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   appendIndexEntry,
   defaultGlobalIndexIo,
   findIndexEntry,
+  INDEX_COMPACT_THRESHOLD,
   INDEX_MAX_ENTRIES,
   readIndex,
   type GlobalIndexEntry,
@@ -92,5 +93,28 @@ describe("A3.5 — global index file", () => {
     expect(calls).toEqual([`write ${file}.tmp`, `rename ${file}.tmp -> ${file}`]);
     expect(readIndex(file).map((e) => e.id)).toEqual(["d-4", "d-5"]);
     expect(existsSync(`${file}.tmp`)).toBe(false); // the rename consumed the temp file
+  });
+
+  test("global index: the PRODUCTION defaults compact one past the threshold", () => {
+    // Both mutation survivors the QA review found lived here: tests only passed explicit
+    // thresholds/maxEntries, so INDEX_COMPACT_THRESHOLD = 1e9 and
+    // maxEntries ?? MAX_SAFE_INTEGER both stayed green. This drives the real defaults.
+    const file = join(tempDir(), "index.jsonl");
+    for (let n = 1; n <= INDEX_COMPACT_THRESHOLD + 1; n++) appendIndexEntry(file, entry(n));
+
+    const kept = readIndex(file);
+    expect(kept).toHaveLength(INDEX_MAX_ENTRIES);
+    expect(kept.at(-1)!.id).toBe(`d-${INDEX_COMPACT_THRESHOLD + 1}`);
+  });
+
+  test("global index: malformed lines are skipped, never failing a read or a lookup", () => {
+    const file = join(tempDir(), "index.jsonl");
+    appendIndexEntry(file, entry(1));
+    appendFileSync(file, "{not json\n");
+    appendFileSync(file, `${JSON.stringify({ globalId: "x" })}\n`); // missing id -> skipped
+    appendIndexEntry(file, entry(2));
+
+    expect(readIndex(file).map((e) => e.id)).toEqual(["d-1", "d-2"]);
+    expect(findIndexEntry(file, entry(2).globalId)?.id).toBe("d-2");
   });
 });
