@@ -1,6 +1,6 @@
 # Delegation map — pi-badger-integration
 
-> Scaffolded by ai-badger 0.172.1. Regenerated on every scaffold; do not edit.
+> Scaffolded by ai-badger 0.177.2. Regenerated on every scaffold; do not edit.
 
 ## Stacks
 
@@ -75,6 +75,5 @@ prescriptive persona descriptions are appropriate.
 
 - `ai-raccoon` — AiRaccoon is the project memory server
 - `code-review-graph` — This project has a knowledge graph
-- `hermes` — Read operations use Hermes's session store and work without a running gateway; sending messages needs the gateway and its platform adapters
 - `playwright` — The Playwright MCP server provides browser automation capabilities through the Model Context Protocol, enabling LLMs to interact with web pages using structured accessibility snapshots without requiring vision models
 - `semantica` — Semantica is the project knowledge graph

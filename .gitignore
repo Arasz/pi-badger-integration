@@ -17,4 +17,5 @@ __pycache__/
 .ai-badger/task-tracking/tracking.db
 .ai-badger/task-tracking/*.db-wal
 .ai-badger/task-tracking/*.db-shm
+.ai-badger.bckp/
 # END ai-badger managed block
