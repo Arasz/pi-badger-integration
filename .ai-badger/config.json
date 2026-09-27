@@ -46,14 +46,5 @@
     }
   ],
   "skillScope": "default",
-  "include": {
-    "skills": [
-      "review-changes",
-      "refactor-safely",
-      "worktree-agent-isolation",
-      "debug-issue",
-      "evidence-first-research"
-    ]
-  },
   "docs": {}
 }

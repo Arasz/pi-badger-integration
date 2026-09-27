@@ -2,14 +2,15 @@ node_modules/
 *.tsbuildinfo
 __pycache__/
 *.py[cod]
-.claude/settings.json.bak-*
+# ai-badger's config_guard backs up any file it destructively rewrites to
+# <name>.bak-<timestamp> before replacing it
+*.bak-*
 # task worktrees, in the agent-neutral place the /task skill puts them
 .ai-badger/worktrees/
 # per-project task-tracking runtime state (write lock, executed-tasks, token usage)
 .ai-badger/task-tracking/
 # prompt-markers hook runtime state (feedback streak counter) — same as ai-badger's own repo
 .ai-badger/prompt-markers/
-.ai-badger.bckp/
 # semantica local graph (durable record lives in memory)
 .semantica/
 
