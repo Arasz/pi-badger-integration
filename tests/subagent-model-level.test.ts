@@ -184,8 +184,11 @@ describe("5b resolveLevel — pure level resolution", () => {
     expect(r.model).toBe("openrouter/custom/explicit");
     expect(r.overriddenLevel).toBe("low");
     expect(r.overridingModel).toBe("openrouter/custom/explicit");
-    // A legacy bare pin also wins verbatim (grandfather clause — emit + fallback retry, never strip here).
-    expect(resolveLevel(FIXTURE, { level: "low", model: "opus" }).model).toBe("opus");
+    // A shape-failing bare pin is refused before emit (grandfather clause retired — the
+    // explicit-pin shape gate below): the level resolves instead and the refusal is recorded.
+    const refused = resolveLevel(FIXTURE, { level: "low", model: "opus" });
+    expect(refused.model).toBe("openrouter/z-ai/glm-5.3-flash");
+    expect(refused.modelWarning ?? "").toContain('"opus"');
   });
 
   test("L1-D3: unknown level throws naming the valid levels, never falls back", () => {
@@ -291,6 +294,97 @@ describe("5b resolveDelegationModel — G-6 four-source precedence, verbatim", (
     expect(r.overriddenLevel).toBe("low");
     expect(r.overridingModel).toBe("openrouter/f/f");
     expect(resolveDelegationModel(FIXTURE, { level: "low" }).overriddenLevel).toBeUndefined();
+  });
+});
+
+describe("5b explicit pin shape gate (M8/H4 — the d-324 class)", () => {
+  test("every shape-failing pin is refused before emit; the level resolves instead, warned", () => {
+    for (const bad of [
+      "sonnet", "Opus", "OPUS", "haiku", "fable-5.1",
+      "openrouter/sonnet", "openrouter/", "openrouter", "openrouter/a/b/c", "openrouter/a/b c", "--model x",
+    ]) {
+      const r = resolveLevel(FIXTURE, { level: "low", model: bad });
+      expect(r.model, bad).toBe("openrouter/z-ai/glm-5.3-flash");
+      expect(r.resolvedLevel, bad).toBe("low");
+      expect(r.overridingModel, bad).toBeUndefined();
+      expect(r.modelWarning ?? "", bad).toContain(`"${bad}"`);
+    }
+  });
+
+  test("a refused pin with no level resolves nothing — the session rank decides, verbatim and warned", () => {
+    const r = resolveLevel(FIXTURE, { model: "sonnet" });
+    expect(r.model).toBeUndefined();
+    expect(r.modelWarning ?? "").toContain('"sonnet"');
+    // G-6 fall-through: the session model decides — parent-proven values pass unvalidated.
+    const g = resolveDelegationModel(FIXTURE, { frontmatterModel: "sonnet", sessionModel: "anthropic/claude-x" });
+    expect(g.model).toBe("anthropic/claude-x");
+    expect(g.modelWarning ?? "").toContain('"sonnet"');
+  });
+
+  test("a refused pin no longer rescues an invalid level; an admitted pin still does (S5)", () => {
+    expect(() => resolveLevel(FIXTURE, { level: "ultra", model: "sonnet" })).toThrow(InvalidLevelError);
+    const r = resolveLevel(FIXTURE, { level: "ultra", model: "openrouter/custom/x" });
+    expect(r.model).toBe("openrouter/custom/x");
+    expect(r.levelWarning ?? "").toMatch(/ultra/);
+  });
+
+  test("admitted pins still win verbatim (G-6) — the gate is shape-only, never a rewrite", () => {
+    const r = resolveLevel(FIXTURE, { level: "low", model: "openrouter/custom/explicit" });
+    expect(r.model).toBe("openrouter/custom/explicit");
+    expect(r.modelWarning).toBeUndefined();
+  });
+
+  test("refusals cascade per rank in G-6 order — a refused rank never masks a usable one", () => {
+    // rank 1 refused → the admitted rank-2 pin decides (and still beats the level)
+    const a = resolveDelegationModel(FIXTURE, {
+      toolModel: "sonnet",
+      frontmatterModel: "openrouter/f/f",
+      level: "low",
+      sessionModel: "openrouter/s/p",
+    });
+    expect(a.model).toBe("openrouter/f/f");
+    expect(a.overridingModel).toBe("openrouter/f/f");
+    expect(a.modelWarning ?? "").toContain('"sonnet"');
+    expect(a.modelWarning ?? "").not.toContain('"openrouter/f/f"');
+    // both explicit ranks refused → the level decides, both refusals recorded
+    const b = resolveDelegationModel(FIXTURE, { toolModel: "sonnet", frontmatterModel: "opus", level: "low" });
+    expect(b.model).toBe("openrouter/z-ai/glm-5.3-flash");
+    expect(b.modelWarning ?? "").toContain('"sonnet"');
+    expect(b.modelWarning ?? "").toContain('"opus"');
+    // both refused, no level → the session decides, warned
+    const c = resolveDelegationModel(FIXTURE, { toolModel: "sonnet", frontmatterModel: "opus", sessionModel: "openrouter/s/p" });
+    expect(c.model).toBe("openrouter/s/p");
+    expect(c.modelWarning ?? "").toContain('"sonnet"');
+    expect(c.modelWarning ?? "").toContain('"opus"');
+    // blank stays silent (blank ≡ absent, not refused)
+    const d = resolveDelegationModel(FIXTURE, { toolModel: "  ", frontmatterModel: "openrouter/f/f", level: "low" });
+    expect(d.modelWarning).toBeUndefined();
+    // a refused rank-2 pin is named even when rank 1 decides (S5 non-deciding-pin standard)
+    const e = resolveDelegationModel(FIXTURE, { toolModel: "openrouter/t/t", frontmatterModel: "sonnet", level: "low" });
+    expect(e.model).toBe("openrouter/t/t");
+    expect(e.modelWarning ?? "").toContain('"sonnet"');
+  });
+
+  test("argv never carries the refused value (delegationArgs — the argv-build refusal)", () => {
+    expect(modelOf(delegationArgs(tierPersona({ level: "low", model: "sonnet" }), "t", "openrouter/s/p", FIXTURE))).toBe(
+      "openrouter/z-ai/glm-5.3-flash",
+    );
+    expect(modelOf(delegationArgs(tierPersona({ model: "sonnet" }), "t", "openrouter/s/p", FIXTURE))).toBe(
+      "openrouter/s/p",
+    );
+    expect(delegationArgs(tierPersona({ model: "sonnet" }), "t", undefined, FIXTURE)).not.toContain("--model");
+  });
+
+  test("fallbackArgsFor arms on the level-resolved id after a refused pin, never on session passthrough", () => {
+    const PARENT = "openrouter/session/parent";
+    const primary = delegationArgs(tierPersona({ level: "low", model: "sonnet" }), "review", PARENT, FIXTURE);
+    expect(modelOf(primary)).toBe("openrouter/z-ai/glm-5.3-flash");
+    const fallback = fallbackArgsFor(primary, tierPersona({ level: "low", model: "sonnet" }), PARENT, FIXTURE);
+    expect(modelOf(fallback!)).toBe(PARENT);
+    // refused pin, no level → the argv is already the session model → no identical retry
+    const sessionArgv = delegationArgs(tierPersona({ model: "sonnet" }), "review", PARENT, FIXTURE);
+    expect(modelOf(sessionArgv)).toBe(PARENT);
+    expect(fallbackArgsFor(sessionArgv, tierPersona({ model: "sonnet" }), PARENT, FIXTURE)).toBeUndefined();
   });
 });
 
@@ -486,6 +580,47 @@ describe("5b delegate tool — level end to end (frozen degrade + override recor
       expect((card.details as Record<string, unknown>).levelOverride).toBe(
         'explicit model "openrouter/custom/explicit" overrode level "low"',
       );
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+      rmSync(logDir, { recursive: true, force: true });
+    }
+  });
+
+  test("d-324 class: a bare model: pin is refused at argv-build — the level id spawns, refusal notified", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "aib-pkg5-gate-"));
+    const logDir = mkdtempSync(join(tmpdir(), "aib-pkg5-gate-logs-"));
+    try {
+      const pi = createFakePi();
+      const children: FakeChild[] = [];
+      const spawnedArgs: string[][] = [];
+      const spawnFn = (_command: string, args: string[]) => {
+        spawnedArgs.push([...args]);
+        const child = new FakeChild();
+        children.push(child);
+        return child;
+      };
+      subagent(pi as never, { spawnFn, logDir, now: () => Date.now(), escalateAfterMs: 0 });
+      const agents = join(projectDir, ...AGENTS_DIR);
+      mkdirSync(agents, { recursive: true });
+      // The incident in miniature: `model: sonnet` (bare alias) beside a valid level.
+      writeFileSync(join(agents, "pinned.md"), "---\nname: pinned\ndescription: P\nmodel: sonnet\nlevel: high\n---\nbody\n");
+      const notifications: string[] = [];
+      const ctx = {
+        ui: { notify: (m: string) => notifications.push(m), setWidget: () => {}, setStatus: () => {} },
+        mode: "tui",
+        hasUI: true,
+        cwd: projectDir,
+        sessionManager: { getSessionId: () => "sess-test" },
+        model: undefined,
+        signal: undefined,
+      };
+      const tool = (pi.tools as Map<string, any>).get("delegate");
+      await tool.execute("call-gate", { agent: "pinned", task: "do it" }, undefined, undefined, ctx);
+      // The bare pin never reached argv — the high preferred spawned instead (frozen registry).
+      expect(modelOf(spawnedArgs[0]!)).toBe("openrouter/deepseek/deepseek-v4.1-flash");
+      expect(spawnedArgs[0]).not.toContain("sonnet");
+      // The refusal is recorded at dispatch (S5 standard) — never silent.
+      expect(notifications.join("\n")).toContain('"sonnet"');
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
       rmSync(logDir, { recursive: true, force: true });

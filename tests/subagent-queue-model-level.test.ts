@@ -212,3 +212,44 @@ describe("5c queue level param — H4 negative matrix on the --model value", () 
     }
   });
 });
+
+describe("5c explicit pin shape gate (M8/H4 — the d-324 class)", () => {
+  test("a bare group model: override is refused — the level resolves and the refusal is notified", async () => {
+    makeHarness({ architect: "level: high\n" });
+    await callQueue({ action: "add", agent: "architect", tasks: ["one"], model: "sonnet" });
+    expect(modelOf(h.spawnedArgs[0]!)).toBe(MED_PREF);
+    expect(h.notifications.join("\n")).toContain('"sonnet"');
+  });
+
+  test("a bare frontmatter model: pin is refused — nothing bare reaches --model", async () => {
+    makeHarness({ architect: "model: sonnet\nlevel: high\n" });
+    await callQueue({ action: "add", agent: "architect", tasks: ["one"] });
+    expect(modelOf(h.spawnedArgs[0]!)).toBe(MED_PREF);
+  });
+
+  test("a refused rank-1 falls to an admitted rank-2 pin (per-rank cascade)", async () => {
+    makeHarness({ architect: "model: openrouter/custom/pin\n" });
+    await callQueue({ action: "add", agent: "architect", tasks: ["one"], model: "sonnet", level: "low" });
+    expect(modelOf(h.spawnedArgs[0]!)).toBe("openrouter/custom/pin");
+    expect(h.notifications.join("\n")).toContain('"sonnet"');
+  });
+
+  test("the session model passes verbatim — the gate never re-filters an already-decided value", async () => {
+    makeHarness({ architect: "" });
+    const ctx = {
+      ui: { notify: (message: string) => h.notifications.push(message), setWidget: () => {}, setStatus: () => {} },
+      mode: "tui",
+      hasUI: true,
+      cwd: h.projectDir,
+      sessionManager: { getSessionId: () => "sess-test" },
+      model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+      signal: undefined,
+    };
+    // A bare group model is refused; with no level the session model decides — and a
+    // non-openrouter session model survives intact (the value already proved itself on the
+    // parent; the gate guards PINS, never the inherit channel).
+    await callQueue({ action: "add", agent: "architect", tasks: ["one"], model: "sonnet" }, ctx);
+    expect(modelOf(h.spawnedArgs[0]!)).toBe("anthropic/claude-sonnet-4-5");
+    expect(h.notifications.join("\n")).toContain('"sonnet"');
+  });
+});

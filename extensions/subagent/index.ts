@@ -50,6 +50,7 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import { Box, Text } from "@earendil-works/pi-tui";
 import {
+  admitExplicitModel,
   allocateRunId,
   classifyFromLogDir,
   clampRunTimeoutMs,
@@ -200,17 +201,20 @@ export interface Persona {
   description: string;
   /**
    * The persona's `model:` frontmatter pin, verbatim, or undefined when the file pins none.
-   * It is NOT resolved here: the pin is passed through as the child's `--model`, so pi's own
-   * CLI resolution (the same matcher `PI_MODEL` / `pi --model` use) maps an alias like
-   * `opus` to a concrete provider/model.
+   * Loaded raw here; at resolve time an explicit pin must pass MODEL_ID_PATTERN (M8/H4 — the
+   * same tight shape registry ids get) before it is emitted as the child's `--model`. A bare
+   * alias (`sonnet`, `opus`) is refused at argv-build — the d-324 class: pi's credential-blind
+   * alias resolution maps it to an unauthenticated provider and the child dies at spawn — and
+   * the refusal rides `modelWarning` while resolution falls through the G-6 ranks
+   * (level-resolved → session). Never silent, never fatal.
    *
    * f: 2026-09-02 (owner ruling — supersedes the former LOUD-failure contract): the model
-   * part is FULLY OPTIONAL — a pin must never fail a delegation. pi's alias resolution is
-   * credential-blind on its fuzzy path (the d-324 class: bare `opus` resolved to
-   * amazon-bedrock, which has no credentials, and the child died at the auth gate), so the
-   * runner retries once on the parent model when a pin fails to START
-   * (`fallbackArgsFor` + the runner's model-fallback retry) and RECORDS the fallback on the
-   * result note — never silent, never fatal.
+   * part is FULLY OPTIONAL — a pin must never fail a delegation. A well-shaped pin that still
+   * fails to START is retried once on the parent model (`fallbackArgsFor` + the runner's
+   * model-fallback retry) and the fallback is RECORDED on the result note — never silent,
+   * never fatal. f: 2026-09-29 retires the legacy-bare-pin grandfather clause (ADR
+   * docs/work/2026-09-06-pkg5-level-registry-adr.md §2/§6): bare pins no longer reach argv at
+   * all — the shape gate refuses them before emit.
    */
   model?: string;
   /**
@@ -355,11 +359,14 @@ function unknownPersonaMessage(agent: string, agentsDir: string, personas: Array
  * the child keeps its tool guidance); `--` ends option parsing so a task starting with `-` is a
  * task.
  *
- * The `model` argument is the delegating session's model — the child's fallback. The persona's
- * own `model:` pin (Persona.model) takes precedence when present, and a persona `level:`
- * (PKG-5) resolves against the registry between the two: frontmatter `model:` >
+ * The `model` argument is the delegating session's model — the child's fallback. It passes
+ * through verbatim (the inherit channel: proven on the parent, never shape-gated). The
+ * persona's own `model:` pin (Persona.model) takes precedence when present, and a persona
+ * `level:` (PKG-5) resolves against the registry between the two: frontmatter `model:` >
  * `level:`-resolved > session model (G-6; the queue tool's group `model:` outranks both —
- * see its buildInvocation). `registry` is the loaded project registry (frozen fallback when
+ * see its buildInvocation). Every explicit rank passes the MODEL_ID_PATTERN gate first
+ * (M8/H4): a shape-failing pin is refused at argv-build — it never reaches `--model` — and
+ * the next rank decides. `registry` is the loaded project registry (frozen fallback when
  * the project has none); an invalid deciding level throws naming the valid levels (L1-D3),
  * a non-deciding one is reported through `resolveDelegationModel` by the caller — this
  * argv builder stays pure and returns the argv only.
@@ -395,6 +402,9 @@ export function delegationArgs(persona: Pick<Persona, "systemPrompt" | "model" |
  * `--model` value is verified against the registry resolution, so a foreign argv never
  * arms a fallback. An undecidable level (invalid with no explicit model — the argv build
  * already threw for the deciding case) yields no fallback instead of throwing.
+ * M8/H4: `persona.model` counts only when ADMITTED (same gate as the argv build) — a
+ * shape-failing pin never reached argv, so it cannot arm a retry either; beside a `level:`
+ * the level-resolved arming below takes over.
  */
 export function fallbackArgsFor(
   args: string[],
@@ -403,8 +413,9 @@ export function fallbackArgsFor(
   registry: LevelRegistry = FROZEN_MODEL_GROUPS,
 ): string[] | undefined {
   let pin: string | undefined;
-  if (persona.model) {
-    pin = persona.model;
+  const admitted = admitExplicitModel(persona.model).model;
+  if (admitted !== undefined) {
+    pin = admitted;
   } else if (persona.level) {
     let expected: string | undefined;
     try {
@@ -1050,7 +1061,10 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     buildInvocation: (persona, task, models) => {
       // PKG-5 5c: the single G-6 resolution for queue members (tool-override > frontmatter
       // model > level-resolved > session). The argv renders from the RESOLVED pin, so this
-      // stays consistent with the delegate path's delegationArgs by construction.
+      // stays consistent with the delegate path's delegationArgs by construction. The
+      // resolved pin rides the SESSION channel (passed through verbatim), never the pin
+      // channel — the M8/H4 gate admits pins once, at resolution; re-gating a decided value
+      // here would drop a non-openrouter session model on the floor (the double-gate).
       const registry = models.registry ?? FROZEN_MODEL_GROUPS;
       const resolution = resolveDelegationModel(registry, {
         toolModel: models.toolModel,
@@ -1058,7 +1072,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         level: models.level ?? persona.level,
         sessionModel: models.sessionModel,
       });
-      const args = delegationArgs({ systemPrompt: persona.systemPrompt, model: resolution.model }, task, undefined, registry);
+      const args = delegationArgs({ systemPrompt: persona.systemPrompt }, task, resolution.model, registry);
       const invocation = piInvocation(args);
       // The fallback retries on the session ("parent") model and arms only when a pin won
       // over it — a session-passthrough argv must not arm an identical retry.
@@ -1207,6 +1221,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         sessionModel: model,
       });
       if (resolution.levelWarning) toolCtx.ui.notify(`ai-badger: ${resolution.levelWarning}`, "warning");
+      if (resolution.modelWarning) toolCtx.ui.notify(`ai-badger: ${resolution.modelWarning}`, "warning");
       const args = delegationArgs(persona, params.task, model, loaded.registry);
       const invocation = piInvocation(args);
       const fallbackArgs = fallbackArgsFor(invocation.args, persona, model, loaded.registry);

@@ -127,11 +127,13 @@ describe("delegationArgs", () => {
 
   test("persona `model:` pin takes precedence over the delegating session's model", () => {
     // The pin is the point of the field: a persona that names a model must never silently run
-    // on the session's model. The session model is only the fallback when no pin exists.
+    // on the session's model. The session model is only the fallback when no pin exists — or
+    // when the pin fails the M8/H4 shape gate (f: 2026-09-29: bare aliases like `opus` are
+    // refused at argv-build; pinned in subagent-model-level.test.ts's shape-gate block).
     const pinned = delegationArgs(
-      persona({ model: "opus" }), "Draft the plan", "openrouter/z-ai/glm-5.3-flash");
+      persona({ model: "openrouter/custom/pinned" }), "Draft the plan", "openrouter/z-ai/glm-5.3-flash");
     expect(pinned).toContain("--model");
-    expect(pinned[pinned.indexOf("--model") + 1]).toBe("opus");
+    expect(pinned[pinned.indexOf("--model") + 1]).toBe("openrouter/custom/pinned");
 
     // No pin → the session model is passed through unchanged (row 2's contract).
     const unpinned = delegationArgs(persona(), "Draft the plan", "openrouter/z-ai/glm-5.3-flash");
