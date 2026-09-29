@@ -1149,6 +1149,14 @@ export interface ResolvedLevelPin {
    * surfaces this (ui.notify); the pure half only reports it.
    */
   readonly levelWarning?: string;
+  /**
+   * M8/H4 shape gate (the d-324 class): one sentence per explicit pin that failed
+   * MODEL_ID_PATTERN and was REFUSED before emit — named so the refusal is never silent
+   * (S5 standard). A refused pin is absent at its rank: resolution falls through to the next
+   * G-6 source instead of failing the delegation (f: 2026-09-02: a pin must never fail a
+   * delegation). Reported even when the pin was overridden (non-deciding), like `levelWarning`.
+   */
+  readonly modelWarning?: string;
   /** G-6 explicit-wins record: a valid level this explicit model overrode (note, like modelFallback). */
   readonly overriddenLevel?: ModelLevel;
   /** The explicit model that won (verbatim), when one did. */
@@ -1158,6 +1166,25 @@ export interface ResolvedLevelPin {
 /** Non-empty trimmed string, or undefined — blank ≡ absent at every rank (T-EMPTY). */
 function nonBlank(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+/** The one refusal sentence for a shape-failing pin — M8's registry phrasing, one builder. */
+export function modelRefusalSentence(model: string): string {
+  return `explicit model "${model}" fails ${String(MODEL_ID_PATTERN)} — refusing to emit it into --model argv`;
+}
+
+/**
+ * The single admission gate for explicit pins (M8/H4 — the d-324 class). Registry ids and
+ * explicit pins now pass the SAME tight shape before anything reaches `--model` argv; a bare
+ * alias (`sonnet`, `opus`) is exactly what pi resolves credential-blind onto an unauthenticated
+ * provider at spawn. Blank ≡ absent (silent); a shape failure is admitted nowhere — it is
+ * refused and named (`modelRefusalSentence`) so the caller can surface it (S5 standard).
+ * Nothing else about the pin is judged here: an admitted pin still passes through verbatim.
+ */
+export function admitExplicitModel(raw: unknown): { model?: string; refusal?: string } {
+  const candidate = nonBlank(raw);
+  if (candidate === undefined) return {};
+  return MODEL_ID_PATTERN.test(candidate) ? { model: candidate } : { refusal: modelRefusalSentence(candidate) };
 }
 
 /** The preferred id of one group — throws naming the rule instead of guessing (§4 step 8). */
@@ -1180,20 +1207,33 @@ function readPreferredId(registry: LevelRegistry, level: ModelLevel): string {
  * Pure `resolveLevel(registry, {level, model})` (contract §4, ADR §consumer-posture).
  *
  * 1. Blank level ≡ absent (inherit); surrounding whitespace stripped, case-sensitive.
- * 2. Invalid level with an explicit model → the model wins verbatim + `levelWarning`
- *    (S5: validated, never silent). Invalid level deciding → `InvalidLevelError` (§5).
- * 3. Valid level + explicit model → the model wins verbatim + `overriddenLevel` (G-6).
- * 4. Valid level alone → `groups[level][0].id`, re-validated against MODEL_ID_PATTERN
+ * 2. An explicit model must pass MODEL_ID_PATTERN to decide (M8/H4 — one gate for every value
+ *    that can reach `--model` argv; the grandfather clause for legacy bare pins is retired).
+ *    A shape-failing pin is REFUSED before emit and named in `modelWarning`, then treated as
+ *    absent at its rank — resolution falls through instead of failing the delegation
+ *    (f: 2026-09-02: a pin must never fail a delegation — never silent, never fatal).
+ * 3. Invalid level with an admitted explicit model → the model wins verbatim + `levelWarning`
+ *    (S5: validated, never silent). Invalid level deciding (no admitted model left) →
+ *    `InvalidLevelError` (§5).
+ * 4. Valid level + admitted explicit model → the model wins verbatim + `overriddenLevel` (G-6);
+ *    valid level + refused pin → the level resolves and the refusal rides `modelWarning`.
+ * 5. Valid level alone → `groups[level][0].id`, re-validated against MODEL_ID_PATTERN
  *    before emit (M8: refusal, never a dirty `--model`).
- * 5. Neither → no pin (inherit — the caller omits `--model`).
- * 6. Never falls back silently: empty groups and id-less entries throw (step 8).
- * 7. Never follows `aliases`/`weightsId` — only `.id` is read (T-ALIAS).
+ * 6. Neither → no pin (inherit — the caller omits `--model`).
+ * 7. Never falls back silently: empty groups and id-less entries throw (step 8).
+ * 8. Never follows `aliases`/`weightsId` — only `.id` is read (T-ALIAS).
  */
 export function resolveLevel(registry: LevelRegistry, opts: ResolveLevelOptions = {}): ResolvedLevelPin {
-  const explicit = nonBlank(opts.model);
+  const admitted = admitExplicitModel(opts.model);
+  const explicit = admitted.model;
+  const modelWarning = admitted.refusal;
   const rawLevel = opts.level;
   const trimmedLevel = typeof rawLevel === "string" ? rawLevel.trim() : undefined;
-  if (rawLevel === undefined || trimmedLevel === "") return explicit === undefined ? {} : { model: explicit, overridingModel: explicit };
+  if (rawLevel === undefined || trimmedLevel === "") {
+    return explicit === undefined
+      ? (modelWarning !== undefined ? { modelWarning } : {})
+      : { model: explicit, overridingModel: explicit };
+  }
   if (trimmedLevel === undefined || !(VALID_LEVELS as readonly string[]).includes(trimmedLevel)) {
     const received = trimmedLevel ?? String(rawLevel);
     if (explicit !== undefined) {
@@ -1218,6 +1258,7 @@ export function resolveLevel(registry: LevelRegistry, opts: ResolveLevelOptions 
     model: id,
     resolvedLevel: level,
     ...(registry.registryVersion !== undefined ? { registryVersion: registry.registryVersion } : {}),
+    ...(modelWarning !== undefined ? { modelWarning } : {}),
   };
 }
 
@@ -1255,14 +1296,27 @@ export interface DelegationModelSources {
  * G-6 implemented verbatim, once: tool-override > frontmatter `model:` > `level:`-resolved
  * > session model. Both tool layers (delegate, queue) resolve through here, so the order
  * cannot drift between them. `level` is validated even when overridden (A7: deciding pin
- * raises, non-deciding pin warns per S5).
+ * raises, non-deciding pin warns per S5) — and so are the explicit ranks (M8/H4): each
+ * non-blank explicit pin is shape-admitted per rank, a refused rank is skipped (so it never
+ * masks a usable lower rank) and named in `modelWarning` even when overridden (S5's
+ * non-deciding-pin standard). The session rank passes verbatim: it is pi's own proven
+ * resolution, not a pin — the gate guards pins, never the inherit channel.
  */
 export function resolveDelegationModel(registry: LevelRegistry, sources: DelegationModelSources = {}): ResolvedLevelPin {
-  const explicit = nonBlank(sources.toolModel) ?? nonBlank(sources.frontmatterModel);
+  const refusals: string[] = [];
+  let explicit: string | undefined;
+  for (const raw of [sources.toolModel, sources.frontmatterModel]) {
+    const admitted = admitExplicitModel(raw);
+    if (admitted.refusal !== undefined) refusals.push(admitted.refusal);
+    if (explicit === undefined && admitted.model !== undefined) explicit = admitted.model;
+  }
   const resolved = resolveLevel(registry, { level: sources.level, model: explicit });
-  if (resolved.model !== undefined) return resolved;
+  const warnings = [...refusals, ...(resolved.modelWarning !== undefined ? [resolved.modelWarning] : [])];
+  const modelWarning = warnings.length > 0 ? warnings.join(" ") : undefined;
+  const withWarning = modelWarning !== undefined ? { modelWarning } : {};
+  if (resolved.model !== undefined) return { ...resolved, ...withWarning };
   const session = nonBlank(sources.sessionModel);
-  return session === undefined ? {} : { model: session };
+  return { ...withWarning, ...(session !== undefined ? { model: session } : {}) };
 }
 
 /**

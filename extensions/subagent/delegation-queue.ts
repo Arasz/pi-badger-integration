@@ -353,6 +353,9 @@ export function registerDelegationQueue(
 			if (invocation.resolution.levelWarning) {
 				toolCtx.ui.notify(`ai-badger: ${invocation.resolution.levelWarning}`, "warning");
 			}
+			if (invocation.resolution.modelWarning) {
+				toolCtx.ui.notify(`ai-badger: ${invocation.resolution.modelWarning}`, "warning");
+			}
 		}
 		const requests: StartRequest[] = resolved.map(({ persona, task }, index) => {
 			const invocation = invocations[index]!;

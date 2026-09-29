@@ -64,9 +64,15 @@ framework canonical's preferred index (medium/high rotated to deepseek-v4.1-flas
 2. **Re-validate before emit (M8).** The registry file is project-writable (contributor /
    PR surface) yet renders into `pi -p --model <id>` argv. The resolver re-validates the
    resolved id against the tight pattern `^openrouter/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`
-   before emitting; mismatch → throw naming the rule, never emit. Explicit `model:` pins
+   before emitting; mismatch → throw naming the rule, never emit. ~~Explicit `model:` pins
    pass verbatim (contract §4.5; grandfather clause for legacy bare pins + `fallbackArgsFor`
-   retry unchanged).
+   retry unchanged).~~ **Amended f: 2026-09-29 (M8/H4 — the d-324 class):** explicit pins
+   pass the SAME pattern gate before emit (`admitExplicitModel` — one gate for every value
+   that can reach `--model` argv). A shape-failing pin is refused at argv-build and named in
+   `modelWarning` (S5 standard: never silent), and resolution falls through the G-6 ranks —
+   f: 2026-09-02 stands unchanged: a pin must never fail a delegation (never fatal). The
+   legacy bare-pin grandfather clause is RETIRED; the `fallbackArgsFor` retry stays for
+   well-shaped pins that fail to START.
 3. **G-6 implemented verbatim, once** (`resolveDelegationModel` in `delegation-core.ts`):
    tool-override (queue group `model:`) > frontmatter `model:` > `level:`-resolved >
    session model. Effective level for queue = group `level:` param ?? persona `level:`
@@ -82,9 +88,13 @@ framework canonical's preferred index (medium/high rotated to deepseek-v4.1-flas
    rides the result note (`levelOverride`) and the card verdict names it — never silent.
 6. **Dual-key frontmatter (G-2/G-3).** `parsePersona` loads raw `level:` + `model:`
    strings (trimmed, non-empty); no reader-side stripping — PKG-4's delivery rule (level
-   passes, model passes iff `openrouter/`-qualified) describes the *delivered files*, and
-   stripping in pbi would break the grandfathered bare-pin fallback the existing suite pins.
+   passes, model passes iff `openrouter/`-qualified) describes the *delivered files*.
    Validation happens at resolve time, where the override context exists.
+   **Amended f: 2026-09-29:** the grandfathered bare-pin fallback that once justified
+   reader-side pass-through is retired (see §2) — the resolve-time shape gate now enforces
+   the same rule PKG-4 delivers, so legacy or hand-edited bare pins are refused at
+   argv-build wherever they came from. The session (inherit) rank stays unvalidated: it is
+   pi's own proven resolution, not a pin — the gate guards pins, never the inherit channel.
 7. **Core placement.** The resolver lives in `delegation-core.ts`'s pure half (no imports,
    no clock, no fs — house rules hold): `delegation-queue.ts` cannot import `index.ts`
    (no-cycle rule R4/S6), so the shared pure resolver + G-6 helper + frozen fallback must

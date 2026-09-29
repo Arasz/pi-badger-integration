@@ -49,15 +49,19 @@ function persona(overrides: Partial<Persona> = {}): Persona {
 // ------------------------------------------------------------------ fallbackArgsFor
 
 describe("fallbackArgsFor", () => {
-  const PINNED = ["-p", "--mode", "json", "--model", "opus", "--", "review the diff"];
+  // f: 2026-09-29 (M8/H4 shape gate): these mechanics exercise ADMITTED pins — a bare alias
+  // like `opus` never reaches argv anymore (refused at argv-build; that path and its
+  // fall-through are pinned in subagent-model-level.test.ts's shape-gate block).
+  const PIN = "openrouter/custom/pinned";
+  const PINNED = ["-p", "--mode", "json", "--model", PIN, "--", "review the diff"];
 
   test("swaps the persona pin for the parent model", () => {
-    const fallback = fallbackArgsFor(PINNED, persona({ model: "opus" }), "openrouter/z-ai/glm-5.3-flash");
+    const fallback = fallbackArgsFor(PINNED, persona({ model: PIN }), "openrouter/z-ai/glm-5.3-flash");
     expect(fallback).toEqual(["-p", "--mode", "json", "--model", "openrouter/z-ai/glm-5.3-flash", "--", "review the diff"]);
   });
 
   test("drops the --model pair when no parent model is known", () => {
-    const fallback = fallbackArgsFor(PINNED, persona({ model: "opus" }), undefined);
+    const fallback = fallbackArgsFor(PINNED, persona({ model: PIN }), undefined);
     expect(fallback).toEqual(["-p", "--mode", "json", "--", "review the diff"]);
   });
 
@@ -69,12 +73,12 @@ describe("fallbackArgsFor", () => {
   test("returns undefined when the pinned value is not the argv's --model value", () => {
     // Defensive: the tool layer is the only argv builder, so this "should not happen" —
     // the helper must stay pure and refuse to guess anyway.
-    expect(fallbackArgsFor(PINNED, persona({ model: "sonnet" }), "openrouter/z-ai/glm-5.3-flash")).toBeUndefined();
+    expect(fallbackArgsFor(PINNED, persona({ model: "openrouter/other/model" }), "openrouter/z-ai/glm-5.3-flash")).toBeUndefined();
   });
 
   test("never mutates the primary argv", () => {
     const primary = [...PINNED];
-    fallbackArgsFor(primary, persona({ model: "opus" }), "openrouter/z-ai/glm-5.3-flash");
+    fallbackArgsFor(primary, persona({ model: PIN }), "openrouter/z-ai/glm-5.3-flash");
     expect(primary).toEqual(PINNED);
   });
 });
