@@ -31,7 +31,10 @@ export const SKIP_BLOCK_MESSAGE =
 /**
  * Command-position `pi`-spawn predicate (spike §AC2, measured 33/33: 15/15
  * MUST-detect, 18/18 MUST-NOT). Command-position deliberately, NOT bare-token:
- * `echo pi` / `grep pi README.md` / `pip install pi` stay silent. Optional
+ * `echo pi` / `grep pi README.md` / `pip install pi` stay silent. Quoted spans are
+ * blanked to spaces first (blankQuotedSpans): quoted data can neither fake a segment
+ * separator (a `grep` pattern's `|features/pi` or a multi-line commit message's
+ * next-line path) nor smuggle a benign flag. Optional
  * `VAR=x` env prefixes, `sudo`/`nohup`/`npx`/`bunx`/`uvx`/`timeout <arg>`
  * runner prefixes, and multi-segment path prefixes (`./pi`,
  * `/usr/local/bin/pi`); trailing `[^\w-]` keeps `pip`/`pi3`/`my-pi` silent
@@ -61,10 +64,50 @@ function invocationArgsAreBenign(args: string): boolean {
 }
 
 /**
+ * The command with every quoted span blanked to spaces (length-preserving), so the
+ * predicates below can never read quoted DATA as command position: a grep pattern
+ * (`"bun test\|features/pi"`) or a multi-line `git commit -m` message whose next
+ * line starts with such a path would otherwise fake a segment separator and block.
+ * Bash rules approximated: `'…'` is pure data to its closing quote; `"…"` ends at
+ * the first unescaped `"`; an unbalanced quote blanks to the end (bash would not run
+ * the command at all); a quoted newline becomes spaces — a line break inside quotes
+ * is data, not a segment boundary. Coarse exception, safety-first: a DOUBLE-quoted
+ * span containing a command substitution (`$(` or a backtick) is left verbatim,
+ * because substitutions EXECUTE inside double quotes and blanking them would hide a
+ * real spawn — such a span can over-block like before, never miss. PowerShell
+ * quoting is approximated the same way.
+ */
+function blankQuotedSpans(command: string): string {
+  const out = command.split("");
+  let i = 0;
+  while (i < out.length) {
+    const quote = out[i];
+    if (quote !== "'" && quote !== '"') {
+      i += 1;
+      continue;
+    }
+    const start = i;
+    let j = i + 1;
+    while (j < out.length && out[j] !== quote) {
+      if (quote === '"' && out[j] === "\\") j += 1; // escaped char (incl. \" and \\)
+      j += 1;
+    }
+    const end = Math.min(j + 1, out.length); // through the closing quote (or EOS)
+    const span = command.slice(start, end);
+    const keepsCode = quote === '"' && (span.includes("$(") || span.includes("`"));
+    if (!keepsCode) out.fill(" ", start, end);
+    i = end;
+  }
+  return out.join("");
+}
+
+/**
  * True when EVERY real `pi` invocation in the command is a help/version read.
  * A mix (`pi --help; pi run`) is NOT benign — the prompt run still blocks.
+ * Runs on the blanked text: a `--help` inside quoted argument text never exempts.
  */
 export function isBenignPiSpawn(command: string): boolean {
+  command = blankQuotedSpans(command);
   PI_INVOCATION_ARGS_GLOBAL.lastIndex = 0;
   let found = false;
   let allBenign = true;
@@ -86,11 +129,14 @@ export type PiSpawnDecision =
   | { readonly action: "block"; readonly reason: string }
   | { readonly action: "silent" };
 
-/** Pure decision half: empty/undefined commands are silent; help/version reads are silent. */
+/** Pure decision half: empty/undefined commands are silent; help/version reads are silent.
+ * Both halves see the blanked text (blankQuotedSpans), so quoted argument text can
+ * neither fake a spawn position nor smuggle a `--help` exemption. */
 export function piSpawnDecision(command: string | undefined): PiSpawnDecision {
   if (command === undefined || command.trim() === "") return { action: "silent" };
-  if (!PI_SPAWN_COMMAND.test(command)) return { action: "silent" };
-  if (isBenignPiSpawn(command)) return { action: "silent" };
+  const scan = blankQuotedSpans(command);
+  if (!PI_SPAWN_COMMAND.test(scan)) return { action: "silent" };
+  if (isBenignPiSpawn(scan)) return { action: "silent" };
   return { action: "block", reason: SKIP_BLOCK_MESSAGE };
 }
 

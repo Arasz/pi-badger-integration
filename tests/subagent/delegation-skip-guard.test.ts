@@ -91,6 +91,12 @@ const MUST_BLOCK = [
   "$(pi run)",
   "timeout 60 pi run --task x",
   "FOO=1\npi run",
+  // A quoted env VALUE with a space is still an env prefix — the spawn behind it blocks.
+  'FOO="a b" pi run',
+  // Command substitutions EXECUTE inside double quotes — the quoted span keeps its
+  // pre-existing treatment so a spawn hidden in `$( )` or backticks still blocks.
+  'echo "x $(pi run)"',
+  'echo "x `pi run`"',
 ];
 
 /** Help/version reads: documentation, never delegation skips — must stay silent. */
@@ -128,13 +134,19 @@ const MUST_NOT_FIRE = [
   // spike residual: wrapper binaries take the pi slot (command-position silent by design).
   "xargs pi",
   "command pi",
+  // The stumbled FPs: quoted DATA that fakes a segment separator — a grep pattern's
+  // escaped pipe before a features/ path ending in pi, and a multi-line commit
+  // message whose next line starts with such a path. Neither is command position.
+  'grep -rn "bun test\\|features/pi" README.md CONTRIBUTING.md docs/explanation/publish-flow.md | head -30',
+  `git commit -m "feat(adapter): heal canonical\n\nfeatures/pi: 189 pass / 0 fail, unchanged."`,
+  'echo "; pi run"',
 ];
 
 // ------------------------------------------------------------------ rows
 
-describe("delegation-skip guard matrix (blocking: 13/13 block, help/version + 20/20 silent)", () => {
+describe("delegation-skip guard matrix (blocking: 16/16 block, help/version + 23/23 silent)", () => {
   test("matrix positives: every MUST-block command decides block with the delegate reason", () => {
-    expect(MUST_BLOCK).toHaveLength(13);
+    expect(MUST_BLOCK).toHaveLength(16);
     for (const command of MUST_BLOCK) {
       expect(piSpawnDecision(command), command).toEqual({ action: "block", reason: SKIP_BLOCK_MESSAGE });
     }
@@ -149,7 +161,7 @@ describe("delegation-skip guard matrix (blocking: 13/13 block, help/version + 20
   });
 
   test("matrix negatives: every MUST-NOT command decides silent", () => {
-    expect(MUST_NOT_FIRE).toHaveLength(20);
+    expect(MUST_NOT_FIRE).toHaveLength(23);
     for (const command of MUST_NOT_FIRE) {
       expect(piSpawnDecision(command), command).toEqual({ action: "silent" });
     }
@@ -161,6 +173,10 @@ describe("delegation-skip guard matrix (blocking: 13/13 block, help/version + 20
     expect(piSpawnDecision("pi run --task x; echo --help")).toEqual({ action: "block", reason: SKIP_BLOCK_MESSAGE });
     // Mixed: one benign pi read + one prompt run → still blocks.
     expect(piSpawnDecision("pi --help; pi run --task x")).toEqual({ action: "block", reason: SKIP_BLOCK_MESSAGE });
+    // A --help INSIDE quoted argument text belongs to the message, not to pi's flags →
+    // the prompt run still blocks (quoted data never lands in the benign allowlist).
+    expect(piSpawnDecision('pi run --task "please pass --help now"')).toEqual({ action: "block", reason: SKIP_BLOCK_MESSAGE });
+    expect(isBenignPiSpawn('pi run --task "please pass --help now"')).toBe(false);
   });
 
   test("empty/undefined commands are silent, and the predicate is stateless across calls", () => {

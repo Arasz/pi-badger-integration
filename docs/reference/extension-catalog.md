@@ -172,10 +172,14 @@ receipts — the log directory remains the way to find those runs.
 
 Delegation-skip guard: a `tool_call` listener matches bash commands that spawn `pi`
 directly (command-position pattern with env/sudo/nohup/npx/timeout/path prefixes;
-13/13 prompt-like must-block, 9/9 help/version must-allow including `pip`,
-`publish.ts`, and the `nohup` gates) and returns `{ block: true }` with
+16/16 prompt-like must-block, 23/23 near-miss silent including `pip`, `publish.ts`,
+the `nohup` gates and quoted data, 9/9 help/version must-allow) and returns `{ block: true }` with
 `spawning pi directly is blocked — use delegate instead` plus an append-only
-record. Help/version reads (`pi --help`, `-h`, `--version`, `-v`, including
+record. Quoted spans are read as DATA (blanked before matching), so a grep pattern
+(`"...|features/pi"`) or a multi-line `git commit -m` message never fakes command
+position — except a double-quoted span containing `$(` or backticks, which is left
+verbatim because substitutions execute inside double quotes (that span can
+over-block, never miss). Help/version reads (`pi --help`, `-h`, `--version`, `-v`, including
 `pi <subcommand> --help`) stay silent — documentation, not delegation skips.
 Blocking with fail-open on predicate crash (a record failure still blocks);
 there is intentionally no env kill switch — the guard always enforces. Spawning through wrappers
