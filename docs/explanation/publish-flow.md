@@ -80,6 +80,12 @@ gates run `--no-install`, so CI activity never races the user-scope install.
 
 - Adapter imported byte-identical from ai-badger @ `f07ff473` (0.145.0), which carried the
   PostToolUse arm work verified live that day.
+- Adapter re-healed from ai-badger's evolved vendored copy (2026-09-29; ai-badger PRs
+  #496/#507 — mail delivery via `turn_end` + the steer queue, post-hook advice
+  (`additionalContext`/`systemMessage`), Claude's exact-list matcher semantics,
+  process-group hook kills). Its tests came with it. The durable direction is
+  canonical → ai-badger; when the vendored copy evolves anyway, port it back here
+  FIRST — step 3's suite is the gate that catches the drift.
 - shift-enter-newline imported byte-identical from user scope
   (`~/.pi/agent/extensions/shift-enter-newline.ts`, 2026-08-29); its tests came from the
   temporary home `~/RiderProjects/shift-enter-newline-tests` (10 passing tests) — that repo
