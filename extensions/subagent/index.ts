@@ -545,12 +545,13 @@ function extensionVersion(): string {
 }
 
 /**
- * A completion note carrying the G-6 explicit-wins record (PKG-5 acceptance 3):
- * `levelOverride` is the sentence for a valid level beaten by an explicit model
- * (`explicit model "X" overrode level "low"`), merged onto the runner's note at deliverNote
- * and rendered on the card verdict — the modelFallback pattern, never silent.
+ * A completion note carrying the dispatch-time G-6 verdict sentences (PKG-5 acceptance 3 +
+ * the M8/H4 follow-up): `levelOverride` is the sentence for a valid level beaten by an
+ * explicit model (`explicit model "X" overrode level "low"`); `modelWarning` is the refused-pin
+ * sentence (a shape-failing `model:` pin named at argv-build). Both merge onto the runner's
+ * note at deliverNote and render on the card verdict — the modelFallback pattern, never silent.
  */
-export type DelegationNoteWithLevel = DelegationNote & { levelOverride?: string };
+export type DelegationNoteWithLevel = DelegationNote & { levelOverride?: string; modelWarning?: string };
 
 /**
  * The completion verdict line of a delegation-result card (R5). State-driven: completed with a
@@ -558,10 +559,13 @@ export type DelegationNoteWithLevel = DelegationNote & { levelOverride?: string 
  * f: 2026-09-02: a model-pin fallback appends its recorded reason — the card says the pin was
  * rejected and what the run retried on, so the fallback is never silent.
  * PKG-5: a G-6 explicit-model-over-level override appends its recorded sentence the same way.
+ * M8/H4 follow-up: a refused pin's sentence renders first (it was named at argv-build, before
+ * any run-time clause) — refusals ride the completion card, never silent.
  */
 export function notificationVerdict(note: DelegationNoteWithLevel): string {
   const verdict = notificationStateVerdict(note);
-  const withFallback = note.modelFallback !== undefined ? `${verdict} ${note.modelFallback}.` : verdict;
+  const withWarning = note.modelWarning !== undefined ? `${verdict} ${note.modelWarning}.` : verdict;
+  const withFallback = note.modelFallback !== undefined ? `${withWarning} ${note.modelFallback}.` : withWarning;
   return note.levelOverride !== undefined ? `${withFallback} ${note.levelOverride}.` : withFallback;
 }
 
@@ -816,19 +820,23 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
    * latest-progress buffer replays anything that fired between start and subscribe.
    */
   const notes = new Map<string, DelegationNoteWithLevel>();
+  /** The dispatch-time verdict sentences deliverNote merges onto a runner's note. */
+  type NoteExtras = Pick<DelegationNoteWithLevel, "levelOverride" | "modelWarning">;
   /**
-   * G-6 explicit-wins record, run id → override sentence (PKG-5 acceptance 3). Remembered
-   * at start (the tool layer knows the resolution then) and merged onto the runner's note
-   * at deliverNote — the modelFallback pattern. Capped like notes; entries are consumed
-   * exactly once, at delivery.
+   * Dispatch-time G-6 verdict sentences, run id → extras (PKG-5 acceptance 3 + the M8/H4
+   * follow-up). Remembered at start (the tool layer knows the resolution then) and merged
+   * onto the runner's note at deliverNote — the modelFallback pattern. Both sentences can
+   * coexist on one run (a refused pin beside an explicit-over-level win). Capped like notes;
+   * entries are consumed exactly once, at delivery (the receipt path reads levelOverride
+   * without consuming it).
    */
-  const levelOverrides = new Map<string, string>();
-  /** Remember one run's G-6 override sentence for deliverNote (capped — same discipline as notes). */
-  function rememberLevelOverride(id: string, sentence: string): void {
-    levelOverrides.set(id, sentence);
-    if (levelOverrides.size > 64) {
-      const oldest = levelOverrides.keys().next().value;
-      if (oldest !== undefined) levelOverrides.delete(oldest);
+  const noteExtras = new Map<string, NoteExtras>();
+  /** Remember one run's dispatch-time verdict sentences for deliverNote (capped — same discipline as notes). */
+  function rememberNoteExtra(id: string, extra: NoteExtras): void {
+    noteExtras.set(id, { ...noteExtras.get(id), ...extra });
+    if (noteExtras.size > 64) {
+      const oldest = noteExtras.keys().next().value;
+      if (oldest !== undefined) noteExtras.delete(oldest);
     }
   }
   /** Run ids this session has already handed out — group batches allocate all member ids
@@ -892,10 +900,9 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
    * flush does not close the window (T96). Each note is delivered exactly once, as the lead or
    * inside exactly one batch (T97); T70's double-close pin is upstream and unaffected. */
   const deliverNote = (note: DelegationNote): void => {
-    const levelOverride = levelOverrides.get(note.id);
-    if (levelOverride !== undefined) levelOverrides.delete(note.id);
-    const enriched: DelegationNoteWithLevel =
-      levelOverride !== undefined ? { ...note, levelOverride } : note;
+    const extras = noteExtras.get(note.id);
+    if (extras !== undefined) noteExtras.delete(note.id);
+    const enriched: DelegationNoteWithLevel = extras !== undefined ? { ...note, ...extras } : note;
     notes.set(note.id, enriched);
     if (notes.size > 64) {
       const oldest = notes.keys().next().value;
@@ -1057,7 +1064,8 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     unknownPersonaMessage: (agent, agentsDir, personas) => unknownPersonaMessage(agent, agentsDir, personas),
     validateChildCwd,
     loadModelGroups: (cwd) => loadModelGroups(cwd),
-    recordLevelOverride: (id, sentence) => rememberLevelOverride(id, sentence),
+    recordLevelOverride: (id, sentence) => rememberNoteExtra(id, { levelOverride: sentence }),
+    recordModelWarning: (id, sentence) => rememberNoteExtra(id, { modelWarning: sentence }),
     buildInvocation: (persona, task, models) => {
       // PKG-5 5c: the single G-6 resolution for queue members (tool-override > frontmatter
       // model > level-resolved > session). The argv renders from the RESOLVED pin, so this
@@ -1268,8 +1276,14 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
 
       // PKG-5 acceptance 3: a valid level beaten by an explicit model is recorded for the
       // result note (deliverNote merges it like modelFallback) and the receipt details.
+      // M8/H4 follow-up: a refused pin's sentence rides the same note and card verdict.
       const overrideSentence = levelOverrideSentence(resolution);
-      if (overrideSentence !== undefined) rememberLevelOverride(outcome.id, overrideSentence);
+      if (overrideSentence !== undefined || resolution.modelWarning !== undefined) {
+        rememberNoteExtra(outcome.id, {
+          ...(overrideSentence !== undefined ? { levelOverride: overrideSentence } : {}),
+          ...(resolution.modelWarning !== undefined ? { modelWarning: resolution.modelWarning } : {}),
+        });
+      }
 
       if (wantsBackground) {
         return receiptResult(outcome, toolCallId);
@@ -1291,7 +1305,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
    * details.levelOverride (read, not consumed — deliverNote consumes it at settle). */
   function receiptResult(outcome: DelegationReceipt, toolCallId: string) {
     const record = outcome.record;
-    const override = levelOverrides.get(record.id);
+    const override = noteExtras.get(record.id)?.levelOverride;
     const tail = "the result will arrive as a followUp message when it completes.";
     // P1: conditional session segment — running + queued variants, omitted when unknown.
     const session = record.sessionId !== undefined ? ` — session ${record.sessionId}` : "";

@@ -529,6 +529,84 @@ describe("5b levelOverride note (acceptance 3 — recorded like modelFallback)",
   });
 });
 
+describe("modelWarning note (M8/H4 follow-up — refusals ride the completion card)", () => {
+  const baseNote: DelegationNote = {
+    id: "d-1",
+    agent: "architect",
+    task: "t",
+    state: "completed",
+    exitCode: 0,
+    answer: "done",
+  };
+  const REFUSAL = 'explicit model "sonnet" fails /shape/ — refusing to emit it into --model argv';
+
+  test("notificationVerdict names the refused pin", () => {
+    const verdict = notificationVerdict({ ...baseNote, modelWarning: REFUSAL });
+    expect(verdict).toContain("completed");
+    expect(verdict).toContain('explicit model "sonnet"');
+    expect(verdict).toContain("refusing to emit it into --model argv");
+  });
+
+  test("refusal, fallback and override clauses all render on one verdict", () => {
+    const verdict = notificationVerdict({
+      ...baseNote,
+      modelWarning: REFUSAL,
+      modelFallback: '--model openrouter/x/y was rejected (boom) — retried on --model openrouter/z-ai/glm-5.3-flash',
+      levelOverride: 'explicit model "openrouter/x/y" overrode level "low"',
+    });
+    expect(verdict).toContain("refusing to emit it into --model argv");
+    expect(verdict).toContain("was rejected (boom)");
+    expect(verdict).toContain('overrode level "low"');
+  });
+
+  test("no refusal recorded means the verdict is byte-identical to today", () => {
+    expect(notificationVerdict(baseNote)).toBe("Delegation d-1 (architect) completed.");
+  });
+
+  test("a refused pin rides the run's completion card — verdict line and details (e2e)", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "aib-mw-card-"));
+    const logDir = mkdtempSync(join(tmpdir(), "aib-mw-card-logs-"));
+    try {
+      const pi = createFakePi();
+      const children: FakeChild[] = [];
+      const spawnFn = () => {
+        const child = new FakeChild();
+        children.push(child);
+        return child;
+      };
+      subagent(pi as never, { spawnFn, logDir, now: () => Date.now(), escalateAfterMs: 0 });
+      const agents = join(projectDir, ...AGENTS_DIR);
+      mkdirSync(agents, { recursive: true });
+      // The d-324 class again: `model: sonnet` (bare alias) beside a valid level.
+      writeFileSync(join(agents, "pinned.md"), "---\nname: pinned\ndescription: P\nmodel: sonnet\nlevel: high\n---\nbody\n");
+      const ctx = {
+        ui: { notify: () => {}, setWidget: () => {}, setStatus: () => {} },
+        mode: "tui",
+        hasUI: true,
+        cwd: projectDir,
+        sessionManager: { getSessionId: () => "sess-test" },
+        model: undefined,
+        signal: undefined,
+      };
+      const tool = (pi.tools as Map<string, any>).get("delegate");
+      await tool.execute("call-mw", { agent: "pinned", task: "do it" }, undefined, undefined, ctx);
+      // Settle the run: the refusal rides the card verdict AND the note (details).
+      children[0]!.write(`${JSON.stringify({ type: "session", version: 3, id: "c", cwd: "/p" })}\n`);
+      children[0]!.write(
+        `${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "did it" }] } })}\n`,
+      );
+      children[0]!.exit(0);
+      const card = (pi.sent as Array<{ message: { content: unknown; details: unknown } }>)[0]!.message;
+      expect(String(card.content)).toContain("refusing to emit it into --model argv");
+      expect(String(card.content)).toContain('"sonnet"');
+      expect(String((card.details as Record<string, unknown>).modelWarning)).toContain('"sonnet"');
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+      rmSync(logDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("5b delegate tool — level end to end (frozen degrade + override record)", () => {
   test("persona with model:+level: receipts the explicit model and records the override", async () => {
     const projectDir = mkdtempSync(join(tmpdir(), "aib-pkg5-e2e-"));

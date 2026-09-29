@@ -108,6 +108,12 @@ export interface DelegationQueueOpts {
    */
   recordLevelOverride(id: string, sentence: string): void;
   /**
+   * Remember one run's refused-pin sentence (M8/H4 — named at argv-build, never silent) for
+   * the result note and card verdict. index.ts merges it at deliverNote like modelFallback;
+   * the queue only reports it.
+   */
+  recordModelWarning(id: string, sentence: string): void;
+  /**
    * The child invocation for one member, resolved through G-6 (PKG-5). `fallbackArgs`
    * (f: 2026-09-02) is the model-pin retry argv — derived beside `args`, passed through
    * to the runner. `resolution` carries the G-6 decision (warnings + override record).
@@ -389,6 +395,9 @@ export function registerDelegationQueue(
 			// note (recorded for deliverNote like modelFallback).
 			const override = levelOverrideSentence(invocations[index]!.resolution);
 			if (override !== undefined) opts.recordLevelOverride(outcome.id, override);
+			// M8/H4 follow-up: the refused-pin sentence rides the same note + card verdict.
+			const warning = invocations[index]!.resolution.modelWarning;
+			if (warning !== undefined) opts.recordModelWarning(outcome.id, warning);
 			return {
 				id: outcome.id,
 				state: outcome.record.state,
