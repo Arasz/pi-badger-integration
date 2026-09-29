@@ -173,7 +173,7 @@ describe("mcp card renderers: coverage pin (M5)", () => {
 });
 
 describe("mcp card renderers: prefixed dispatch (M2)", () => {
-	test("mcp_ai-raccoon_memory_search renders the memory_search card", () => {
+	test("mcp_ai_raccoon_memory_search renders the memory_search card", () => {
 		const tool = McpToolAdapter.convertToPiTool(
 			{ name: "memory_search", description: "search", inputSchema: { type: "object" } },
 			"ai-raccoon",
@@ -181,7 +181,8 @@ describe("mcp card renderers: prefixed dispatch (M2)", () => {
 			"mcp_ai-raccoon",
 		);
 		expect(tool).not.toBeNull();
-		expect(tool!.name).toBe("mcp_ai-raccoon_memory_search");
+		// A dashed toolPrefix normalizes like every other name segment (identifier-safe).
+		expect(tool!.name).toBe("mcp_ai_raccoon_memory_search");
 		expect(typeof tool!.renderResult).toBe("function");
 		expect(typeof tool!.renderCall).toBe("function");
 		const component = tool!.renderResult!(

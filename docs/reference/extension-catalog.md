@@ -362,9 +362,13 @@ as raw JSON dumps. `extensions/pi-mcp-tools/McpCardRenderers.ts` attaches a
   `[Unserializable data]`) all render the generic fallback and never throw.
 
 Cards key on the BARE MCP tool name (`memory_search`, never the prefixed
-`mcp_ai-raccoon_memory_search`) — the prefix is configurable per server, so
+`mcp_ai_raccoon_memory_search`) — the prefix is configurable per server, so
 the adapter closes over the bare name at registration time and a custom
-`toolPrefix` cannot break dispatch. The descriptor table covers all 29
+`toolPrefix` cannot break dispatch. The composed pi name is identifier-safe:
+dashes are normalized to underscores (`task-graph` + `plan_get` →
+`mcp_task_graph_plan_get`) so pi's exact-match tool dispatch, the tool
+declaration and codemode's normalized JS-identifier exposure all name the
+same tool. The descriptor table covers all 29
 ai-raccoon tools plus `mcp_list_servers`; unknown names get the fallback.
 `execute`/`content`/`details` are byte-identical — rendering never touches
 the tool result, only how it displays.

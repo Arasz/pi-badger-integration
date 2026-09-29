@@ -41,7 +41,10 @@ export class McpToolAdapter {
     }
 
     const prefix = toolPrefix || `mcp_${serverName}`;
-    const toolName = `${prefix}_${mcpTool.name}`;
+    // Identifier-safe pi name: dispatch resolves tool calls by exact name match
+    // while codemode exposes tools as normalized JS identifiers (no dashes) —
+    // registering the normalized spelling keeps every surface naming one tool.
+    const toolName = `${prefix}_${mcpTool.name}`.replace(/-/g, "_");
 
     let parameters: TSchema;
     try {
