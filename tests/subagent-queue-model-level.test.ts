@@ -26,6 +26,7 @@ const LOW_PREF = "openrouter/z-ai/glm-5.3-flash";
 const MED_PREF = "openrouter/deepseek/deepseek-v4.1-flash";
 
 interface Harness {
+  pi: any;
   tools: Map<string, any>;
   children: FakeChild[];
   spawnedArgs: string[][];
@@ -49,6 +50,7 @@ function personaFile(name: string, extra = ""): string {
 function makeHarness(personas: Record<string, string> = {}): Harness {
   const pi = createFakePi();
   const harness: Harness = {
+    pi,
     tools: pi.tools as Map<string, any>,
     children: [],
     spawnedArgs: [],
@@ -251,5 +253,20 @@ describe("5c explicit pin shape gate (M8/H4 — the d-324 class)", () => {
     await callQueue({ action: "add", agent: "architect", tasks: ["one"], model: "sonnet" }, ctx);
     expect(modelOf(h.spawnedArgs[0]!)).toBe("anthropic/claude-sonnet-4-5");
     expect(h.notifications.join("\n")).toContain('"sonnet"');
+  });
+
+  test("a refused pin rides the member's completion card — verdict line and details", async () => {
+    makeHarness();
+    await callQueue({ action: "add", agent: "architect", tasks: ["one"], model: "sonnet", level: "low" });
+    // Settle the member: the refusal lands on the card verdict (never silent) and on details.
+    h.children[0]!.write(`${JSON.stringify({ type: "session", version: 3, id: "c", cwd: "/p" })}\n`);
+    h.children[0]!.write(
+      `${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "did it" }] } })}\n`,
+    );
+    h.children[0]!.exit(0);
+    const card = (h.pi as { sent: Array<{ message: { content: unknown; details: unknown } }> }).sent[0]!.message;
+    expect(String(card.content)).toContain("refusing to emit it into --model argv");
+    expect(String(card.content)).toContain('"sonnet"');
+    expect(String((card.details as Record<string, unknown>).modelWarning)).toContain('"sonnet"');
   });
 });
