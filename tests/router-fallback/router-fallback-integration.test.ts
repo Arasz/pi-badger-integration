@@ -315,7 +315,7 @@ describe("I1: hermetic publish logic for the router-fallback dir (never the live
 
   test("publish.ts EXTENSION_DIRS owns router-fallback (the E3 one-liner)", async () => {
     const source = readFileSync(join(repoRoot(), "publish.ts"), "utf8");
-    const line = source.split("\n").find((text) => text.includes("EXTENSION_DIRS ="));
+    const line = source.split("\n").find((text) => text.startsWith("export const EXTENSION_DIRS ="));
     expect(line).toBeDefined();
     expect(line!).toMatch(/"router-fallback"/);
   });
