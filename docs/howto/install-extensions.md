@@ -44,7 +44,7 @@ bun run check
 rm -r ~/.pi/agent/extensions/<name>
 ```
 
-Publish never deletes outside the directories it owns, so removal is manual and safe. After removing the old flat-file leftovers once (listed in [Publish flow](../explanation/publish-flow.md#one-time-cleanup-after-the-switch-to-directory-installs-do-once-by-hand)), there is nothing else to clean.
+Publish manages only its own directories, with one retired-dir exception: `bun run publish` also removes directories it previously shipped and has since retired (pi-mcp-tools), announced on the console, and `bun run check` flags one that is present. Removing a still-shipped extension stays manual and safe. After removing the old flat-file leftovers once (listed in [Publish flow](../explanation/publish-flow.md#one-time-cleanup-after-the-switch-to-directory-installs-do-once-by-hand)), there is nothing else to clean.
 
 ## Troubleshooting
 
@@ -52,4 +52,4 @@ Publish never deletes outside the directories it owns, so removal is manual and 
 
 A fresh pi session reports unknown tools after install. The session started before the publish finished, or pi loaded from a different `PI_CODING_AGENT_DIR`. Restart pi from a normal shell and check the env override is unset.
 
-`bun run publish` warns about shipping without dependencies. The automatic `bun install` failed (offline, or bun missing). Run `bun install` by hand in the extension directory and publish again. The `pi-mcp-tools` warning matters most, since it needs its SDK at runtime.
+`bun run publish` warns about shipping without dependencies. The automatic `bun install` failed (offline, or bun missing). Run `bun install` by hand in the extension directory and publish again. No remaining extension needs a non-host runtime dependency (the declared imports pi-coding-agent, typebox, and pi-tui come from the host), so the warning tells you the automatic install did not run, not that a running extension is missing a package.
