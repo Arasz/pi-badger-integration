@@ -1,7 +1,27 @@
 {
-  "lastUpdated": "2026-09-22T22:55:00Z",
+  "lastUpdated": "2026-09-30T09:35:16Z",
   "next": null,
   "completedTasks": [
+    {
+      "taskId": "pbi-retire-pi-mcp-tools-native",
+      "title": "Retire pi-mcp-tools; pi's built-in MCP takes over (native MCP migration)",
+      "finishedAt": "2026-09-30T09:33:38Z",
+      "summary": "Complete retirement of the pi-mcp-tools fork in favor of pi 0.99.1's built-in MCP (owner scope: item 1 only, low-effort loop). Deleted extensions/pi-mcp-tools + tests/pi-mcp-tools (15 + 9 tracked files; the fork-canonical parity gate and the prettier byte-parity twin landed the same morning are retired with it). publish.ts: EXTENSION_DIRS drops pi-mcp-tools; new RETIRED_EXTENSION_DIRS drives --check fatal-on-stale (read-only, names the fix) and install remove-and-announce, behind an injected userExtensionsDir seam (5 new cases; independent break-test with emptied RETIRED_EXTENSION_DIRS reddens exactly them). Deleting the fork also cleared the repo's 10 TS2307 tsc baseline (tsc now exit 0). Config: kept .mcp.json for Claude Code and added tracked .pi/mcp.json with the five servers converted per pi's dist/extensions/mcp/runtime.js (expandHome-only on command/args/cwd; ${NAME}/!command in env/headers only): ${HOME}->~, ${CLAUDE_PROJECT_DIR} -> task-graph script path relative to the session cwd, fork tools arrays dropped; migration note covers the command/tool-name mapping, trust gating (headless ask/never + --approve), and the codemode default exposure. Docs: README row/intro, catalog tombstone naming pi-mcp-tools, publish-flow ownership rule with the retired-dir exception, CI comment, both pi.instructions.md MCP bullets rewritten byte-identically (mcp__<server>__<tool>, 'no MCP support' claim gone, provenance header now 'pi 0.99.1 for the MCP bullet'), 8 always-loaded summary copies, VERSION 1.1.34. Evidence: task-graph plan revision 1 after GO-WITH-FOLDS plan review (BSD wc padding fix + hardened join check); 6-step DAG all criteria passed; wave-1 lanes + summary/version lanes each in their own worktree; integration on the merged tree; real machine: check exited 1 naming the stale ~/.pi/agent/extensions/pi-mcp-tools -> publish removed+announced -> check 0 -> dir gone; widened touched surface 385 pass/0 fail + tsc 0; release.yml ran on main for 1.1.34. PR #39 squash-merged 57bdcf9 at head 94b9edd; qa review's F1 MUST (cwd missing from the ${…} scan) plus F2/F3 were cherry-picked to main as 7ed8a1c after the merge.",
+      "decisions": [
+        "Complete retirement, no version-gated fork and no card-renderer port: human cards, mcp_list_servers, the mcp-* commands, --mcp-debug and settings-persisted disabled tools are replaced by /mcp, pi mcp CLI, ~/.pi/agent/mcp.log and exposure/toolExposure in mcp.json",
+        "publish cleanup is name-gated (only RETIRED_EXTENSION_DIRS entries may be removed), --check never writes (it flags), install removes and announces; removal is mandatory because pi discovers every ~/.pi/agent/extensions/<name>/index.ts and a stale fork would stay armed",
+        "The three generic dotfile publish cases were kept (fixture renamed pi-mcp-tools -> session-signals); only the marker fixtures were incidental",
+        "Instruction files were hand-edited past the generated-file guard because the ai-badger framework sources are stale and a scaffold refresh would clobber both rewrites and resurrect the 'no MCP support' claim",
+        "Plan review (GO-WITH-FOLDS) folded via plan_replace at revision 1: BSD wc pads counts so three gates would never go green; the integration check now enforces stale-present -> check red -> publish -> check green -> dir gone",
+        "qa review F1/F2/F3 (cwd in the ${…} scan, task-graph script existence, non-empty server guard) applied post-merge by cherry-pick on main; the CI failure that drove the loose-probe fix (RETIRED_EXTENSION_DIRS substring collision with two EXTENSION_DIRS = source probes) was fixed in be4f143, green on CI"
+      ],
+      "followUps": [
+        "ai-badger: replace the .ai-badger-capability-project-scope-mcp marker gate (features/pi/adjustments/*) with a native-capability check; the framework copy features/pi/instructions/pi.instructions.md still asserts 'pi core has no MCP support' and would resurrect the claim on refresh",
+        "The Copilot review round never ran (PR merged early by the owner); the code-reviewer (APPROVE-WITH-CHANGES, all folded) and qa (sound with one MUST, folded) reviews are the recorded gates",
+        "Optional and uncommitted: a standalone card-renderer extension for native MCP results (out of scope)",
+        "pi devDependency stays pinned 0.84.4 in CI while the native-MCP facts are 0.99.1 - separate item flagged in the plan context"
+      ]
+    },
     {
       "taskId": "pbi-project-local-ids-console-hygiene",
       "title": "Project-local delegation ids + global GUID v7, completion fix, extension console capture",
