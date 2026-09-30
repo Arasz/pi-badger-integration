@@ -35,8 +35,9 @@
  *     failure (no bun, offline, no package.json) degrades to the loud shipping
  *     warning — host-provided imports (pi-coding-agent, typebox, pi-tui) need
  *     no node_modules at all. The local node_modules then copies recursively;
- *     shipping without deps still warns loudly — pi-mcp-tools needs
- *     @modelcontextprotocol/sdk at runtime, so that must never be silent.
+ *     shipping without deps still warns loudly — the warning is the guard for
+ *     any future extension with a non-host runtime dep (no shipped extension
+ *     has one today: all remaining deps are host-provided).
  *   - installs write to a temp file then rename, so a pi session starting
  *     mid-publish cannot load a partially written file (running sessions are
  *     unaffected — jiti has already loaded their modules). Per-file atomicity,
@@ -45,7 +46,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -65,8 +66,15 @@ export const ADAPTER_FILES = [
 ] as const;
 
 const ADAPTER_SOURCE_DIR = "features/pi/adjustments/adapter";
+/** Directory names this repo no longer ships but may still be installed at user
+ * scope. pi discovers EVERY subdirectory under ~/.pi/agent/extensions/, so a
+ * leftover copy would keep loading next to its native replacement: install removes
+ * exactly these names (never a generic sweep) and --check reports them as fatal
+ * drift. */
+export const RETIRED_EXTENSION_DIRS = ["pi-mcp-tools"] as const;
+
 /** Directory names under extensions/, each installed as ~/.pi/agent/extensions/<name>/. */
-export const EXTENSION_DIRS = ["pi-cron", "pi-mcp-tools", "session-signals", "shift-enter-newline", "subagent", "monitor", "router-fallback", "update-check", "message-bus", "mem-based-rag", "task-rename", "decision-router", "query-pipeline", "console-capture"] as const;
+export const EXTENSION_DIRS = ["pi-cron", "session-signals", "shift-enter-newline", "subagent", "monitor", "router-fallback", "update-check", "message-bus", "mem-based-rag", "task-rename", "decision-router", "query-pipeline", "console-capture"] as const;
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const USER_EXTENSIONS_DIR = join(homedir(), ".pi", "agent", "extensions");
@@ -301,9 +309,11 @@ function installTarget(target: Target): void {
 	if (nm !== undefined) {
 		if (!existsSync(nm.source)) {
 			// Loud, never silent: shipping an extension that declares runtime deps
-			// (pi-mcp-tools → @modelcontextprotocol/sdk) without them breaks it at load.
-			// ensureDependencies has already tried one automatic bun install; reaching
-			// here means it was skipped (no package.json) or failed (logged above).
+			// without them breaks it at load. No shipped extension has a non-host runtime
+			// dep today (all remaining deps are host-provided pi-coding-agent/typebox/
+			// pi-tui); this is the guard for future ones. ensureDependencies has already
+			// tried one automatic bun install; reaching here means it was skipped (no
+			// package.json) or failed (logged above).
 			console.error(
 				`WARNING: ${nm.source} does not exist — publishing ${target.name} WITHOUT node_modules. ` +
 					`Automatic bun install was skipped or failed; if this extension needs runtime deps, fix that and re-run.`,
@@ -315,6 +325,33 @@ function installTarget(target: Target): void {
 		}
 	}
 	console.log(`installed ${target.pairs.length} file(s) → ${target.name}`);
+}
+
+/** Fatal --check problems for retired dirs still present at user scope. Names the dir
+ * and the fix; --check never writes, so the fix is a publish run. */
+function retiredExtensionProblems(userExtensionsDir: string): string[] {
+	const problems: string[] = [];
+	for (const name of RETIRED_EXTENSION_DIRS) {
+		const dir = join(userExtensionsDir, name);
+		if (existsSync(dir)) {
+			problems.push(
+				`retired extension directory still installed: ${dir} — ${name} was replaced by pi's built-in MCP support; run bun publish.ts to remove it`,
+			);
+		}
+	}
+	return problems;
+}
+
+/** Install-path cleanup: remove every RETIRED_EXTENSION_DIRS entry that exists,
+ * announced. Only those exact names are ever touched — a generic sweep would delete
+ * user-scope neighbours publish does not own. */
+function removeRetiredExtensions(userExtensionsDir: string): void {
+	for (const name of RETIRED_EXTENSION_DIRS) {
+		const dir = join(userExtensionsDir, name);
+		if (!existsSync(dir)) continue;
+		console.log(`removing retired extension directory ${dir} (${name} was replaced by pi's built-in MCP support)`);
+		rmSync(dir, { recursive: true, force: true });
+	}
 }
 
 function vendorAdapter(aiBadgerPath: string): void {
@@ -337,7 +374,10 @@ function vendorAdapter(aiBadgerPath: string): void {
  * `runInstall` is injectable so auto-install tests stub `bun install` instead of
  * hitting the network.
  */
-export function main(argv: string[], inject?: { targets?: Target[]; runInstall?: InstallDeps }): number {
+export function main(
+	argv: string[],
+	inject?: { targets?: Target[]; runInstall?: InstallDeps; userExtensionsDir?: string },
+): number {
 	const check = argv.includes("--check");
 	const aiBadgerFlag = argv.indexOf("--ai-badger");
 	const aiBadgerPath = aiBadgerFlag >= 0 ? argv[aiBadgerFlag + 1] : undefined;
@@ -352,6 +392,10 @@ export function main(argv: string[], inject?: { targets?: Target[]; runInstall?:
 		return 1;
 	}
 
+	// The scope retired-dir handling reads (--check) and removes (install). Injectable
+	// so tests aim it at temp fixtures instead of the developer's real user scope.
+	const userExtensionsDir = inject?.userExtensionsDir ?? USER_EXTENSIONS_DIR;
+
 	const defaultTargets = () => [
 		adapterTarget(ADAPTER_USER_DIR),
 		...EXTENSION_DIRS.map((name) => directoryTarget(name)),
@@ -365,7 +409,10 @@ export function main(argv: string[], inject?: { targets?: Target[]; runInstall?:
 		for (const report of reports) {
 			for (const warning of report.warnings) console.warn(`[${report.target.name}] WARNING: ${warning}`);
 		}
-		const problems = reports.flatMap((report) => report.problems.map((p) => `[${report.target.name}] ${p}`));
+		const problems = [
+			...reports.flatMap((report) => report.problems.map((p) => `[${report.target.name}] ${p}`)),
+			...retiredExtensionProblems(userExtensionsDir),
+		];
 		if (problems.length > 0) {
 			console.error(`OUT OF SYNC (${problems.length}):\n${problems.map((p) => `  - ${p}`).join("\n")}`);
 			return 1;
@@ -385,6 +432,11 @@ export function main(argv: string[], inject?: { targets?: Target[]; runInstall?:
 		vendorAdapter(aiBadgerPath);
 		return 0;
 	}
+
+	// Retired extensions are removed before anything ships: pi discovers every
+	// subdirectory under the user extensions dir, so a leftover copy would keep
+	// loading next to its native replacement.
+	removeRetiredExtensions(userExtensionsDir);
 
 	// Auto-install BEFORE target construction (default path) so a freshly written
 	// bun.lock is canonical on the same run. --check never reaches this (read-only);
