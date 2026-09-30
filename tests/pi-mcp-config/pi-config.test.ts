@@ -51,6 +51,7 @@ describe("pi MCP config (.pi/mcp.json)", () => {
 		const servers = piServers();
 		for (const [name, server] of Object.entries(servers)) {
 			const text = JSON.stringify([server.command, server.args]);
+			expect(text, `${name} command/args`).not.toMatch(/\$\{/);
 			expect(text, `${name} command/args`).not.toContain("${HOME}");
 			expect(text, `${name} command/args`).not.toContain("${CLAUDE_PROJECT_DIR}");
 		}
