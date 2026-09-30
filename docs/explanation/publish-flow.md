@@ -16,9 +16,10 @@ rm ~/.pi/agent/extensions/shift-enter-newline.ts
 rm -r ~/.pi/agent/extensions/ai-badger-subagent/   # old name; the generic rule installs it as subagent/
 ```
 
-publish never deletes anything outside the directories it owns (the
-per-extension dirs and the adapter dir it installs into) — stale neighbours are
-left for you to remove.
+publish only deletes inside the directories it owns (the per-extension dirs and
+the adapter dir it installs into), plus previously-shipped directories it has
+since retired — removals are announced, and `--check` flags a retired dir that
+is present. Stale neighbours outside both sets are left for you to remove.
 
 
 ## The three-copy model

@@ -342,36 +342,13 @@ as a project broadcast, never reply to an ack, only ack what is in your inbox).
   created as a side effect.
 
 
-## The pi-mcp-tools extension: human cards, never raw JSON
+## The pi-mcp-tools extension: retired in favour of built-in MCP
 
-Every MCP tool result is an `ApiEnvelope` serialized as JSON text, and the
-`mcp_list_servers` payload is a JSON blob too — without renderers both show
-as raw JSON dumps. `extensions/pi-mcp-tools/McpCardRenderers.ts` attaches a
-`renderCall`/`renderResult` card to every registered tool instead:
-
-- Collapsed: a one-line human summary with zero JSON tokens (`memory_search:
-  5 hits (3 memory, 2 code)`, `memory_write: stored abc123… — notes.md`).
-  The `mcp_list_servers` card collapses the merge ledger the same way
-  (`MCP 1/2 connected: ✓ hermes — project:.mcp.json · ✗ dead — global
-  settings`). Never raw JSON — the same rule as the message-bus delivery card.
-- Expanded: the key fields (the collapsed line) plus the full JSON trimmed to
-  ~4 KB with a visible `[+N chars trimmed]` marker.
-- Fail-open: garbage, truncated JSON, `data: null`, missing content, and the
-  adapter's own non-envelope strings (`Tool call cancelled`, `not connected`,
-  `MCP Error: …`, `No content returned`, `[image/resource content received]`,
-  `[Unserializable data]`) all render the generic fallback and never throw.
-
-Cards key on the BARE MCP tool name (`memory_search`, never the prefixed
-`mcp_ai_raccoon_memory_search`) — the prefix is configurable per server, so
-the adapter closes over the bare name at registration time and a custom
-`toolPrefix` cannot break dispatch. The composed pi name is identifier-safe:
-dashes are normalized to underscores (`task-graph` + `plan_get` →
-`mcp_task_graph_plan_get`) so pi's exact-match tool dispatch, the tool
-declaration and codemode's normalized JS-identifier exposure all name the
-same tool. The descriptor table covers all 29
-ai-raccoon tools plus `mcp_list_servers`; unknown names get the fallback.
-`execute`/`content`/`details` are byte-identical — rendering never touches
-the tool result, only how it displays.
+`pi-mcp-tools` was retired in favour of pi's built-in MCP: tools are named
+`mcp__<server>__<tool>`, with config in `~/.pi/agent/mcp.json` or `.pi/mcp.json`.
+The human result cards are gone: pi renders results natively and truncates text
+results over 20 KB Codex-style to a temp file. Config and command mapping:
+[Update integrations](../howto/update-integrations.md).
 
 ## The decision-router extension: one Jev call per turn for tools, tier and shadow routing
 

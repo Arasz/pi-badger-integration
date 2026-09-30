@@ -2,7 +2,7 @@
 
 Opinionated pi extensions that pair with [ai-badger](https://github.com/Arasz/ai-badger), plus the publish flow that installs them.
 
-If you run pi with ai-badger scaffolds, install this set. It gives every pi session background delegation, predicate monitors, free-model fallback on router failure, cron scheduling, and MCP tools.
+If you run pi with ai-badger scaffolds, install this set. It gives every pi session background delegation, predicate monitors, free-model fallback on router failure, cron scheduling.
 
 ```mermaid
 flowchart LR
@@ -42,7 +42,6 @@ bun run check
 | mem-based-rag | Skill-call prompt enrichment from the ai-raccoon bank (top-5 memory + top-5 code; `/rag`, `/ask`) |
 | query-pipeline | Multi-query retrieval engine behind mem-based-rag: delegator-persona query planning, Jev scoring, document-aware merge |
 | pi-cron | Cron scheduling inside pi |
-| pi-mcp-tools | Universal MCP tools (fork of [tickernelz/pi-mcp-tools](https://github.com/tickernelz/pi-mcp-tools), flattened for directory installs) |
 | session-signals | Marker importance aborts and delegation footer status |
 | console-capture | Extension `console.*` output captured to a rotating log instead of the TUI |
 | shift-enter-newline | Shift+Enter newline for terminals that cannot report it |
