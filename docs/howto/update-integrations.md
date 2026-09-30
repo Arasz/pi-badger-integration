@@ -43,7 +43,7 @@ The old surface maps to native replacements:
 | `/mcp-list`, `/mcp-tools`, `/mcp-toggle`, `/mcp-reconnect`, `/mcp-status`, `mcp_list_servers`, `--mcp-debug` | `/mcp` (per-server manager), `pi mcp list`, `~/.pi/agent/mcp.log` |
 | tool names `mcp_<server>_<tool>` | `mcp__<server>__<tool>` |
 
-Human cards, the merge-ledger card, settings-persisted disabled tools, and the fork's `tools` filter arrays are gone; per-server `exposure` and `toolExposure` in `mcp.json` replace the filter.
+Human cards, the merge-ledger card, settings-persisted disabled tools, and the fork's `tools` filter arrays are gone; per-server `exposure` and `toolExposure` in `mcp.json` replace the filter. Dropping `tools: ["*"]` leaves each server at pi's `codemode` default (tools reachable from scripts, not declared to the model); set `"exposure": "direct"` on a server to have its tools declared to the model again.
 
 ## Behavior matrix
 

@@ -5,7 +5,7 @@ applyTo: '**/AGENTS.override.md,**/CLAUDE.md,.pi/**'
 
 # pi coding agent
 
-Measured against pi 0.84.3. Re-measure before trusting any line here after a pi upgrade.
+Measured against pi 0.99.1 for the MCP bullet and pi 0.84.3 elsewhere. Re-measure before trusting any line here after a pi upgrade.
 
 - ai-badger installs pi extensions user-scope, at `~/.pi/agent/extensions/<name>/index.ts`.
   `index.ts` is the filename pi discovers for a subdirectory extension — it is mandatory, not a

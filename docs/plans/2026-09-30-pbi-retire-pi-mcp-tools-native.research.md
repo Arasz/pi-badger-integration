@@ -130,12 +130,14 @@ given) · [HYPOTHESIS] plausible but unverified — must be checked before it is
 
 ## Still open
 
-- [HYPOTHESIS] `StdioTransport` env merges config `env` over `process.env` (rather than
-  replacing it) — decides nothing for the five converted entries (no `env` needs PATH-relative
-  resolution) but confirm in `@earendil-works/pi-mcp` before documenting `env` behavior.
-- [HYPOTHESIS] Project trust prompt behavior in headless (`-p`/json/rpc) sessions for
-  `.pi/mcp.json` — `defaultProjectTrust` applies per pi.instructions.md; verify before
-  claiming headless sessions load project MCP config.
-- ai-badger follow-up task text (marker-gate replacement) — drafted in ADR Consequences, filed
-  at close.
-- Exact wording pass for `docs/howto/update-integrations.md` migration note (implementation).
+- [CLOSED 2026-09-30, d-10 review] `StdioTransport` env merges config `env` over `process.env`
+  — verified in `@earendil-works/pi-mcp/dist/transports/stdio.js` (`{...process.env,
+  ...options.env}`).
+- [CLOSED 2026-09-30, d-10 review] Project trust behaviour in headless (`-p`/json/rpc) sessions
+  for `.pi/mcp.json` — verified against installed pi (`docs/security.md`: ask/never skip
+  print/JSON/RPC, `--approve` saves a decision once) and documented in
+  `docs/howto/update-integrations.md`.
+- ai-badger follow-up task text (marker-gate replacement) — drafted in ADR Consequences; to be
+  filed at close.
+- [DONE 2026-09-30] Exact wording pass for the `docs/howto/update-integrations.md` migration
+  note (shipped in that file).
