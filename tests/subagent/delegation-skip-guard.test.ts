@@ -97,6 +97,10 @@ const MUST_BLOCK = [
   // pre-existing treatment so a spawn hidden in `$( )` or backticks still blocks.
   'echo "x $(pi run)"',
   'echo "x `pi run`"',
+  // pi followed by `)` — a real `$(pi)` invocation — and a path where pi IS the last
+  // segment: both must survive the [^\w./-] tightening.
+  "echo $(pi)",
+  "/opt/pi run --task x",
 ];
 
 /** Help/version reads: documentation, never delegation skips — must stay silent. */
@@ -140,13 +144,21 @@ const MUST_NOT_FIRE = [
   'grep -rn "bun test\\|features/pi" README.md CONTRIBUTING.md docs/explanation/publish-flow.md | head -30',
   `git commit -m "feat(adapter): heal canonical\n\nfeatures/pi: 189 pass / 0 fail, unchanged."`,
   'echo "; pi run"',
+  // The stumbled FP: a shell `for … in` word list whose words are PATHS — `in` never
+  // introduces a command, and `pi` here is a mid-path segment, not the binary.
+  `for f in features/pi/adjustments/adapter/*; do cp -p "$f" ~/.pi/agent/extensions/ai-badger/; done`,
+  // Mid-path `pi` at command position: `pi` must be the LAST segment of the command word.
+  "cd /tmp && ./features/pi/build.sh --check",
+  // The commit-message FP through the `$(`-keeps-code exception: the single-quoted
+  // heredoc body is data, so its own prose (`fix(pi):`, `… in pi …`) never blocks.
+  `git commit -m "$(cat <<'EOF'\nfix(pi): hook notices label by script\n\nfor f in features/pi: 192 pass\nEOF\n)"`,
 ];
 
 // ------------------------------------------------------------------ rows
 
-describe("delegation-skip guard matrix (blocking: 16/16 block, help/version + 23/23 silent)", () => {
+describe("delegation-skip guard matrix (blocking: 18/18 block, help/version + 26/26 silent)", () => {
   test("matrix positives: every MUST-block command decides block with the delegate reason", () => {
-    expect(MUST_BLOCK).toHaveLength(16);
+    expect(MUST_BLOCK).toHaveLength(18);
     for (const command of MUST_BLOCK) {
       expect(piSpawnDecision(command), command).toEqual({ action: "block", reason: SKIP_BLOCK_MESSAGE });
     }
@@ -161,7 +173,7 @@ describe("delegation-skip guard matrix (blocking: 16/16 block, help/version + 23
   });
 
   test("matrix negatives: every MUST-NOT command decides silent", () => {
-    expect(MUST_NOT_FIRE).toHaveLength(23);
+    expect(MUST_NOT_FIRE).toHaveLength(26);
     for (const command of MUST_NOT_FIRE) {
       expect(piSpawnDecision(command), command).toEqual({ action: "silent" });
     }
@@ -188,6 +200,27 @@ describe("delegation-skip guard matrix (blocking: 16/16 block, help/version + 23
     for (let i = 0; i < 3; i += 1) {
       expect(piSpawnDecision("pi run --task x")).toEqual({ action: "block", reason: SKIP_BLOCK_MESSAGE });
     }
+  });
+});
+
+describe("heredoc data: single-quoted bodies never spawn; unquoted/unterminated stay loud", () => {
+  test("a single-quoted commit-message heredoc is data — its own prose never blocks", () => {
+    const commit = `git commit -m "$(cat <<'EOF'\nfix(pi): hook notices label by script\n\nfor f in features/pi: 192 pass\nEOF\n)"`;
+    expect(piSpawnDecision(commit)).toEqual({ action: "silent" });
+  });
+
+  test("an UNQUOTED heredoc body stays scannable — $(…) inside it executes (over-block, never miss)", () => {
+    expect(piSpawnDecision("cat <<EOF\npi run --task x\nEOF")).toEqual({
+      action: "block",
+      reason: SKIP_BLOCK_MESSAGE,
+    });
+  });
+
+  test("an unterminated single-quoted marker leaves the rest scannable (over-block, never miss)", () => {
+    expect(piSpawnDecision("cat <<'EOF'\npi run --task x")).toEqual({
+      action: "block",
+      reason: SKIP_BLOCK_MESSAGE,
+    });
   });
 });
 

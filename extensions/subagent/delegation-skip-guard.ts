@@ -29,21 +29,29 @@ export const SKIP_BLOCK_MESSAGE =
   "ai-badger: spawning pi directly is blocked — use `delegate` instead";
 
 /**
- * Command-position `pi`-spawn predicate (spike §AC2, measured 33/33: 15/15
- * MUST-detect, 18/18 MUST-NOT). Command-position deliberately, NOT bare-token:
- * `echo pi` / `grep pi README.md` / `pip install pi` stay silent. Quoted spans are
- * blanked to spaces first (blankQuotedSpans): quoted data can neither fake a segment
- * separator (a `grep` pattern's `|features/pi` or a multi-line commit message's
- * next-line path) nor smuggle a benign flag. Optional
+ * Command-position `pi`-spawn predicate (spike §AC2 plus the FP fixes that followed
+ * it: 18/18 MUST-block rows, 9 help/version rows, 26/26 MUST-NOT rows in the matrix).
+ * Command-position deliberately, NOT bare-token:
+ * `echo pi` / `grep pi README.md` / `pip install pi` stay silent. Data is blanked to
+ * spaces before the scan — quoted spans (blankQuotedSpans): quoted data can neither
+ * fake a segment separator (a `grep` pattern's `|features/pi` or a multi-line commit
+ * message's next-line path) nor smuggle a benign flag — then single-quoted
+ * here-document bodies (blankSingleQuotedHeredocBodies), the one quoting form the
+ * `$(`-keeps-code exception hands through verbatim. Optional
  * `VAR=x` env prefixes, `sudo`/`nohup`/`npx`/`bunx`/`uvx`/`timeout <arg>`
  * runner prefixes, and multi-segment path prefixes (`./pi`,
- * `/usr/local/bin/pi`); trailing `[^\w-]` keeps `pip`/`pi3`/`my-pi` silent
- * while `pi run`, `pi;`, `pi&`, `pi)` fire. Case-sensitive: the unix binary is
- * lowercase, so `PI run` is silent. No `/g/` flag — `test()` must stay
- * stateless across calls.
+ * `/usr/local/bin/pi`); trailing `[^\w./-]` keeps `pip`/`pi3`/`my-pi`/`pi.run` AND
+ * every mid-path segment (`for f in features/pi/…`, `./features/pi/build.sh`) silent
+ * while `pi run`, `pi;`, `pi&`, `pi)` fire — `pi` must be the LAST segment of the
+ * command word. The shell keyword `in` is deliberately NOT a spawn prefix: it only
+ * introduces a word list (for/select/case), whose commands arrive behind `; do`, `)`
+ * or another separator the class already covers — as a prefix it read the FP
+ * `for f in features/pi/adjustments/adapter/*; do …` as a spawn.
+ * Case-sensitive: the unix binary is lowercase, so `PI run` is silent. No `/g/` flag —
+ * `test()` must stay stateless across calls.
  */
 export const PI_SPAWN_COMMAND =
-  /(?:^|[;|&()\n{}`!]|\b(?:elif|else|then|do|while|until|for|if|in)\b)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:(?:sudo|nohup|npx|bunx|uvx|timeout\s+\S+)\s+)*(?:[\w.+-]*\/)*pi(?:[^\w-]|$)/;
+  /(?:^|[;|&()\n{}`!]|\b(?:elif|else|then|do|while|until|for|if)\b)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:(?:sudo|nohup|npx|bunx|uvx|timeout\s+\S+)\s+)*(?:[\w.+-]*\/)*pi(?:[^\w./-]|$)/;
 
 /**
  * Global twin of PI_SPAWN_COMMAND that captures each real `pi` invocation's
@@ -53,7 +61,7 @@ export const PI_SPAWN_COMMAND =
  * blocks (the flag belongs to echo, not pi).
  */
 const PI_INVOCATION_ARGS_GLOBAL =
-  /(?:^|[;|&()\n{}`!]|\b(?:elif|else|then|do|while|until|for|if|in)\b)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:(?:sudo|nohup|npx|bunx|uvx|timeout\s+\S+)\s+)*(?:[\w.+-]*\/)*pi((?:\s+[^\s;|&()\n{}`!]+)*)(?:(?=[^\w-])|$)/g;
+  /(?:^|[;|&()\n{}`!]|\b(?:elif|else|then|do|while|until|for|if)\b)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:(?:sudo|nohup|npx|bunx|uvx|timeout\s+\S+)\s+)*(?:[\w.+-]*\/)*pi((?:\s+[^\s;|&()\n{}`!]+)*)(?:(?=[^\w./-])|$)/g;
 
 /** Help/version tokens: documentation reads, never delegation skips. */
 const BENIGN_FLAGS = new Set(["--help", "-h", "--version", "-v"]);
@@ -102,12 +110,49 @@ function blankQuotedSpans(command: string): string {
 }
 
 /**
+ * The bodies of single-quoted here-documents blanked to spaces (length-preserving,
+ * like blankQuotedSpans): bash performs NO expansion inside `<<'TAG'` / `<<-'TAG'`
+ * bodies, so their text is pure data and a command-shaped line in it can never spawn
+ * `pi` — the same rule as a quoted span, extended to the quoting form
+ * blankQuotedSpans cannot see: a `$(cat <<'EOF' …)` commit message passes through
+ * the double-quote `$(`-keeps-code exception verbatim and would otherwise block on
+ * its own prose (`fix(pi):`, `… in pi …`).
+ *
+ * Safety, both directions:
+ *  - only a SINGLE-quoted tag counts; `<<TAG` bodies still expand `$(…)`
+ *    (and the spawn may hide in that expansion), so they stay scannable;
+ *  - the body starts on the line AFTER the marker's line — same-line commands after
+ *    `;` are commands, not body — and is blanked ONLY when a terminator line exists:
+ *    an unterminated marker leaves everything verbatim, because blanking to EOS could
+ *    swallow a real command that merely follows a quoted fake marker. Unterminated
+ *    therefore over-blocks (data scanned as commands), which is the safe direction.
+ */
+function blankSingleQuotedHeredocBodies(command: string): string {
+  const out = command.split("");
+  const marker = /<<-?'([A-Za-z_][A-Za-z0-9_]*)'/g;
+  let match: RegExpExecArray | null;
+  while ((match = marker.exec(command)) !== null) {
+    const tag = match[1];
+    const lineEnd = command.indexOf("\n", marker.lastIndex);
+    if (lineEnd === -1) continue; // the body would start on the next line — none exists
+    const bodyStart = lineEnd + 1;
+    const terminator = new RegExp(`^[ \\t]*${tag}[ \\t]*$`, "m").exec(command.slice(bodyStart));
+    if (terminator === null) continue; // unterminated: leave verbatim (never miss)
+    const bodyEnd = bodyStart + terminator.index;
+    for (let i = bodyStart; i < bodyEnd; i += 1) out[i] = " ";
+    // Continue after this heredoc: a marker INSIDE the blanked body is data, not a second heredoc.
+    marker.lastIndex = bodyStart + terminator.index + terminator[0].length;
+  }
+  return out.join("");
+}
+
+/**
  * True when EVERY real `pi` invocation in the command is a help/version read.
  * A mix (`pi --help; pi run`) is NOT benign — the prompt run still blocks.
  * Runs on the blanked text: a `--help` inside quoted argument text never exempts.
  */
 export function isBenignPiSpawn(command: string): boolean {
-  command = blankQuotedSpans(command);
+  command = blankQuotedSpans(blankSingleQuotedHeredocBodies(command));
   PI_INVOCATION_ARGS_GLOBAL.lastIndex = 0;
   let found = false;
   let allBenign = true;
@@ -130,11 +175,11 @@ export type PiSpawnDecision =
   | { readonly action: "silent" };
 
 /** Pure decision half: empty/undefined commands are silent; help/version reads are silent.
- * Both halves see the blanked text (blankQuotedSpans), so quoted argument text can
- * neither fake a spawn position nor smuggle a `--help` exemption. */
+ * Both halves see the blanked text (quoted spans + single-quoted heredoc bodies), so
+ * quoted argument text can neither fake a spawn position nor smuggle a `--help` exemption. */
 export function piSpawnDecision(command: string | undefined): PiSpawnDecision {
   if (command === undefined || command.trim() === "") return { action: "silent" };
-  const scan = blankQuotedSpans(command);
+  const scan = blankQuotedSpans(blankSingleQuotedHeredocBodies(command));
   if (!PI_SPAWN_COMMAND.test(scan)) return { action: "silent" };
   if (isBenignPiSpawn(scan)) return { action: "silent" };
   return { action: "block", reason: SKIP_BLOCK_MESSAGE };
