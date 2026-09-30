@@ -9,13 +9,14 @@
  * `tools` array or a `${…}` reference pi would pass through verbatim.
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 interface McpServer {
 	command?: string;
 	args?: string[];
+	cwd?: string;
 	env?: Record<string, string>;
 	tools?: unknown;
 }
@@ -42,18 +43,18 @@ describe("pi MCP config (.pi/mcp.json)", () => {
 	});
 
 	test("no fork-only tools arrays survive the conversion", () => {
-		for (const [name, server] of Object.entries(piServers())) {
+		const servers = piServers();
+		expect(Object.keys(servers).length).toBeGreaterThan(0);
+		for (const [name, server] of Object.entries(servers)) {
 			expect("tools" in server, `${name} carries a fork-only tools array`).toBe(false);
 		}
 	});
 
-	test("command and args carry no ${HOME} or ${CLAUDE_PROJECT_DIR} references", () => {
+	test("command, args and cwd carry no ${…} references", () => {
 		const servers = piServers();
 		for (const [name, server] of Object.entries(servers)) {
-			const text = JSON.stringify([server.command, server.args]);
-			expect(text, `${name} command/args`).not.toMatch(/\$\{/);
-			expect(text, `${name} command/args`).not.toContain("${HOME}");
-			expect(text, `${name} command/args`).not.toContain("${CLAUDE_PROJECT_DIR}");
+			const text = JSON.stringify([server.command, server.args, server.cwd]);
+			expect(text, `${name} command/args/cwd`).not.toMatch(/\$\{[^}]+\}/);
 		}
 		expect(servers["ai-raccoon"].command).toBe("~/.dotnet/tools/ai-raccoon");
 		expect(servers["semantica"].command).toBe("~/.local/bin/semantica-mcp");
@@ -67,6 +68,9 @@ describe("pi MCP config (.pi/mcp.json)", () => {
 			"--script",
 			".ai-badger/skills/task-decomposition/scripts/task_graph_server.py",
 		]);
+		const scriptPath = taskGraph.args?.[2];
+		expect(scriptPath).toBeDefined();
+		expect(existsSync(join(root, scriptPath as string)), `the pinned script exists: ${scriptPath}`).toBe(true);
 	});
 
 	test("env values pass through unchanged (SEMANTICA_DISABLE_PROGRESS=1)", () => {
