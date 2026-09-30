@@ -30,6 +30,21 @@ bun run check
 
 `publish` refreshes the installed-version marker, so the next session compares against the new release and stays quiet.
 
+## Migrating from pi-mcp-tools to pi's built-in MCP
+
+pi 0.99.1 ships MCP support, so the `pi-mcp-tools` extension is retired. `bun run publish` removes a stale `~/.pi/agent/extensions/pi-mcp-tools/` and announces it; restart pi so the old tools and `mcp-*` commands are gone.
+
+The repo's `.mcp.json` stays where it is: Claude Code reads that path. pi reads its own files: `~/.pi/agent/mcp.json` (global) and `.pi/mcp.json` (project). A project `mcp.json` is read only after the project is trusted; with `defaultProjectTrust: "ask"` (this machine's setting, and no `~/.pi/agent/trust.json` saved) a non-interactive session (print, JSON, RPC) skips it, so pass `--approve` or approve the project once interactively to save a decision.
+
+The old surface maps to native replacements:
+
+| retired (`pi-mcp-tools`) | pi built-in |
+|---|---|
+| `/mcp-list`, `/mcp-tools`, `/mcp-toggle`, `/mcp-reconnect`, `/mcp-status`, `mcp_list_servers`, `--mcp-debug` | `/mcp` (per-server manager), `pi mcp list`, `~/.pi/agent/mcp.log` |
+| tool names `mcp_<server>_<tool>` | `mcp__<server>__<tool>` |
+
+Human cards, the merge-ledger card, settings-persisted disabled tools, and the fork's `tools` filter arrays are gone; per-server `exposure` and `toolExposure` in `mcp.json` replace the filter.
+
 ## Behavior matrix
 
 Every combination holds without erroring a session. Session start stays silent unless a newer release is confirmed; the `check` subcommand reports everything.
@@ -55,4 +70,4 @@ git push origin vX.Y.Z
 gh release create vX.Y.Z --title "vX.Y.Z" --notes "Summary of what changed."
 ```
 
-Bump nothing else: there is no VERSION file, and the extension manifests carry their own versions. After pushing the tag, verify the check end to end with a stale marker against the live API before announcing.
+`VERSION` at the repo root is the version of record, so a hand-chosen version goes there too: the version-bump step edits it, `release.yml` tags `main` from it, and `auto-bump.yml` patch-bumps it when a push to main does not touch it. The extension manifests carry their own versions. After pushing the tag, verify the check end to end with a stale marker against the live API before announcing.
