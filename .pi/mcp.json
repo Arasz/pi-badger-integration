@@ -4,23 +4,27 @@
       "command": "code-review-graph",
       "args": [
         "serve"
-      ]
+      ],
+      "exposure": "deferred"
     },
     "ai-raccoon": {
-      "command": "~/.dotnet/tools/ai-raccoon"
+      "command": "~/.dotnet/tools/ai-raccoon",
+      "exposure": "direct"
     },
     "semantica": {
       "command": "~/.local/bin/semantica-mcp",
       "env": {
         "SEMANTICA_DISABLE_PROGRESS": "1"
-      }
+      },
+      "exposure": "direct"
     },
     "playwright": {
       "command": "npx",
       "args": [
         "-y",
         "@playwright/mcp@latest"
-      ]
+      ],
+      "exposure": "deferred"
     },
     "task-graph": {
       "command": "~/.local/bin/uv",
@@ -28,7 +32,8 @@
         "run",
         "--script",
         ".ai-badger/skills/task-decomposition/scripts/task_graph_server.py"
-      ]
+      ],
+      "exposure": "direct"
     }
   }
 }
