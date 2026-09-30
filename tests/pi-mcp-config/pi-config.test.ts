@@ -1,6 +1,6 @@
 /**
- * Conversion contract for `.mcp.json` → `.pi/mcp.json` (ADR Decision 3, task
- * pbi-retire-pi-mcp-tools-native).
+ * Conversion contract for `.mcp.json` → `.pi/mcp.json` (ADR Decision 3, the
+ * native-MCP retirement task).
  *
  * pi 0.99.1's built-in MCP applies `~` expansion only to command/args/cwd
  * (`dist/extensions/mcp/runtime.js` `createDefaultTransport`); `${NAME}` and
