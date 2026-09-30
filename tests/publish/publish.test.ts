@@ -4,11 +4,14 @@
  *
  * SAFETY: every test here aims directoryTarget/drifts/main at injected TEMP
  * fixture trees (mkdtemp under os.tmpdir). Nothing in this file may touch the
- * real ~/.pi/agent/extensions/ — main() is only ever called with --check plus
- * injected targets, or with argument combinations that refuse before any
- * filesystem access — and the repo's real extensions/ dir is never a
- * destination. --check must stay read-only, and one test pins that at the
- * fixture level.
+ * real ~/.pi/agent/extensions/. There are exactly two safe call shapes:
+ *   (1) --check with injected targets, or an argument combination that refuses
+ *       before any filesystem access;
+ *   (2) install with injected targets AND an injected userExtensionsDir
+ *       (retired-dir handling reads and removes user scope).
+ * The repo's real extensions/ dir is never a destination. --check must stay
+ * read-only, and the tests pin that at the fixture level — including for the
+ * retired directory.
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -209,7 +212,7 @@ describe("CLI contract", () => {
 		writeTree(join(warning.userDir, "pi-cron"), { "index.ts": "A;" }); // no node_modules → warning only
 		const captured = captureConsole();
 		try {
-			expect(main(["--check"], { targets: [directoryTarget("pi-cron", warning)] })).toBe(0);
+			expect(main(["--check"], { targets: [directoryTarget("pi-cron", warning)], userExtensionsDir: warning.userDir })).toBe(0);
 			expect(captured.lines.join("\n")).toContain(join(warning.userDir, "pi-cron", "node_modules"));
 		} finally {
 			captured.restore();
@@ -218,7 +221,7 @@ describe("CLI contract", () => {
 		const problem = fixture();
 		writeTree(extensionSource(problem.root, "pi-cron"), { "index.ts": "A;" });
 		// destination never created → "not installed" problem → non-zero exit
-		expect(main(["--check"], { targets: [directoryTarget("pi-cron", problem)] })).toBe(1);
+		expect(main(["--check"], { targets: [directoryTarget("pi-cron", problem)], userExtensionsDir: problem.userDir })).toBe(1);
 	});
 
 	test("--check is read-only: an out-of-sync fixture gains no files and no .publishing strays", () => {
@@ -229,7 +232,7 @@ describe("CLI contract", () => {
 
 		const captured = captureConsole();
 		try {
-			expect(main(["--check"], { targets: [directoryTarget("pi-cron", { root, userDir })] })).toBe(1);
+			expect(main(["--check"], { targets: [directoryTarget("pi-cron", { root, userDir })], userExtensionsDir: userDir })).toBe(1);
 		} finally {
 			captured.restore();
 		}
@@ -254,7 +257,7 @@ describe("install (into injected temp targets)", () => {
 		});
 		const captured = captureConsole();
 		try {
-			expect(main([], { targets: [directoryTarget("pi-cron", { root, userDir })] })).toBe(0);
+			expect(main([], { targets: [directoryTarget("pi-cron", { root, userDir })], userExtensionsDir: userDir })).toBe(0);
 		} finally {
 			captured.restore();
 		}
@@ -274,7 +277,7 @@ describe("install (into injected temp targets)", () => {
 		const captured = captureConsole();
 		let code: number;
 		try {
-			code = main([], { targets: [directoryTarget("pi-cron", { root, userDir })] });
+			code = main([], { targets: [directoryTarget("pi-cron", { root, userDir })], userExtensionsDir: userDir });
 		} finally {
 			captured.restore();
 		}
@@ -300,7 +303,7 @@ describe("auto-install: a missing node_modules gets one bun install before shipp
 		const captured = captureConsole();
 		let code: number;
 		try {
-			code = main([], { targets: [directoryTarget("pi-cron", { root, userDir })], runInstall });
+			code = main([], { targets: [directoryTarget("pi-cron", { root, userDir })], runInstall, userExtensionsDir: userDir });
 		} finally {
 			captured.restore();
 		}
@@ -322,7 +325,7 @@ describe("auto-install: a missing node_modules gets one bun install before shipp
 		const captured = captureConsole();
 		let code: number;
 		try {
-			code = main([], { targets: [directoryTarget("pi-cron", { root, userDir })], runInstall });
+			code = main([], { targets: [directoryTarget("pi-cron", { root, userDir })], runInstall, userExtensionsDir: userDir });
 		} finally {
 			captured.restore();
 		}
@@ -341,7 +344,7 @@ describe("auto-install: a missing node_modules gets one bun install before shipp
 		const captured = captureConsole();
 		let code: number;
 		try {
-			code = main([], { targets: [directoryTarget("pi-cron", { root, userDir })], runInstall });
+			code = main([], { targets: [directoryTarget("pi-cron", { root, userDir })], runInstall, userExtensionsDir: userDir });
 		} finally {
 			captured.restore();
 		}
@@ -367,7 +370,7 @@ describe("auto-install: a missing node_modules gets one bun install before shipp
 		const captured = captureConsole();
 		let code: number;
 		try {
-			code = main([], { targets: [directoryTarget("pi-cron", { root, userDir })], runInstall });
+			code = main([], { targets: [directoryTarget("pi-cron", { root, userDir })], runInstall, userExtensionsDir: userDir });
 		} finally {
 			captured.restore();
 		}
@@ -387,7 +390,7 @@ describe("auto-install: a missing node_modules gets one bun install before shipp
 		};
 		const captured = captureConsole();
 		try {
-			expect(main(["--check"], { targets: [directoryTarget("pi-cron", { root, userDir })], runInstall })).toBe(1);
+			expect(main(["--check"], { targets: [directoryTarget("pi-cron", { root, userDir })], runInstall, userExtensionsDir: userDir })).toBe(1);
 		} finally {
 			captured.restore();
 		}
@@ -397,30 +400,120 @@ describe("auto-install: a missing node_modules gets one bun install before shipp
 	});
 });
 
+// Retired-dir handling (ADR Decision §2): pi discovers EVERY directory under
+// ~/.pi/agent/extensions/, so a leftover pi-mcp-tools keeps the fork armed next
+// to native MCP. --check reports it as a fatal problem; install removes it,
+// announced. Only RETIRED_EXTENSION_DIRS entries may ever be removed — never a
+// generic sweep of the user-scope neighbours publish does not own.
+describe("retired extension directories (pi-mcp-tools → pi's built-in MCP)", () => {
+	test("--check reports a retired extension directory at user scope as a fatal problem naming the fix", () => {
+		const { root, userDir } = fixture();
+		writeTree(extensionSource(root, "pi-cron"), { "index.ts": "A;" });
+		writeTree(join(userDir, "pi-cron"), { "index.ts": "A;" }); // in sync → the retired dir is the only problem
+		writeTree(join(userDir, "pi-mcp-tools"), { "index.ts": "leftover fork" });
+		const captured = captureConsole();
+		let code: number;
+		try {
+			code = main(["--check"], { targets: [directoryTarget("pi-cron", { root, userDir })], userExtensionsDir: userDir });
+		} finally {
+			captured.restore();
+		}
+
+		expect(code).toBe(1);
+		const out = captured.lines.join("\n");
+		expect(out).toContain("OUT OF SYNC");
+		expect(out).toContain(join(userDir, "pi-mcp-tools"));
+		expect(out).toContain("retired extension directory");
+		expect(out).toContain("bun publish.ts");
+	});
+
+	test("install removes the retired extension directory from user scope and announces it", () => {
+		const { root, userDir } = fixture();
+		writeTree(extensionSource(root, "pi-cron"), { "index.ts": "A;" });
+		writeTree(join(userDir, "pi-mcp-tools"), {
+			"index.ts": "leftover fork",
+			"nested/deep.ts": "nested leftover",
+		});
+		const captured = captureConsole();
+		let code: number;
+		try {
+			code = main([], { targets: [directoryTarget("pi-cron", { root, userDir })], userExtensionsDir: userDir });
+		} finally {
+			captured.restore();
+		}
+
+		expect(code).toBe(0);
+		expect(existsSync(join(userDir, "pi-mcp-tools"))).toBe(false);
+		expect(captured.lines.join("\n")).toContain(
+			`removing retired extension directory ${join(userDir, "pi-mcp-tools")} (pi-mcp-tools was replaced by pi's built-in MCP support)`,
+		);
+	});
+
+	test("install leaves an unrelated directory at user scope untouched", () => {
+		const { root, userDir } = fixture();
+		writeTree(extensionSource(root, "pi-cron"), { "index.ts": "A;" });
+		writeTree(join(userDir, "someone-elses-extension"), { "index.ts": "keep me" });
+		const captured = captureConsole();
+		let code: number;
+		try {
+			code = main([], { targets: [directoryTarget("pi-cron", { root, userDir })], userExtensionsDir: userDir });
+		} finally {
+			captured.restore();
+		}
+
+		expect(code).toBe(0);
+		expect(readFileSync(join(userDir, "someone-elses-extension", "index.ts"), "utf8")).toBe("keep me");
+	});
+
+	test("--check never removes the retired directory (read-only)", () => {
+		const { root, userDir } = fixture();
+		writeTree(extensionSource(root, "pi-cron"), { "index.ts": "A;" });
+		writeTree(join(userDir, "pi-cron"), { "index.ts": "A;" }); // in sync → exit 1 comes from the retired dir
+		writeTree(join(userDir, "pi-mcp-tools"), { "index.ts": "leftover fork" });
+		const captured = captureConsole();
+		let code: number;
+		try {
+			code = main(["--check"], { targets: [directoryTarget("pi-cron", { root, userDir })], userExtensionsDir: userDir });
+		} finally {
+			captured.restore();
+		}
+
+		expect(code).toBe(1);
+		expect(readFileSync(join(userDir, "pi-mcp-tools", "index.ts"), "utf8")).toBe("leftover fork");
+		expect(readdirSync(join(userDir, "pi-mcp-tools"))).toEqual(["index.ts"]);
+	});
+
+	test("EXTENSION_DIRS no longer lists pi-mcp-tools", async () => {
+		const { EXTENSION_DIRS: dirs, RETIRED_EXTENSION_DIRS } = await import("../../publish.ts");
+		expect(dirs).not.toContain("pi-mcp-tools");
+		expect(RETIRED_EXTENSION_DIRS).toContain("pi-mcp-tools");
+	});
+});
+
 describe("dotfiles ship as canonical pairs (P2 capability markers)", () => {
 	test("directoryTarget picks dotfiles up as pairs — a marker must install to user scope", () => {
 		const { root, userDir } = fixture();
-		writeTree(extensionSource(root, "pi-mcp-tools"), {
+		writeTree(extensionSource(root, "session-signals"), {
 			"index.ts": "export default {};",
 			".ai-badger-capability-project-scope-mcp": "marker bytes",
 		});
 
-		const target = directoryTarget("pi-mcp-tools", { root, userDir });
+		const target = directoryTarget("session-signals", { root, userDir });
 		const markerPair = target.pairs.find((p) => p.source.endsWith(".ai-badger-capability-project-scope-mcp"));
 		expect(markerPair).toBeDefined();
-		expect(markerPair!.destination).toBe(join(userDir, "pi-mcp-tools", ".ai-badger-capability-project-scope-mcp"));
+		expect(markerPair!.destination).toBe(join(userDir, "session-signals", ".ai-badger-capability-project-scope-mcp"));
 	});
 
 	test("--check treats a missing dotfile at destination as a fatal problem (canonical pair, not an extra)", () => {
 		const { root, userDir } = fixture();
-		writeTree(extensionSource(root, "pi-mcp-tools"), {
+		writeTree(extensionSource(root, "session-signals"), {
 			"index.ts": "export default {};",
 			".ai-badger-capability-project-scope-mcp": "marker bytes",
 		});
 		// destination has the code file but NOT the marker
-		writeTree(join(userDir, "pi-mcp-tools"), { "index.ts": "export default {};" });
+		writeTree(join(userDir, "session-signals"), { "index.ts": "export default {};" });
 
-		const report = drifts(directoryTarget("pi-mcp-tools", { root, userDir }));
+		const report = drifts(directoryTarget("session-signals", { root, userDir }));
 		expect(report.problems).toHaveLength(1);
 		expect(report.problems[0]).toContain(".ai-badger-capability-project-scope-mcp");
 		expect(report.problems[0]).toContain("not installed");
@@ -428,13 +521,13 @@ describe("dotfiles ship as canonical pairs (P2 capability markers)", () => {
 
 	test("a dotfile at destination that is NOT canonical is still flagged as extra", () => {
 		const { root, userDir } = fixture();
-		writeTree(extensionSource(root, "pi-mcp-tools"), { "index.ts": "export default {};" });
-		writeTree(join(userDir, "pi-mcp-tools"), {
+		writeTree(extensionSource(root, "session-signals"), { "index.ts": "export default {};" });
+		writeTree(join(userDir, "session-signals"), {
 			"index.ts": "export default {};",
 			".some-stray-dotfile": "stray",
 		});
 
-		const report = drifts(directoryTarget("pi-mcp-tools", { root, userDir }));
+		const report = drifts(directoryTarget("session-signals", { root, userDir }));
 		expect(report.problems.some((p) => p.includes(".some-stray-dotfile"))).toBe(true);
 	});
 });

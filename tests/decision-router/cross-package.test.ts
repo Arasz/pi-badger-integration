@@ -75,7 +75,7 @@ describe("X-import — client + core stay I/O-free (F11 banned tokens, allowlist
 describe("X-membership — publish.ts installs the new directory", () => {
 	test("EXTENSION_DIRS contains decision-router", () => {
 		const source = read("publish.ts");
-		const line = source.split("\n").find((text) => text.includes("EXTENSION_DIRS ="));
+		const line = source.split("\n").find((text) => text.startsWith("export const EXTENSION_DIRS ="));
 		expect(line).toBeDefined();
 		expect(line!).toContain('"decision-router"');
 	});

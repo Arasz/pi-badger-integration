@@ -1,0 +1,34 @@
+{
+  "mcpServers": {
+    "code-review-graph": {
+      "command": "code-review-graph",
+      "args": [
+        "serve"
+      ]
+    },
+    "ai-raccoon": {
+      "command": "~/.dotnet/tools/ai-raccoon"
+    },
+    "semantica": {
+      "command": "~/.local/bin/semantica-mcp",
+      "env": {
+        "SEMANTICA_DISABLE_PROGRESS": "1"
+      }
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest"
+      ]
+    },
+    "task-graph": {
+      "command": "~/.local/bin/uv",
+      "args": [
+        "run",
+        "--script",
+        ".ai-badger/skills/task-decomposition/scripts/task_graph_server.py"
+      ]
+    }
+  }
+}
