@@ -306,8 +306,8 @@ describe("I1: hermetic publish logic for the router-fallback dir (never the live
       const report = drifts(target);
       expect(report.problems.length).toBeGreaterThan(0);
       expect(report.problems.every((problem) => problem.startsWith("not installed:"))).toBe(true);
-      // …so --check (injected targets only — the real user scope is never read) fails.
-      expect(main(["--check"], { targets: [target] })).toBe(1);
+      // …so --check (injected targets and user dir — the real user scope is never read) fails.
+      expect(main(["--check"], { targets: [target], userExtensionsDir: userDir })).toBe(1);
     } finally {
       rmSync(userDir, { recursive: true, force: true });
     }
@@ -364,7 +364,7 @@ describe("I4: --check purity — injected fixtures only, nothing written", () =>
       writeFileSync(join(userDir, "demo", "index.ts"), "export default 1;\n");
       const target = directoryTarget("demo", { root, userDir });
       const before = snapshot(userDir);
-      expect(main(["--check"], { targets: [target] })).toBe(0);
+      expect(main(["--check"], { targets: [target], userExtensionsDir: userDir })).toBe(0);
       expect(snapshot(userDir)).toEqual(before);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -380,7 +380,7 @@ describe("I4: --check purity — injected fixtures only, nothing written", () =>
       writeFileSync(join(root, "extensions", "demo", "index.ts"), "export default 1;\n");
       const target = directoryTarget("demo", { root, userDir });
       const before = snapshot(userDir);
-      expect(main(["--check"], { targets: [target] })).toBe(1);
+      expect(main(["--check"], { targets: [target], userExtensionsDir: userDir })).toBe(1);
       expect(snapshot(userDir)).toEqual(before);
     } finally {
       rmSync(root, { recursive: true, force: true });
