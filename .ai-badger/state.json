@@ -1,7 +1,21 @@
 {
-  "lastUpdated": "2026-09-30T14:25:09Z",
+  "lastUpdated": "2026-10-02T17:30:00Z",
   "next": null,
   "completedTasks": [
+    {
+      "taskId": "pbi-pi-v1-changelog-integration-adjust",
+      "title": "Adjust integration for pi 1.0.0",
+      "finishedAt": "2026-10-02T17:30:00Z",
+      "summary": "pi devDependency 0.84.4 -> 1.0.0 after reading the 0.85.0-1.0.0 changelog (low loop). Typecheck clean, full suite green, all 14 installed extensions load under pi 1.0.0 with no warnings. One real defect, found by review not by tsc: decision-router's readCatalogue passed every registered tool (incl. codemode/deferred/hidden MCP tools, pi 0.99 exposure model) to the classifier and setActiveTools could declare them directly; now keeps only direct/model-only/no exposure (red-first test). New hook-bridge test pins pi's mcp__ai_raccoon__memory_search spelling (mutation-proven). Stale 0.84.4 / pi-mcp-tools spelling claims refreshed; docs/howto/update-integrations.md gains 'Moving to pi 1.0.0'. PR #40 squash-merged 06bdfbe, CI green.",
+      "decisions": [
+        "No code change for 0.86/0.87 breaking items: no context/user_bash handlers, turn_end handler returns undefined, no custom provider stream",
+        "/ask child keeps --no-extensions; losing built-in llama.cpp provider is documented rather than re-added with -e builtin:llama.cpp"
+      ],
+      "followUps": [
+        "Interactive fullscreen-TUI behaviour (now default) of shift-enter-newline and footer widgets not verified",
+        "hook-bridge MCP-spelling test inlines the shipped matcher regex; authoritative hooks.json is not in this mirror"
+      ]
+    },
     {
       "taskId": "aib-adjust-mcp-native-capability-gate",
       "title": "Replace pi-mcp-tools marker gate with native-capability check in ai-badger pi adjustments",
