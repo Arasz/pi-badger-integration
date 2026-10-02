@@ -72,7 +72,12 @@ export interface DecisionRouterModelRef {
 export interface DecisionRouterToolInfo {
 	readonly name: string;
 	readonly description?: string;
+	/** pi's tool exposure; absent on pi before 0.99, which declared every tool. */
+	readonly exposure?: string;
 }
+
+/** Exposures pi declares to the model; the rest are reached from codemode or tool_search. */
+const DECLARED_EXPOSURES = new Set(["direct", "model-only"]);
 
 /** Minimal skill view read off the turn's system-prompt options. */
 export interface DecisionRouterSkillInfo {
@@ -196,7 +201,7 @@ export default function (pi: ExtensionAPI, deps: DecisionRouterDeps = {}) {
 	const isMarkerPrefixed = deps.isMarkerPrefixed ?? (() => false);
 
 	type PiWithTools = {
-		getAllTools?: () => Array<{ name: string; description?: string }>;
+		getAllTools?: () => Array<{ name: string; description?: string; exposure?: string }>;
 		getActiveTools?: () => string[];
 		setActiveTools?: (toolNames: string[]) => void;
 		setModel?: (model: unknown) => Promise<boolean>;
@@ -269,6 +274,7 @@ export default function (pi: ExtensionAPI, deps: DecisionRouterDeps = {}) {
 		}
 		return list
 			.filter((tool) => typeof tool?.name === "string")
+			.filter((tool) => tool.exposure === undefined || DECLARED_EXPOSURES.has(tool.exposure))
 			.map((tool) => ({ name: tool.name, description: tool.description ?? "" }))
 			.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 	};

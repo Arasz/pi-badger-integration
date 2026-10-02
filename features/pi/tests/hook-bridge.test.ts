@@ -126,13 +126,25 @@ describe("post matchers also recognize mcp__-prefixed tool names by their bare s
     ]);
   });
 
-  test("pi's single-underscore MCP spelling fires too — that is what pi actually delivers", () => {
+  test("the retired pi-mcp-tools single-underscore spelling still fires", () => {
     expect(postCommandsForTool(commands, "mcp_ai-raccoon_memory_search")).toEqual([
       "python3 marker.py",
     ]);
     expect(postCommandsForTool(commands, "mcp_ai_raccoon_memory_search")).toEqual([
       "python3 marker.py",
     ]);
+  });
+
+  test("pi's built-in MCP spelling (dashes in the server name become `_`) fires the shipped matchers", () => {
+    const shipped = [
+      { matcher: "^(mcp__.+__|.+-)?memory_search$", command: "python3 gate.py" },
+      ...commands,
+    ];
+    expect(postCommandsForTool(shipped, "mcp__ai_raccoon__memory_search")).toEqual([
+      "python3 gate.py",
+      "python3 marker.py",
+    ]);
+    expect(postCommandsForTool(shipped, "mcp__ai_raccoon__memory_search_extra")).toEqual([]);
   });
 
   test("anchored semantics survive: a suffix match is not a substring match", () => {

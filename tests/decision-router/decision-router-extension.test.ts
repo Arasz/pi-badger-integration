@@ -104,7 +104,7 @@ interface Harness {
 	readonly fetchCalls: RecordedFetch[];
 	readonly fetchCount: () => number;
 	readonly scheduler: ReturnType<typeof makeManualScheduler>;
-	readonly toolState: { all: Array<{ name: string; description: string }>; active: string[] };
+	readonly toolState: { all: Array<{ name: string; description: string; exposure?: string }>; active: string[] };
 	readonly modelState: { current: { provider: string; id: string } };
 	readonly registry: Map<string, Record<string, unknown>>;
 	readonly setActiveToolsCalls: string[][];
@@ -637,6 +637,21 @@ describe("B7 (qa-F7) — the sent body carries state.tools", () => {
 		await h.fireTurn("Fix the failing build in the deploy pipeline");
 		const body = JSON.parse(h.fetchCalls[0]!.init.body) as {
 			state: { task: string; tools?: Array<{ name: string; description: string }> };
+		};
+		expect(body.state.tools).toEqual(DEFAULT_CATALOGUE);
+	});
+
+	test("tools pi keeps out of direct declarations stay out of the catalogue", async () => {
+		const h = setup();
+		h.toolState.all = [
+			...DEFAULT_CATALOGUE,
+			{ name: "mcp__ai_raccoon__memory_search", description: "Search memory", exposure: "codemode" },
+			{ name: "mcp__semantica__export_graph", description: "Export", exposure: "deferred" },
+			{ name: "secret", description: "Hidden", exposure: "hidden" },
+		];
+		await h.fireTurn("Fix the failing build in the deploy pipeline");
+		const body = JSON.parse(h.fetchCalls[0]!.init.body) as {
+			state: { tools?: Array<{ name: string; description: string }> };
 		};
 		expect(body.state.tools).toEqual(DEFAULT_CATALOGUE);
 	});

@@ -1,6 +1,6 @@
 /**
  * Pi adapter half of the planner (plan §3): `createRegistryPlanner` resolves a
- * model through the pi 0.84.4 `ModelRegistry` seam and calls `complete`, then
+ * model through pi's `ModelRegistry` seam and calls `complete`, then
  * hands the extracted text to the pure `parsePlan` half in `planner.ts`.
  *
  * Purity rules: no `@earendil-works/pi-ai` import — the registry, the model and

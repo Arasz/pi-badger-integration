@@ -105,9 +105,8 @@ bodies and prompt text never reach any log surface or shadow-ring entry.
 The single async `before_agent_start` handler applies **tools → model →
 routing-log**, each step independently fail-open. Tool changes go through
 `setActiveTools` only; the handler never mutates
-`systemPromptOptions.selectedTools` (in pinned pi 0.84.4 the
-`BeforeAgentStartEventResult` surface carries only `message`/`systemPrompt`,
-and handler results are contained in `runner.js:881-930`). The model step
+`systemPromptOptions.selectedTools` (in pi 1.0.0 the
+`BeforeAgentStartEventResult` surface still carries only `message`/`systemPrompt`). The model step
 calls `setModel` with a single positional full registry model resolved from
 the configured `provider/model-id` target (session-only, never persisted) and
 sets the thinking level only after the model lands; a declined, missing,
