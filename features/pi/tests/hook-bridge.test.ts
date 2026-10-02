@@ -126,7 +126,7 @@ describe("post matchers also recognize mcp__-prefixed tool names by their bare s
     ]);
   });
 
-  test("pi's single-underscore MCP spelling fires too — that is what pi actually delivers", () => {
+  test("the retired pi-mcp-tools single-underscore spelling still fires", () => {
     expect(postCommandsForTool(commands, "mcp_ai-raccoon_memory_search")).toEqual([
       "python3 marker.py",
     ]);
