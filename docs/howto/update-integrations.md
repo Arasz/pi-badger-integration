@@ -45,6 +45,18 @@ The old surface maps to native replacements:
 
 Human cards, the merge-ledger card, settings-persisted disabled tools, and the fork's `tools` filter arrays are gone; per-server `exposure` and `toolExposure` in `mcp.json` replace the filter. Dropping `tools: ["*"]` leaves each server at pi's `codemode` default (tools reachable from scripts, not declared to the model); set `"exposure": "direct"` on a server to have its tools declared to the model again.
 
+## Moving to pi 1.0.0
+
+Nothing here needs changing for pi 1.0.0. The repo builds and tests against it (`devDependencies` pins `@earendil-works/pi-coding-agent` at `1.0.0`), and every extension loads in a print-mode session with no warnings. Three changes from the 0.84.4 → 1.0.0 changelog do touch this integration, and each is already handled:
+
+| pi change | Effect here |
+|---|---|
+| MCP tool names replace `-` with `_` (0.99.2): `mcp__ai-raccoon__memory_search` is now `mcp__ai_raccoon__memory_search` | The adapter's post hooks still fire. The shipped matchers accept any `mcp__<server>__` prefix, and a test pins the new spelling. |
+| `--no-extensions` also turns off pi's built-in extensions (0.99.0) | The `/ask` child in `mem-based-rag` passes it to stay isolated. Now it loses the built-in MCP and codemode too, which is what it wants. |
+| `--provider` without `--model` is an error (1.0.0) | `subagent` never passes `--provider`; it passes `--model` or nothing. |
+
+The TUI now starts fullscreen. If you prefer the terminal's own scrollback, set `"tuiMode": "regular"` in `~/.pi/agent/settings.json`.
+
 ## Behavior matrix
 
 Every combination holds without erroring a session. Session start stays silent unless a newer release is confirmed; the `check` subcommand reports everything.

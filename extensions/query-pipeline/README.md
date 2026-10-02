@@ -69,7 +69,7 @@ Set `PI_BADGER_QUERY_PIPELINE=0` to keep everything local.
 | `types.ts` | Frozen seam: stage/progress/result types, env names, clamp helper. Imports nothing. |
 | `merge.ts` | Pure `docKey` / comparator / `dedupePool` (per kind, `pruneHits` parity) / `mergeSelect`. Imports nothing. |
 | `planner.ts` | Pure planner half: the delegator-persona system prompt, the measured user prompt, `parsePlan` (last-complete-JSON-object, shape-validated). Imports nothing. |
-| `planner-call.ts` | `createRegistryPlanner` over `ctx.modelRegistry.complete` (pi 0.84.4 exposes `complete`, not `streamSimple`); every failure is a typed fallback. |
+| `planner-call.ts` | `createRegistryPlanner` over `ctx.modelRegistry.complete`; every failure is a typed fallback. |
 | `jev-client.ts` | Minimal Jev `score` client, copy-by-contract from `decision-router-client.ts`; injected fetch/scheduler/env; `warmJevScore`. |
 | `pipeline.ts` | The import seam: `createQueryPipeline` → `{retrieve, retrieveResult}`, plus `runPipeline`, `toEnvelope`, `formatProgress`, `resolvePipelineBudget`. |
 | `index.ts` | Extension wiring: `session_start` preload, `session_shutdown` reset/clear. |
