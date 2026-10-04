@@ -32,7 +32,7 @@
  * contract is still "new episode ⇒ switchCount 0", enforced cheaply on both sides.
  *
  * Pattern provenance: billing/non-retryable + retryable sets are inline copies of
- * pi-ai `utils/retry.js` (installed 0.84.4) plus the OpenRouter-documented typed
+ * pi-ai `utils/retry.js` (installed 1.0.2) plus the OpenRouter-documented typed
  * codes (`payment_required`, `insufficient credits`, `authentication`) from the
  * d-487 research record §4. Overflow sets are inline copies of pi-ai
  * `utils/overflow.js` OVERFLOW_PATTERNS + NON_OVERFLOW_PATTERNS (quirks included:
@@ -65,7 +65,7 @@ export interface ClassifyInput {
 // ------------------------------------------------------------------ signal sets
 // Inline copies — see module header for provenance. Case-insensitive by construction.
 
-/** Non-retryable billing substrings: retry.js 8 in order, then OpenRouter typed codes. */
+/** Non-retryable billing substrings: retry.js 9 in order, then OpenRouter typed codes. */
 const BILLING_PATTERNS = [
 	/GoUsageLimitError/i,
 	/FreeUsageLimitError/i,
@@ -75,6 +75,7 @@ const BILLING_PATTERNS = [
 	/out of budget/i,
 	/quota exceeded/i,
 	/billing/i,
+	/subscription_sharing_usage_limit_exceeded/i,
 	/payment_required/i,
 	/insufficient credits/i,
 ] as const;
@@ -96,8 +97,11 @@ const THROTTLE_PATTERNS = [
 	/too many requests/i,
 	/429/i,
 	/50[024]/i,
+	/520/i,
 	/524/i,
 	/overloaded/i,
+	/currently experiencing high demand/i,
+	/model is at capacity/i,
 	/service.?unavailable/i,
 	/server.?error/i,
 	/internal.?error/i,
@@ -106,6 +110,8 @@ const THROTTLE_PATTERNS = [
 /** Full retry.js RETRYABLE set — used ONLY by `recomputeRetryability`, never for kinds. */
 const RETRYABLE_PATTERNS = [
 	/overloaded/i,
+	/currently experiencing high demand/i,
+	/model is at capacity/i,
 	/rate.?limit/i,
 	/too many requests/i,
 	/429/i,
@@ -113,6 +119,7 @@ const RETRYABLE_PATTERNS = [
 	/502/i,
 	/503/i,
 	/504/i,
+	/520/i,
 	/524/i,
 	/service.?unavailable/i,
 	/server.?error/i,
@@ -146,11 +153,14 @@ const RETRYABLE_PATTERNS = [
 	/try your request again/i,
 	/please retry your request/i,
 	/ResourceExhausted/i,
+	/subscription_sharing_usage_unavailable/i,
+	/subscription_sharing_user_unavailable/i,
 ] as const;
 
 /** Inline copy of pi-ai OVERFLOW_PATTERNS (see module header). */
 const OVERFLOW_PATTERNS = [
-	/prompt is too long/i,
+	/prompt (?:is )?too long/i,
+	/prompt exceeds max length/i,
 	/request_too_large/i,
 	/input is too long for requested model/i,
 	/exceeds the context window/i,
@@ -266,6 +276,7 @@ export function classifyFailure(input: ClassifyInput): FailureClassification {
 		statusPrefix === 500 ||
 		statusPrefix === 502 ||
 		statusPrefix === 504 ||
+		statusPrefix === 520 ||
 		statusPrefix === 524
 	) {
 		return { kind: "throttle", reason: `throttle: status-prefix ${statusPrefix} (cooldown-only; never switches models)` };
