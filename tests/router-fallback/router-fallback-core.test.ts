@@ -274,6 +274,40 @@ describe("C14: overflow + billing → not-fallback (overflow pre-check runs firs
 	});
 });
 
+// ------------------------------------------------------------------ pi-ai 1.0.2 signal sync
+
+describe("1.0.2 retry.js sync: capacity/demand load signals and the ChatGPT sharing split", () => {
+	test('"Selected model is at capacity" text → throttle (pi 1.0.1 now retries these instead of ending the turn)', () => {
+		expect(match("Selected model is at capacity").kind).toBe("throttle");
+	});
+
+	test('"currently experiencing high demand" text → throttle', () => {
+		expect(match("The model is currently experiencing high demand.").kind).toBe("throttle");
+	});
+
+	test("520 status-prefix → throttle (retry.js retryable status added in 1.0.2)", () => {
+		const result = match("520: upstream failure", 520);
+		expect(result.kind).toBe("throttle");
+		expect(result.reason).toMatch(/status-prefix 520/);
+	});
+
+	test("subscription_sharing_usage_limit_exceeded → billing-exhaustion (hours-scale, never retried)", () => {
+		expect(match("subscription_sharing_usage_limit_exceeded").kind).toBe("billing-exhaustion");
+	});
+
+	test("subscription_sharing_usage_unavailable → not-fallback (no fallback signal) even though retryable", () => {
+		expect(match("subscription_sharing_usage_unavailable").kind).toBe("not-fallback");
+	});
+
+	test('z.ai "Prompt exceeds max length" / "Prompt too long" → overflow not-fallback (1.0.2 overflow.js sync)', () => {
+		for (const text of ["Prompt exceeds max length", "Prompt too long"]) {
+			const result = match(text);
+			expect(result.kind).toBe("not-fallback");
+			expect(result.reason).toMatch(/overflow/i);
+		}
+	});
+});
+
 // ------------------------------------------------------------------ generic markers (J5 hold+notice)
 
 describe("generic folded markers carry no signal → not-fallback", () => {
@@ -391,6 +425,30 @@ describe("recomputeRetryability mirrors _isRetryableError (overflow first, retry
 				stopReason: "error",
 				errorMessage:
 					"This endpoint's maximum context length is 200000 tokens. However, you requested about 265330 tokens",
+			}),
+		).toBe(false);
+	});
+
+	test('"model is at capacity" text → true (1.0.1: pi retries capacity errors)', () => {
+		expect(
+			recomputeRetryability({ stopReason: "error", errorMessage: "Selected model is at capacity" }),
+		).toBe(true);
+	});
+
+	test("subscription_sharing_usage_unavailable → true (retry.js retryable since 1.0.2)", () => {
+		expect(
+			recomputeRetryability({
+				stopReason: "error",
+				errorMessage: "subscription_sharing_usage_unavailable",
+			}),
+		).toBe(true);
+	});
+
+	test("subscription_sharing_usage_limit_exceeded → false (non-retryable checked first)", () => {
+		expect(
+			recomputeRetryability({
+				stopReason: "error",
+				errorMessage: "subscription_sharing_usage_limit_exceeded",
 			}),
 		).toBe(false);
 	});

@@ -47,7 +47,7 @@ Human cards, the merge-ledger card, settings-persisted disabled tools, and the f
 
 ## Moving to pi 1.0.0
 
-The repo builds and tests against pi 1.0.0 (`devDependencies` pins `@earendil-works/pi-coding-agent` at `1.0.0`), and every extension loads in a print-mode session with no warnings. Four changes from the 0.84.4 → 1.0.0 changelog touch this integration. One of them needed a fix:
+The repo builds and tests against pi 1.0.0 (`devDependencies` pinned `@earendil-works/pi-coding-agent` at `1.0.0` for that move), and every extension loaded in a print-mode session with no warnings. Four changes from the 0.84.4 → 1.0.0 changelog touch this integration. One of them needed a fix (see "pi 1.0.1 / 1.0.2" below for the later releases):
 
 | pi change | Effect here |
 |---|---|
@@ -57,6 +57,17 @@ The repo builds and tests against pi 1.0.0 (`devDependencies` pins `@earendil-wo
 | `--provider` without `--model` is an error (1.0.0) | `subagent` never passes `--provider`; it passes `--model` or nothing. |
 
 The TUI now starts fullscreen. If you prefer the terminal's own scrollback, set `"tuiMode": "regular"` in `~/.pi/agent/settings.json`.
+
+## pi 1.0.1 / 1.0.2
+
+The repo now pins `@earendil-works/pi-coding-agent` at `1.0.2`; `bun run test` and `bun run typecheck` pass against it. Two changes from these releases touch this integration:
+
+| pi change | Effect here |
+|---|---|
+| "Selected model is at capacity" errors are retried instead of ending the turn (1.0.1); pi-ai `retry.js` gained `model is at capacity`, `currently experiencing high demand`, `520`, and the ChatGPT `subscription_sharing_*` signals (1.0.2) | `router-fallback` keeps inline copies of those pattern sets (plus `overflow.js`'s). They are re-synced to 1.0.2: at-capacity/demand text now classifies as `throttle` (cooldown-only) instead of `not-fallback`, `subscription_sharing_usage_limit_exceeded` is billing (hours-scale, non-retryable), the `*_unavailable` twins are retryable, and z.ai's `Prompt too long` / `Prompt exceeds max length` overflow texts match again. |
+| Project overrides for MCP servers: a `.pi/mcp.json` entry without `command`/`url` sets only `enabled`/`exposure`/`toolExposure` of a user-level server, and `/mcp` can enable/disable a server per project (1.0.1) | No code change here — the tracked `.pi/mcp.json` carries full server definitions. Useful when one project should tweak a global server's exposure without duplicating it. |
+
+Also new in 1.0.2 and unrelated to this repo's extensions: `samplingParamsByThinkingLevel` in `models.json` sets per-thinking-level sampling parameters on OpenAI-compatible APIs.
 
 ## Behavior matrix
 
