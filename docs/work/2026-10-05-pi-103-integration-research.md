@@ -14,8 +14,8 @@
 
 | package | pinned / installed | dist changes 1.0.2 → 1.0.3 |
 |---|---|---|
-| pi-coding-agent | 1.0.2 / 1.0.3 | `config.{js,d.ts}` (new `detectInstallChange`), `core/keybindings.d.ts`, `core/model-resolver.js` (azure key), `core/bash-executor.js`, `core/tools/output-accumulator.js`, `extensions/codemode/{execute,tool}.js`, `extensions/mcp/tools.js`, `modes/interactive/interactive-mode.{js,d.ts}`, new `utils/output-files.{js,d.ts}` |
-| pi-ai | 1.0.2 / 1.0.3 | `api/azure-openai-responses.*` (rewritten), new `api/azure-openai-config.*`, `auth/resolve.*`, `env-api-keys.js`, `models.js`, `models.generated.*`, `providers/all.js`, provider data JSON (amazon-bedrock, opencode-go, openrouter, vercel-ai-gateway), `types.d.ts` (`KnownProvider` rename) |
+| pi-coding-agent | 1.0.2 / 1.0.3 | `config.{js,d.ts}` (new `detectInstallChange`), `core/keybindings.d.ts`, `core/model-resolver.js` (azure key), `core/bash-executor.js`, `core/tools/output-accumulator.js`, `extensions/codemode/{execute,tool}.js`, `extensions/mcp/tools.js`, `modes/interactive/interactive-mode.{js,d.ts}`, new `utils/output-files.{js,d.ts}` (generated `dist/bundle/**` chunks also differ by name; excluded here because nothing in this repo imports the bundle)
+| pi-ai | 1.0.2 / 1.0.3 | `api/azure-openai-responses.*` (rewritten), new `api/azure-openai-config.*`, `auth/resolve.*`, `env-api-keys.js`, `models.js`, `models.generated.*`, `providers/all.js`, provider dir renames (`providers/azure-openai-responses.{js,d.ts,.models.*}` → `providers/azure.*`, `providers/data/azure-openai-responses.json` → `azure.json`, `.manifest.json`), provider data JSON (amazon-bedrock, opencode-go, openrouter, vercel-ai-gateway), `types.d.ts` (`KnownProvider` rename) |
 | pi-tui | 1.0.2 / 1.0.3 | `dist/keybindings.{js,d.ts}` only |
 | pi-mcp | 1.0.2 / 1.0.3 | none (package.json/CHANGELOG only) |
 | chord, pi-agent-core, pi-codemode, pi-telemetry | 1.0.2 / 1.0.3 | none — `dist/` byte-identical |
@@ -39,11 +39,11 @@
 
 ## B. Impact on this repo's extensions
 
-**B1 — Azure rename: no code reference anywhere [MEASURED].** `rg -n "azure|azure-openai" extensions tests` returns nothing. The only hits in the checkout are under `.ai-badger.bckp/` (framework backup docs, unrelated). **No edit required; changelog note only.**
+**B1 — Azure rename: no code reference anywhere [MEASURED].** `rg -n "azure|azure-openai" extensions tests` returns nothing; the remaining checkout hits are unrelated framework scaffolding prose under `.ai-badger/skills/`. **No edit required; changelog note only.**
 
 **B2 — router-fallback: no re-sync needed [MEASURED].** Its inline pattern sets are [in `router-fallback-core.ts`](../../extensions/router-fallback/router-fallback-core.ts) and were re-synced to 1.0.2 in #42 (`22d27bb`). Since pi-ai's `retry.js`/`overflow.js` are unchanged in 1.0.3 (A3), the copies can stay as they are. Re-verify by diff as part of this task's gates, not by editing.
 
-**B3 — shift-enter-newline: keybinding defaults changed under it, but it never reads them [MEASURED].** The extension binds `Shift+Enter` via the editor path (`extensions/shift-enter-newline/index.ts:126-165`) and imports only the `KeybindingsManager` type (`:26-27`). `rg -n "altScreen|defaultKeys|\"home\"|\"end\"" extensions tests` finds no reference to the moved bindings (the `action: "end"` hits are router-fallback's own enum). The keybindings `.d.ts` change is a `defaultKeys` literal change only. **No edit required; changelog note only.**
+**B3 — shift-enter-newline: keybinding defaults changed under it, but it never reads them [MEASURED].** The extension binds `Shift+Enter` via the editor path (`extensions/shift-enter-newline/index.ts:126-165`). Its only keybinding read is `getKeybindings()` for its own `/shift-enter-debug` command, which reads `tui.input.newLine`/`tui.input.submit` (`:174-176`); it never reads the moved `tui.editor.cursorLine*` or `tui.altScreen.*` defaults. `rg -n "altScreen|defaultKeys|\"home\"|\"end\"" extensions tests` finds no reference to the moved bindings (the `action: "end"` hits are router-fallback's own enum). The pi-tui change is a `defaultKeys` literal move only (fullscreen top/bottom `home`/`end` → `ctrl+home`/`ctrl+end`). **No edit required; changelog note only.**
 
 **B4 — codemode/output-file changes: no consumer here [MEASURED].** No extension imports `saveToTempFile` or the new `utils/output-files.js` (the helper is pi-internal). `console-capture` writes its own rotating log (`extensions/console-capture/index.ts`), not pi's temp files. `decision-router` consumes tool *declarations* (`exposure`), unchanged in 1.0.3 (A2). **No edit required.**
 
@@ -53,10 +53,10 @@
 
 ## C. Open hypotheses for this task's gates
 
-- **H1 [UNVERIFIED]** — `bun test` and `bunx tsc --noEmit -p .` are green with the devDependency at 1.0.3. The pinned tree at 1.0.2 passes today; the API surface is unchanged (A2) and the changed files (A1) do not appear in the suite's import graph, but the run is the proof.
-- **H2 [UNVERIFIED]** — every installed extension loads in a print-mode session against 1.0.3 without warnings (the check PR #40 ran for 1.0.0). Needs the publish → session → warning scan sequence; see D3 for where the user-scope install lives.
-- **H3 [UNVERIFIED]** — `bun.lock` refresh to 1.0.3 pulls no transitive version that breaks typecheck. `pi-coding-agent@1.0.3`'s dependency ranges are `^1.0.3` on its own packages plus the same pinned internals as 1.0.2 (`typebox@1.3.27`, `quickjs-wasi@3.6.2`, …). The root devDependency `typebox@1.3.7` stays as-is unless the refresh requires it.
-- **H4 [UNVERIFIED]** — pinning `1.0.3` changes what CI installs globally (D1) and therefore what the suite runs against; the green CI run on the PR is the proof.
+- **H1 [VERIFIED by the s1 gate]** — `bun run test` = 1824 pass / 8 skip / 0 fail and `bun run typecheck` exit 0 with the devDependency at 1.0.3.
+- **H2 [VERIFIED by the s3 gate]** — `bun run publish` then a real pi 1.0.3 print-mode session (`-p ... --no-session`) exited 0 with no extension diagnostics; transcripts at `/var/folders/k9/gxjyv0q50tn0_sngj8zg30140000gn/T/tmp.008DACBkM2/`.
+- **H3 [VERIFIED by the s1 gate]** — the refreshed `bun.lock` moved only the `@earendil-works/*` family, and typecheck is green, so no transitive breakage; `typebox@1.3.7` stayed as-is.
+- **H4 [VERIFIED]** — CI run 37377078462's test job is green on branch head `6bc7542`.
 
 ## D. Process mechanics verified
 

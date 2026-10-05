@@ -400,7 +400,7 @@ with per-capability kills winning over the master, which wins over the
 `/decisions off` session override — `/decisions on` never lifts an env kill.
 
 Probe note: the in-hook `setModel`/`setActiveTools` semantics are source-
-verified against the pinned pi 0.84.4 (hook-probe evidence recorded in the
+verified against the then-pinned pi 0.84.4 (hook-probe evidence recorded in the
 ADR and the script at `tests/decision-router/probe/hook-probe.md`) but the
 probe is **not run in-pipeline** — spawning `pi` is blocked by the
 delegation-skip guard. If a live run ever shows `setModel` declining inside the
