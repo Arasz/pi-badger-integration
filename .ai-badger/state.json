@@ -1,7 +1,22 @@
 {
-  "lastUpdated": "2026-10-02T17:30:00Z",
+  "lastUpdated": "2026-10-05T21:10:37Z",
   "next": null,
   "completedTasks": [
+    {
+      "taskId": "pbi-ling-flash-default-free-model",
+      "title": "Use inclusionai/ling-3.1-flash as default free model in router fallback",
+      "finishedAt": "2026-10-05T21:10:37Z",
+      "summary": "Router-fallback OpenRouter head z-ai/glm-5.2:free (dead: absent from live roster and pi catalog) -> inclusionai/ling-3.1-flash (low loop). Verified live 0/0 pricing at base id (no :free variant), tools+tool_choice, in pi catalog reasoning:true, zero registration. 3 commits: source head-swap + 13 test re-pins (F10 delete retargeted, mutation-proven) + catalog row sync + comment fix. Gates: tests/router-fallback 149 pass, typecheck clean, cross-package 10 pass. Implementation review SHIP. PR #43 squash-merged 27d060b, CI test check passed; copilot review loop skipped per owner.",
+      "decisions": [
+        "No pruning of minimax-m3:free (resolve-or-skip + F10 cover it)",
+        "No join step (low loop, disjoint files, CI is the join)",
+        "No RED-first split (single green run proves more)"
+      ],
+      "followUps": [
+        "Base-id zero pricing is not the :free contract; watch for silent price changes (fallback: ling-3.0-flash-sante:free)",
+        "Two code-reviewer lanes timed out on open-ended briefs; tight time-boxed briefs complete in ~1-2 min"
+      ]
+    },
     {
       "taskId": "pbi-pi-v1-changelog-integration-adjust",
       "title": "Adjust integration for pi 1.0.0",
