@@ -66,8 +66,8 @@ const CATALOG: Record<string, FakeCatalogModel> = {
     api: "google-generative",
     baseUrl: "https://generativelanguage.googleapis.com",
   },
-  "openrouter/z-ai/glm-5.2:free": {
-    reasoning: false,
+  "openrouter/inclusionai/ling-3.1-flash": {
+    reasoning: true,
     api: "openai-completions",
     baseUrl: "https://openrouter.ai/api/v1",
   },

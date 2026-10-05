@@ -151,9 +151,9 @@ export const DEFAULT_PROVIDERS: readonly FallbackProviderEntry[] = Object.freeze
 		piProvider: "openrouter",
 		label: "OpenRouter",
 		apiKeyEnv: "OPENROUTER_API_KEY",
-		model: "z-ai/glm-5.2:free",
+		model: "inclusionai/ling-3.1-flash",
 		models: [
-			"z-ai/glm-5.2:free",
+			"inclusionai/ling-3.1-flash",
 			"poolside/laguna-s-2.1:free",
 			"minimax/minimax-m3:free",
 			"thinkingmachines/inkling-small:free",

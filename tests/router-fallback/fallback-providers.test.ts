@@ -49,7 +49,7 @@ const REASONING: Record<string, boolean> = {
 	"groq/llama-3.3-70b-versatile": false,
 	"google/gemini-3.1-flash-lite": true,
 	"google/gemini-3.1-pro-preview": true,
-	"openrouter/z-ai/glm-5.2:free": true,
+	"openrouter/inclusionai/ling-3.1-flash": true,
 	"openrouter/poolside/laguna-s-2.1:free": false,
 	"openrouter/minimax/minimax-m3:free": false,
 	"openrouter/thinkingmachines/inkling-small:free": false,
@@ -92,7 +92,7 @@ describe("defaults: frozen pinned chain (J3 IDs, H10 tuning)", () => {
 			"google",
 		]);
 		expect(DEFAULT_PROVIDERS.map((entry) => entry.model)).toEqual([
-			"z-ai/glm-5.2:free",
+			"inclusionai/ling-3.1-flash",
 			"llama-3.3-70b-versatile",
 			"gemini-3.1-flash-lite",
 		]);
@@ -106,7 +106,7 @@ describe("defaults: frozen pinned chain (J3 IDs, H10 tuning)", () => {
 			"gemini-3.1-pro-preview",
 		]);
 		expect(DEFAULT_PROVIDERS.find((entry) => entry.id === "openrouter")?.models).toEqual([
-			"z-ai/glm-5.2:free",
+			"inclusionai/ling-3.1-flash",
 			"poolside/laguna-s-2.1:free",
 			"minimax/minimax-m3:free",
 			"thinkingmachines/inkling-small:free",
@@ -136,7 +136,7 @@ describe("F1: cooldown, not disable — expiry re-admits the head", () => {
 		const first = decideNextTarget(state, { kind: "billing-exhaustion", now: NOW });
 		if (!("entry" in first)) throw new Error(`expected first serve, got ${first.reason}`);
 		expect(first.entry.id).toBe("openrouter");
-		expect(first.model).toBe("z-ai/glm-5.2:free");
+		expect(first.model).toBe("inclusionai/ling-3.1-flash");
 
 		const second = decideNextTarget(first.state, { kind: "billing-exhaustion", now: NOW + 1 });
 		if (!("entry" in second)) throw new Error(`expected advance, got ${second.reason}`);
@@ -149,7 +149,7 @@ describe("F1: cooldown, not disable — expiry re-admits the head", () => {
 		});
 		if (!("entry" in recovered)) throw new Error(`expected re-admit, got ${recovered.reason}`);
 		expect(recovered.entry.id).toBe("openrouter");
-		expect(recovered.model).toBe("z-ai/glm-5.2:free");
+		expect(recovered.model).toBe("inclusionai/ling-3.1-flash");
 	});
 });
 
@@ -198,9 +198,9 @@ describe("F2: unset-key providers are skipped; keyless custom stays eligible", (
 describe("F3: maxRetries attempts per entry, then advance", () => {
 	test("503 on openrouter head rotates once (default maxRetries 1), next 503 advances", () => {
 		const targets = resolvedTargets();
-		const glmIndex = targets.findIndex((t) => t.model === "z-ai/glm-5.2:free");
-		expect(glmIndex).toBe(0); // openrouter-first: the :free head is targets[0]
-		const state = stateWithServing(targets, glmIndex);
+		const headIndex = targets.findIndex((t) => t.model === "inclusionai/ling-3.1-flash");
+		expect(headIndex).toBe(0); // openrouter-first: the :free head is targets[0]
+		const state = stateWithServing(targets, headIndex);
 
 		const rotated = decideNextTarget(state, { kind: "model-unavailable", now: NOW });
 		if (!("entry" in rotated)) throw new Error(`expected rotate, got ${rotated.reason}`);
@@ -295,7 +295,7 @@ describe("F6: all cooling → exhausted (terminal) with a servedBy record", () =
 			state = result.state;
 		}
 		expect(seen).toEqual([
-			"openrouter/z-ai/glm-5.2:free",
+			"openrouter/inclusionai/ling-3.1-flash",
 			"groq/llama-3.3-70b-versatile",
 			"gemini/gemini-3.1-flash-lite",
 		]);
@@ -314,7 +314,7 @@ describe("F6: all cooling → exhausted (terminal) with a servedBy record", () =
 		expect(getServingProvider(first.state)).toEqual({
 			id: "openrouter",
 			label: "OpenRouter",
-			model: "z-ai/glm-5.2:free",
+			model: "inclusionai/ling-3.1-flash",
 		});
 		const second = decideNextTarget(first.state, { kind: "billing-exhaustion", now: NOW + 1 });
 		if (!("entry" in second)) throw new Error("expected advance");
@@ -345,10 +345,10 @@ describe("F7: throttle is cooldown-only — decide returns wait, never a target"
 // ------------------------------------------------------------------ F8 503 → same-provider next model
 
 describe("F8: model-unavailable rotates within the provider before advancing", () => {
-	test("503 on z-ai/glm-5.2:free serves laguna-s-2.1 (same entry, next model)", () => {
+	test("503 on inclusionai/ling-3.1-flash serves laguna-s-2.1 (same entry, next model)", () => {
 		const targets = resolvedTargets();
-		const glmIndex = targets.findIndex((t) => t.model === "z-ai/glm-5.2:free");
-		const result = decideNextTarget(stateWithServing(targets, glmIndex), {
+		const headIndex = targets.findIndex((t) => t.model === "inclusionai/ling-3.1-flash");
+		const result = decideNextTarget(stateWithServing(targets, headIndex), {
 			kind: "model-unavailable",
 			now: NOW,
 		});
@@ -393,12 +393,12 @@ describe("F10: stale head model degrades to the next entry (resolve-or-skip, nev
 		const targets = resolvedTargets(FULL_ENV, makeRegistry(withoutGroq));
 		expect(targets.length).toBeGreaterThan(0);
 		expect(targets[0]?.entry.id).toBe("openrouter");
-		expect(targets[0]?.model).toBe("z-ai/glm-5.2:free");
+		expect(targets[0]?.model).toBe("inclusionai/ling-3.1-flash");
 	});
 
 	test("stale openrouter head degrades within the chain (laguna-s-2.1 next)", () => {
 		const withoutHead = new Set([...ALL_PRESENT]);
-		withoutHead.delete("openrouter/z-ai/glm-5.2:free");
+		withoutHead.delete("openrouter/inclusionai/ling-3.1-flash");
 		const targets = resolvedTargets(FULL_ENV, makeRegistry(withoutHead));
 		const orTargets = targets.filter((target) => target.entry.id === "openrouter");
 		expect(orTargets[0]?.model).toBe("poolside/laguna-s-2.1:free");
@@ -429,7 +429,7 @@ describe("resolveTargets: scoped sessions prefer in-scope models, never persist"
 	test("empty scope resolves the full catalog-verified chain (flat, priority order)", () => {
 		const targets = resolvedTargets();
 		expect(targets.map((target) => target.model)).toEqual([
-			"z-ai/glm-5.2:free",
+			"inclusionai/ling-3.1-flash",
 			"poolside/laguna-s-2.1:free",
 			"minimax/minimax-m3:free",
 			"thinkingmachines/inkling-small:free",
@@ -453,7 +453,7 @@ describe("requiredThinking: ThinkingLevel-only for reasoning targets, undefined 
 
 	test("resolved targets carry the catalog reasoning flag through", () => {
 		const targets = resolvedTargets();
-		// OpenRouter-first: targets[0] is the reasoning glm head → explicit level …
+		// OpenRouter-first: targets[0] is the reasoning ling head → explicit level …
 		expect(requiredThinking(targets[0]?.reasoning ?? false)).toBe("low");
 		// … while the non-reasoning groq target still skips the call.
 		const groq = targets.find((target) => target.entry.id === "groq")!;
