@@ -199,7 +199,7 @@ describe("F3: maxRetries attempts per entry, then advance", () => {
 	test("503 on openrouter head rotates once (default maxRetries 1), next 503 advances", () => {
 		const targets = resolvedTargets();
 		const headIndex = targets.findIndex((t) => t.model === "inclusionai/ling-3.1-flash");
-		expect(headIndex).toBe(0); // openrouter-first: the :free head is targets[0]
+		expect(headIndex).toBe(0); // openrouter-first: the free-model head is targets[0]
 		const state = stateWithServing(targets, headIndex);
 
 		const rotated = decideNextTarget(state, { kind: "model-unavailable", now: NOW });
