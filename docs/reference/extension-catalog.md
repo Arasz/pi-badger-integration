@@ -284,7 +284,7 @@ The fallback is **session-only and never persisted**: the extension-level `setMo
 takes no options, so the session-level `{persist:true}` path is structurally unreachable
 — the persisted default is never touched (pinned by test).
 
-Verification notes: pi 0.84.4 (repo pin) vs 0.85.1 (installed) shapes re-verified
+Verification notes: pi 0.84.4 (pin at the time) vs 0.85.1 (installed) shapes re-verified
 identical (`setModel` false-on-missing-auth, `{messages}`-only `agent_end`,
 `model_select{source:"set"}`); the keyless custom-overlay path passes pi's own
 `validateExtensionProvider` offline; the pinned `:free` chain was confirmed present on

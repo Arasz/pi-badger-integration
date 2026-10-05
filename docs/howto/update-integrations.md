@@ -60,7 +60,7 @@ The TUI now starts fullscreen. If you prefer the terminal's own scrollback, set 
 
 ## pi 1.0.1 / 1.0.2
 
-The repo now pins `@earendil-works/pi-coding-agent` at `1.0.2`; `bun run test` and `bun run typecheck` pass against it. Two changes from these releases touch this integration:
+At the time, the repo pinned `@earendil-works/pi-coding-agent` at `1.0.2`; `bun run test` and `bun run typecheck` passed against it. Two changes from these releases touch this integration:
 
 | pi change | Effect here |
 |---|---|
@@ -68,6 +68,19 @@ The repo now pins `@earendil-works/pi-coding-agent` at `1.0.2`; `bun run test` a
 | Project overrides for MCP servers: a `.pi/mcp.json` entry without `command`/`url` sets only `enabled`/`exposure`/`toolExposure` of a user-level server, and `/mcp` can enable/disable a server per project (1.0.1) | No code change here — the tracked `.pi/mcp.json` carries full server definitions. Useful when one project should tweak a global server's exposure without duplicating it. |
 
 Also new in 1.0.2 and unrelated to this repo's extensions: `samplingParamsByThinkingLevel` in `models.json` sets per-thinking-level sampling parameters on OpenAI-compatible APIs.
+
+## pi 1.0.3
+
+The repo pins `@earendil-works/pi-coding-agent` at `1.0.3`; `bun run test` and `bun run typecheck` pass against it. Six items from this release are worth checking here, and none needs a code change:
+
+| pi change | Effect here |
+|---|---|
+| The Azure provider is renamed `azure-openai-responses` → `azure`, and `azure` also serves Foundry Chat Completions deployments, starting with `azure/deepseek-v4-pro` | Neither name appears in `extensions/` or `tests/`, so nothing here to update. On your own config, rename the provider key in `auth.json` (or run `/login` again), `models.json` and `settings.json` (`defaultProvider`, `enabledModels` patterns and `modelThinkingLevels` keys). The `AZURE_OPENAI_*` environment variables are unchanged. A session that used the old key falls back to another model on resume and loses its prompt cache. |
+| Codemode `image()` also writes each image to a temp file and names the path in the result | No consumer here. No extension imports the helper, and `console-capture` keeps its own rotating log instead of pi's temp files. |
+| Output files (full text of truncated tool output, binary MCP resources, codemode images) are readable only by the user | pi-internal hardening; no repo consumer on either side of it. |
+| `Home`/`End` now always move the editor cursor to the line start/end, and fullscreen transcript top/bottom moved to `Ctrl+Home`/`Ctrl+End` | `shift-enter-newline` binds through the editor path and imports only the `KeybindingsManager` type; it never reads `defaultKeys`, so the moved defaults do not reach it. No change. |
+| Fixed an OAuth refresh cancel (`refresh_token_invalidated`), codemode failing for the rest of a session after a pnpm global update (new additive `detectInstallChange`), and an interactive `read EIO`/`setRawMode EIO` crash | No action here. `detectInstallChange` is a new export in `config.d.ts`; nothing existing changed shape, and no extension calls it. |
+| pi-ai's `retry.js` and `overflow.js` are byte-identical between 1.0.2 and 1.0.3 | `router-fallback`'s inline signal sets, re-synced in #42 (`22d27bb`), stay current; `cmp` against the 1.0.3 files exits 0. |
 
 ## Behavior matrix
 
