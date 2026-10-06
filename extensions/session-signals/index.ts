@@ -106,14 +106,14 @@ export function renderStatus(entries: DelegationEntry[], now: number): string | 
 	return `⏳ ${parts.join(" · ")}`;
 }
 
-/** The delegation tool names to watch, from the env override or the default. Both ai-badger
- * delegation tools are watched by default: `delegate` (blocking runs) and `delegations`
- * (whose `wait` action can hold a turn for minutes — R9 keeps it footer-visible). */
+/** The delegation tool names to watch, from the env override or the default. `delegate` is
+ * the one merged delegation tool (I1): blocking runs and the management actions whose
+ * list/log polls the guard blocks — R9 keeps the footer visible for it. */
 export function parseToolNames(env: Record<string, string | undefined>): string[] {
 	const raw = env.PI_BADGER_DELEGATION_TOOLS?.trim();
-	if (!raw) return ["delegate", "delegations"];
+	if (!raw) return ["delegate"];
 	const names = raw.split(",").map((n) => n.trim()).filter(Boolean);
-	return names.length > 0 ? names : ["delegate", "delegations"];
+	return names.length > 0 ? names : ["delegate"];
 }
 
 // ---------------------------------------------------------------- wiring

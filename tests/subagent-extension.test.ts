@@ -1019,14 +1019,15 @@ describe("M1/M2 — the merge: one registered tool, optional delegate params, si
     expect(h.children).toHaveLength(1); // management calls never spawn
   });
 
-  test("log routes through the merged tool — a live run with no sink answers 'log unavailable', no spawn", async () => {
+  test("log routes through the merged tool — the run's log path and the management log shape, no spawn", async () => {
     h = makeHarness("tui");
     await callDelegate({ agent: "architect", task: "seed the run" }, makeCtx(), undefined, "call-seed");
 
     const log = await callDelegate({ action: "log", id: "d-1" }, makeCtx());
 
-    expect(contentOf(log)).toContain("log unavailable");
-    expect(h.children).toHaveLength(1);
+    expect((log.details as { logFile?: string }).logFile).toBe(join(runLogDir(h), "d-1.jsonl"));
+    expect(contentOf(log)).toContain("full log:");
+    expect(h.children).toHaveLength(1); // management calls never spawn
   });
 
   test("log on an unknown id is the management error, never the unknown-persona text", async () => {

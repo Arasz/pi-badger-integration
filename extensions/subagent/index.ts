@@ -80,7 +80,7 @@ import {
   type StartOutcome,
 } from "./delegation-registry.ts";
 import type { DelegationNote, DelegationProgress, SpawnFn } from "./delegation-runner.ts";
-import { registerDelegationStatus } from "./delegation-status.ts";
+import { registerDelegationStatus, DelegationActionFields, DELEGATIONS_TOOL_DESCRIPTION, type DelegationActionParams } from "./delegation-status.ts";
 import { registerDelegationSkipGuard } from "./delegation-skip-guard.ts";
 import { newGlobalId } from "./global-id.ts";
 import { appendIndexEntry } from "./global-index.ts";
@@ -752,8 +752,8 @@ export function pidAlive(pid: number): boolean {
 // ------------------------------------------------------------------ tool schemas and results
 
 const DelegateParams = Type.Object({
-  agent: Type.String({ description: "Name of the ai-badger persona to delegate to" }),
-  task: Type.String({ description: "The task, stated so the persona can act on it alone" }),
+  agent: Type.Optional(Type.String({ description: "Name of the ai-badger persona to delegate to" })),
+  task: Type.Optional(Type.String({ description: "The task, stated so the persona can act on it alone" })),
   timeoutMs: Type.Optional(
     Type.Number({
       description:
@@ -766,7 +766,14 @@ const DelegateParams = Type.Object({
         "Absolute working directory for the delegated child. Personas are still read from this project's .pi/agents. Validated with stat; must be an existing directory.",
     }),
   ),
+  // I1/M6: the management half of the one schema — `action` absent keeps the delegate path.
+  ...DelegationActionFields,
 });
+
+/** The merged tool's usage guard (I1/M5): no action and a missing agent/task is loud — both
+ * parameters are named and nothing spawns. Exported so the one wording is not duplicated. */
+export const MISSING_DELEGATE_PARAMS_USAGE =
+  'ai-badger: delegate needs both "agent" and "task" to start a delegation, or an "action" (list/log/abort/results/peek/resolve) for management';
 
 /** The one content shape tool results return. */
 function text(body: string) {
@@ -1138,16 +1145,18 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       `separate pi process with its own context. Personas live in ${AGENTS_DIR.join("/")}/*.md;`,
       "call this with an unknown agent name to get the list of available ones.",
       "In the TUI the tool returns a receipt immediately and the result arrives as a followUp",
-      "message on its own — never poll for it (repeated delegations list/log is blocked). EVERY",
+      "message on its own — never poll for it (repeated delegate list/log is blocked). EVERY",
       "delegation enters the queue as a one-element serial group: on an idle system it starts",
       "immediately, otherwise it queues behind a blocked queue head (cap full, a mid-flight serial",
       "group, or a parallel group that cannot use a slot) — there is no other admission path; to",
       "spend idle time until results land, use the monitor extension's wait",
-      "tool (user input interrupts it) or register a monitor; to stop a run, delegations abort.",
+      "tool (user input interrupts it) or register a monitor; to stop a run, delegate abort.",
       "A wait timeout aborts its watched live delegations (ids scopes cancellation; without ids it targets the whole session).",
       "Headless modes still block: there the result IS the tool result. A run is unbounded unless",
       "you pass timeoutMs, which bounds the run's wall-clock time and aborts it on expiry; use",
-      "the delegations tool to inspect or abort running delegations.",
+      "the delegate tool's management actions (list/log/abort/results/peek/resolve) to inspect or abort running delegations.",
+      // I1/M6: the management half of the one tool's description.
+      DELEGATIONS_TOOL_DESCRIPTION,
     ].join(" "),
     parameters: DelegateParams,
 
@@ -1164,6 +1173,18 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     },
 
     async execute(toolCallId, params, signal, onUpdate, ctx) {
+      // I1/M11: dispatch rides on action PRESENCE only. `action === undefined` is the unchanged
+      // delegate path, so `{agent: "list"}` still delegates to a persona named `list`; pi's
+      // Type.Union rejects `action: ""` before execute, so there is deliberately no
+      // empty-string branch here.
+      if (params.action !== undefined) {
+        return statusApi.runAction(params as DelegationActionParams, ctx);
+      }
+      const agent = params.agent;
+      const task = params.task;
+      if (agent === undefined || task === undefined) {
+        throw new Error(MISSING_DELEGATE_PARAMS_USAGE);
+      }
       const toolCtx = ctx as unknown as DelegateToolContext;
       const scan = scanPersonas(toolCtx.cwd);
       const agentsDir = scan.missingDir ?? join(toolCtx.cwd, ...AGENTS_DIR);
@@ -1173,7 +1194,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         toolCtx.ui.notify(message, "warning");
         return {
           content: text(message),
-          details: { agent: params.agent, exitCode: null, agentsDir, errors: [] } satisfies BlockingDetails,
+          details: { agent, exitCode: null, agentsDir, errors: [] } satisfies BlockingDetails,
         };
       }
       for (const error of scan.errors) {
@@ -1183,13 +1204,13 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         toolCtx.ui.notify(`ai-badger: duplicate persona — ${duplicate}`, "warning");
       }
 
-      const persona = scan.personas.find((p) => p.name === params.agent);
+      const persona = scan.personas.find((p) => p.name === agent);
       if (!persona) {
-        const message = unknownPersonaMessage(params.agent, agentsDir, scan.personas);
+        const message = unknownPersonaMessage(agent, agentsDir, scan.personas);
         toolCtx.ui.notify(message, "warning");
         return {
           content: text(message),
-          details: { agent: params.agent, exitCode: null, agentsDir, errors: scan.errors } satisfies BlockingDetails,
+          details: { agent, exitCode: null, agentsDir, errors: scan.errors } satisfies BlockingDetails,
         };
       }
 
@@ -1231,7 +1252,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       });
       if (resolution.levelWarning) toolCtx.ui.notify(`ai-badger: ${resolution.levelWarning}`, "warning");
       if (resolution.modelWarning) toolCtx.ui.notify(`ai-badger: ${resolution.modelWarning}`, "warning");
-      const args = delegationArgs(persona, params.task, model, loaded.registry);
+      const args = delegationArgs(persona, task, model, loaded.registry);
       const invocation = piInvocation(args);
       const fallbackArgs = fallbackArgsFor(invocation.args, persona, model, loaded.registry);
       let sessionId: string | undefined;
@@ -1252,7 +1273,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       // "queue add/add-parallel keep explicit group semantics").
       const outcome = await registry.start({
         agent: persona.name,
-        task: params.task,
+        task,
         args: invocation.args,
         ...(fallbackArgs !== undefined ? { fallbackArgs } : {}),
         command: invocation.command,
