@@ -90,8 +90,8 @@ agent can keep working. When the child settles, its result lands in exactly one
 token usage, log path — the structured result rides the message's `details.result`) and
 wakes the agent; completions arriving inside a 2 s coalesce
 window share one batched message (lead card immediate, up to 6 cards per batch). Results
-arrive on their own — **never poll** for them (repeated `delegations list`/`log` polling is
-blocked by the monitor's enforcement; `delegations peek` is the sanctioned live-check
+arrive on their own — **never poll** for them (repeated `delegate list`/`log` polling is
+blocked by the monitor's enforcement; `delegate peek` is the sanctioned live-check
 and is not counted). To keep a strict order, queue work with the
 **`queue` tool**: `add` (serial group — members run one at a time, in order),
 `add-parallel` (members run concurrently once they all fit), `clear` (cancel every queued
@@ -99,7 +99,7 @@ task; running ones untouched), `list` (the queued groups with live positions). T
 queue tool is TUI-only. The `background` parameter is gone — mode alone decides: the TUI
 always backgrounds with a receipt, and a stale `background` key replayed from an old session
 is stripped before schema validation. Ordering, idle waiting, and stopping runs work as above
-(`queue`, the monitor extension's `wait` tool, `delegations abort`). Every delegation enters the queue as a
+(`queue`, the monitor extension's `wait` tool, `delegate abort`). Every delegation enters the queue as a
 one-element serial group — on an idle system it starts immediately, otherwise it waits its
 turn behind a blocked queue head (cap full, a mid-flight serial group, or a parallel group that cannot use a slot); the queue is the only admission path. In headless modes (`-p`, json, rpc) delegation stays **blocking** — the result
 is the tool result, byte-compatible with the pre-background contract, plus `details.usage`;
@@ -113,7 +113,8 @@ settles as `aborted (lost)`.
 
 Checking on delegations:
 
-- **`delegations` tool** (LLM-facing): `list` (state, elapsed, current activity, usage,
+- **`delegate` tool — management actions** (LLM-facing; pass `action` explicitly — a call without
+  an `action` is a delegation): `list` (state, elapsed, current activity, usage,
   trailing `session <id>` when known), `log <id>` (bounded tail + full path; a RUNNING
   run's file holds only its `run` header, so `log` answers from the in-memory live preview
   until the run settles),
@@ -143,7 +144,7 @@ Checking on delegations:
   project owns its own `d-N` namespace and its ids restart at `d-1`. Byte-capped per run
   (header + tail
   kept, middle elided). While a run is LIVE the file holds only its `run` header — the
-  child's buffered stream lands at close — so `delegations log` falls back to the in-memory
+  child's buffered stream lands at close — so `delegate log` falls back to the in-memory
   live preview (the same source `peek` reads) and never prints an empty "showing the tail"
   marker. Logs live at user scope deliberately: they survive reboots and never touch any
   project's git status. Retention: >14 days pruned at `session_start`, capped
@@ -152,8 +153,8 @@ Checking on delegations:
   its `run` header and in the receipt details). When the run's log sink opens, the extension
   appends `{globalId, id, projectKey, projectRoot, logFile, at}` to
   `~/.pi/agent/subagent-logs/index.jsonl`, compacted to the newest 500 entries. A GUID from
-  another project is answered by `delegations resolve <guid>` from that index; a local
-  `delegations resolve <d-N>` answers from the live registry (or the settled run's header) with
+  another project is answered by `delegate resolve <guid>` from that index; a local
+  `delegate resolve <d-N>` answers from the live registry (or the settled run's header) with
   its GUID. Two projects may both hold a `d-1` — the GUID is the cross-project handle.
 - **Legacy flat logs** (`~/.pi/agent/subagent-logs/d-N.jsonl`, written before this layout)
   are left untouched but never read: new sessions neither reconstruct them nor allocate around
@@ -166,7 +167,7 @@ outlive the session — after a restart the log dir is the durable truth: finish
 classified from their `exit` line, receipt-only runs report as lost (stale instead once the
 log has been quiet past the 10-minute stale threshold), and no wake-up message
 is injected after a restart. Run ids are never reused within a project (skip-to-next-free
-over that project's log directory), so `delegations log d-N` stays unambiguous across
+over that project's log directory), so `delegate log d-N` stays unambiguous across
 restarts; ids restart at `d-1` in a project that has never run a delegation, and two
 projects may both hold a `d-1`. One documented
 limitation: `/tree` navigation away from the delegating branch hides that branch's
@@ -235,7 +236,7 @@ transitions cannot relabel the result as a delegation wake. It returns
 `details: {observed: "timeout", waitedMs, records, abortedIds, abortErrors}`;
 `records` is the post-request fleet snapshot, and `abortedIds` acknowledges
 accepted aborts, not OS process reaping. Cancellation uses pi's nested
-`delegations abort` tool call, preserving validation and permission hooks.
+`delegate abort` tool call, preserving validation and permission hooks.
 Pi 1.0.3 supplies that API; an unavailable, blocked, or failed abort is reported
 in `abortErrors` and a warning in the result, never as successful cancellation.
 
@@ -251,7 +252,7 @@ See [Wait for mail](../howto/wait-check-loop.md) and the
 <!-- trust:trustchecked evidence=extensions/monitor/index.ts:645 evidence=extensions/subagent/delegation-registry.ts:370 -->
 
 The monitor extension also enforces the no-polling rule: a `tool_call` observer counts
-`delegations list`/`log`/`results` calls (nothing else — `wait`, `abort`, `peek`, `queue` and `monitor`
+`delegate list`/`log`/`results` calls (nothing else — `wait`, `abort`, `peek`, `queue` and `monitor`
 calls are exempt) and blocks the 4th call inside a sliding 120 s window with guidance to
 use `wait` or a monitor instead; blocked attempts count too. `PI_BADGER_MONITOR_POLL_MAX`
 is read per call and `0` disables the guard; state resets on session shutdown. The same

@@ -66,6 +66,6 @@ process has already been reaped. See the
   and wakes. Only mail arriving *after* the wait starts can wake it.
 - **Kill switch.** `PI_BADGER_MESSAGE_BUS=0` disables the tick along with the
   delivery hooks; the `check` tool stays.
-- **No polling-guard cost.** The internal tick is not a `delegations list`
-  call — manual `delegations list`/`log`/`results` polling is still blocked
+- **No polling-guard cost.** The internal tick is not a `delegate list`
+  call — manual `delegate list`/`log`/`results` polling is still blocked
   (4th call in 120 s), and a shell `sleep` loop is still redirected to `wait`.
