@@ -63,7 +63,7 @@ framework canonical's preferred index (medium/high rotated to deepseek-v4.1-flas
    validator rejects.
 2. **Re-validate before emit (M8).** The registry file is project-writable (contributor /
    PR surface) yet renders into `pi -p --model <id>` argv. The resolver re-validates the
-   resolved id against the tight pattern `^openrouter/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`
+   resolved id against the provider/model grammar documented in [the model ID contract](2026-10-06-provider-model-id-contract.md)
    before emitting; mismatch → throw naming the rule, never emit. ~~Explicit `model:` pins
    pass verbatim (contract §4.5; grandfather clause for legacy bare pins + `fallbackArgsFor`
    retry unchanged).~~ **Amended f: 2026-09-29 (M8/H4 — the d-324 class):** explicit pins
@@ -88,7 +88,7 @@ framework canonical's preferred index (medium/high rotated to deepseek-v4.1-flas
    rides the result note (`levelOverride`) and the card verdict names it — never silent.
 6. **Dual-key frontmatter (G-2/G-3).** `parsePersona` loads raw `level:` + `model:`
    strings (trimmed, non-empty); no reader-side stripping — PKG-4's delivery rule (level
-   passes, model passes iff `openrouter/`-qualified) describes the *delivered files*.
+   passes, model passes iff it matches the provider/model grammar) describes the *delivered files*.
    Validation happens at resolve time, where the override context exists.
    **Amended f: 2026-09-29:** the grandfathered bare-pin fallback that once justified
    reader-side pass-through is retired (see §2) — the resolve-time shape gate now enforces
