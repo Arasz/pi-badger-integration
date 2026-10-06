@@ -47,7 +47,7 @@ Human cards, the merge-ledger card, settings-persisted disabled tools, and the f
 
 ## Moving to pi 1.0.0
 
-The repo builds and tests against pi 1.0.0 (`devDependencies` pinned `@earendil-works/pi-coding-agent` at `1.0.0` for that move), and every extension loaded in a print-mode session with no warnings. Four changes from the 0.84.4 → 1.0.0 changelog touch this integration. One of them needed a fix (see "pi 1.0.1 / 1.0.2" below for the later releases):
+The repo built and tested against pi 1.0.0 (`devDependencies` pinned `@earendil-works/pi-coding-agent` at `1.0.0` for that move), and every extension loaded in a print-mode session with no warnings. Four changes from the 0.84.4 → 1.0.0 changelog touch this integration. One of them needed a fix (see "pi 1.0.1 / 1.0.2" below for the later releases):
 
 | pi change | Effect here |
 |---|---|
