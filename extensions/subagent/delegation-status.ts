@@ -62,7 +62,7 @@ export const DEFAULT_WIDGET_KEY = "pi-badger-delegations";
  */
 export const DELEGATION_EVENTS_CHANNEL = "delegation-transition";
 
-/** `delegations log` tail size: clamp range and default (R6). */
+/** `delegate log` tail size: clamp range and default (R6). */
 export const MIN_LOG_TAIL_BYTES = 512;
 export const MAX_LOG_TAIL_BYTES = 49152;
 export const DEFAULT_LOG_TAIL_BYTES = 8192;
@@ -257,7 +257,7 @@ const USAGE_LINE = "usage: /delegations [peek <id> [--lines N]] [log <id>] [reso
 
 function unknownIdError(id: string): Error {
 	// Same wording the registry's abort throws — one loud unknown-id message everywhere.
-	return new Error(`ai-badger: unknown delegation id "${id}" — use delegations list for current ids`);
+	return new Error(`ai-badger: unknown delegation id "${id}" — use delegate list for current ids`);
 }
 
 /** Where a peek answer came from: the result cache, the live in-memory preview, or the queue. */
@@ -338,7 +338,7 @@ export const DELEGATIONS_TOOL_DESCRIPTION = [
  * ```
  *
  * `opts.widgetKey` — the ctx.ui.setWidget key (default "pi-badger-delegations").
- * `opts.bytes` — the default `delegations log` tail size, clamped to 512–49152 (default 8192);
+ * `opts.bytes` — the default `delegate log` tail size, clamped to 512–49152 (default 8192);
  * the tool's per-call `bytes` parameter overrides it per call.
  * `opts.now` — the elapsed-time clock; MUST be the same injected clock the registry was built
  * with, because records carry that clock's `startedAt` (defaults to Date.now()).
@@ -462,7 +462,7 @@ export function registerDelegationStatus(
 	function unknownResolveError(input: string): Error {
 		// The existing loud unknown-id wording plus the resolve hint (plan §2).
 		return new Error(
-			`ai-badger: unknown delegation id "${input}" — use delegations list for current ids, or delegations resolve <d-N|guid> to look up a global id`,
+			`ai-badger: unknown delegation id "${input}" — use delegate list for current ids, or delegate resolve <d-N|guid> to look up a global id`,
 		);
 	}
 
@@ -584,7 +584,7 @@ export function registerDelegationStatus(
 			// The header-only live log has no complete line inside the window: never claim a
 			// tail — name the state and point at the surface that does have live output.
 			parts.push(
-				`delegation ${id}: running — the log holds only the run header until the child closes; no output to tail yet (use \`delegations peek ${id}\`)`,
+				`delegation ${id}: running — the log holds only the run header until the child closes; no output to tail yet (use \`delegate peek ${id}\`)`,
 			);
 		} else {
 			parts.push(`delegation ${id}: no complete line in the last ${bytes} bytes — nothing to show`);
@@ -642,7 +642,7 @@ export function registerDelegationStatus(
 
 	async function runAction(params: DelegationActionParams): Promise<{ content: Array<{ type: "text"; text: string }>; details: unknown }> {
 		if (params.action !== "abort" && Array.isArray(params.id)) {
-			throw new Error(`delegations ${params.action} requires a single string id, not an array`);
+			throw new Error(`delegate ${params.action} requires a single string id, not an array`);
 		}
 		switch (params.action) {
 			case "list": {
@@ -673,7 +673,7 @@ export function registerDelegationStatus(
 			}
 			case "log": {
 				if (typeof params.id !== "string" || !params.id.trim()) {
-					throw new Error(`delegations log needs a run id — use delegations list for current ids; ${USAGE_LINE}`);
+					throw new Error(`delegate log needs a run id — use delegate list for current ids; ${USAGE_LINE}`);
 				}
 				const result = logTailResult(params.id.trim(), typeof params.bytes === "number" ? params.bytes : undefined);
 				return textResult(result.message, {
@@ -686,13 +686,13 @@ export function registerDelegationStatus(
 			case "abort": {
 				if (Array.isArray(params.id)) {
 					if (params.id.length === 0 || params.id.some((id) => typeof id !== "string" || !id.trim() || id.trim() === "all")) {
-						throw new Error("delegations abort needs a non-empty array of run ids (not 'all')");
+						throw new Error("delegate abort needs a non-empty array of run ids (not 'all')");
 					}
 					const abortedIds = registry.abortMany(params.id.map((id) => id.trim()));
 					return textResult(`abort requested for ${abortedIds.length} live delegation(s)`, { abortedIds });
 				}
 				if (typeof params.id !== "string" || !params.id.trim()) {
-					throw new Error(`delegations abort needs a run id, or "all" — e.g. delegations abort d-3 or delegations abort all`);
+					throw new Error(`delegate abort needs a run id, or "all" — e.g. delegate abort d-3 or delegate abort all`);
 				}
 				const target = params.id.trim();
 				if (target === "all") return textResult(abortEverything(), { all: true });
@@ -711,7 +711,7 @@ export function registerDelegationStatus(
 						return textResult(`delegation ${requested}: no cached result yet (state: ${record.state})`, { id: requested, result: null });
 					}
 					return textResult(
-						`delegation ${requested}: not in the cache (last 8) — the run may predate the window; use delegations list`,
+						`delegation ${requested}: not in the cache (last 8) — the run may predate the window; use delegate list`,
 						{ id: requested, result: null },
 					);
 				}
@@ -728,7 +728,7 @@ export function registerDelegationStatus(
 					}
 				}
 				if (manager && !sessionId) {
-					throw new Error("ai-badger: cannot determine the current session — pass an id (e.g. delegations results d-3)");
+					throw new Error("ai-badger: cannot determine the current session — pass an id (e.g. delegate results d-3)");
 				}
 				const entries = sessionId !== undefined && cache ? cache.byParent(sessionId) : [];
 				if (entries.length === 0) {
@@ -739,18 +739,18 @@ export function registerDelegationStatus(
 			}
 			case "peek": {
 				if (typeof params.id !== "string" || !params.id.trim()) {
-					throw new Error(`delegations peek needs a run id — use delegations list for current ids; ${USAGE_LINE}`);
+					throw new Error(`delegate peek needs a run id — use delegate list for current ids; ${USAGE_LINE}`);
 				}
 				const linesParam = (params as { lines?: unknown }).lines;
 				if (linesParam !== undefined && typeof linesParam !== "number") {
-					throw new Error(`delegations peek needs lines as a number (got ${JSON.stringify(linesParam)})`);
+					throw new Error(`delegate peek needs lines as a number (got ${JSON.stringify(linesParam)})`);
 				}
 				const result = peekResult(params.id.trim(), typeof linesParam === "number" ? linesParam : undefined);
 				return textResult(result.message, result.details);
 			}
 			case "resolve": {
 				if (typeof params.id !== "string" || !params.id.trim()) {
-					throw new Error(`delegations resolve needs a local run id or a global GUID; ${USAGE_LINE}`);
+					throw new Error(`delegate resolve needs a local run id or a global GUID; ${USAGE_LINE}`);
 				}
 				const result = resolveDelegation(params.id.trim());
 				return textResult(result.message, result.details);
