@@ -284,7 +284,7 @@ The fallback is **session-only and never persisted**: the extension-level `setMo
 takes no options, so the session-level `{persist:true}` path is structurally unreachable
 — the persisted default is never touched (pinned by test).
 
-Verification notes: pi 0.84.4 (repo pin) vs 0.85.1 (installed) shapes re-verified
+Verification notes: pi 0.84.4 (pin at the time) vs 0.85.1 (installed) shapes re-verified
 identical (`setModel` false-on-missing-auth, `{messages}`-only `agent_end`,
 `model_select{source:"set"}`); the keyless custom-overlay path passes pi's own
 `validateExtensionProvider` offline; the pinned `:free` chain was confirmed present on
@@ -400,7 +400,7 @@ with per-capability kills winning over the master, which wins over the
 `/decisions off` session override — `/decisions on` never lifts an env kill.
 
 Probe note: the in-hook `setModel`/`setActiveTools` semantics are source-
-verified against the pinned pi 0.84.4 (hook-probe evidence recorded in the
+verified against the then-pinned pi 0.84.4 (hook-probe evidence recorded in the
 ADR and the script at `tests/decision-router/probe/hook-probe.md`) but the
 probe is **not run in-pipeline** — spawning `pi` is blocked by the
 delegation-skip guard. If a live run ever shows `setModel` declining inside the
