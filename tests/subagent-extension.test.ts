@@ -228,11 +228,12 @@ describe("row 43 — registration shape", () => {
     h = makeHarness();
 
     expect([...h.tools.keys()]).toContain("delegate");
+    // I1: the merge removed the separate `delegations` registration — exactly one tool.
+    expect(h.tools.has("delegations")).toBe(false);
+    expect([...h.tools.keys()].filter((name) => name === "delegate" || name === "delegations")).toEqual(["delegate"]);
     expect([...h.handlers.keys()]).toContain("session_start");
     expect([...h.handlers.keys()]).toContain("session_shutdown");
     expect([...h.renderers.keys()]).toContain("delegation-result");
-    // The delegations tool + /delegations command are P4's delegation-status.ts — the
-    // orchestrator adds that wiring at merge and completes this row's surface there.
   });
 
   test("wiring (T60): transitions ride pi.events as serializable snapshots", async () => {
@@ -492,7 +493,7 @@ describe("PKG-3 — global GUID on record, header and receipt (A3.2)", () => {
 
     // The extension's own resolve wiring (PKG-3): a local id answers from the live registry
     // with the project context the factory computed — not only in the status fixture.
-    const tool = h.tools.get("delegations") as {
+    const tool = h.tools.get("delegate") as {
       execute(toolCallId: string, params: Record<string, unknown>, signal: undefined, onUpdate: undefined, ctx: unknown): Promise<DelegateResult>;
     };
     const resolved = await tool.execute("call-0", { action: "resolve", id: "d-1" }, undefined, undefined, makeCtx());
@@ -970,13 +971,159 @@ describe("B-A3 — delegate + delegations descriptions pin the R1 redirect wordi
     expect(description).not.toContain("pass background: false to block"); // the removed instruction
   });
 
-  test("the delegations description carries the same redirect (results arrive on their own; never poll; the monitor wait tool replaces waiting)", () => {
+  test("the merged delegate description carries the management redirect too (results arrive on their own; never poll; the monitor wait tool replaces waiting)", () => {
     h = makeHarness();
-    const description = String(h.tools.get("delegations")!.description);
+    const description = String(h.tools.get("delegate")!.description);
 
     expect(description).toContain("followUp");
     expect(description).toContain("never poll");
     expect(description).toContain("the monitor extension's wait tool (user input interrupts it)");
+    // M6: the management half rides the same description, or the re-pointed results rows break.
+    for (const verb of ["list", "log", "abort", "results", "peek", "resolve"]) {
+      expect(description).toContain(verb);
+    }
+    expect(description).toContain("last 8");
+  });
+});
+
+// ------------------------------------------------------------------ M1/M6: the merged tool contract
+
+/** The merged tool's schema as the fake harness holds it (the harness does not validate schemas, 
+ * so optionality is asserted directly on `required`). */
+function delegateSchema(): { required?: string[]; properties: Record<string, { anyOf?: Array<{ const?: unknown }> }> } {
+  return h.tools.get("delegate")!.parameters as never;
+}
+
+const MISSING_BOTH_USAGE =
+  'ai-badger: delegate needs both "agent" and "task" to start a delegation, or an "action" (list/log/abort/results/peek/resolve) for management';
+
+describe("M1/M2 — the merge: one registered tool, optional delegate params, six management verbs", () => {
+  test("the merged schema leaves agent/task optional and pins the action union to the six literals", () => {
+    h = makeHarness();
+    const schema = delegateSchema();
+
+    expect(schema.required ?? []).not.toContain("agent");
+    expect(schema.required ?? []).not.toContain("task");
+    const literals = (schema.properties.action?.anyOf ?? []).map((variant) => variant.const);
+    expect(literals).toEqual(["list", "log", "abort", "results", "peek", "resolve"]);
+  });
+
+  test("list routes through the merged tool — the seeded run is visible", async () => {
+    h = makeHarness("tui");
+    await callDelegate({ agent: "architect", task: "seed the run" }, makeCtx(), undefined, "call-seed");
+    expect(h.children).toHaveLength(1);
+
+    const list = await callDelegate({ action: "list" }, makeCtx());
+
+    expect(contentOf(list)).toContain("d-1 architect");
+    expect(h.children).toHaveLength(1); // management calls never spawn
+  });
+
+  test("log routes through the merged tool — a live run with no sink answers 'log unavailable', no spawn", async () => {
+    h = makeHarness("tui");
+    await callDelegate({ agent: "architect", task: "seed the run" }, makeCtx(), undefined, "call-seed");
+
+    const log = await callDelegate({ action: "log", id: "d-1" }, makeCtx());
+
+    expect(contentOf(log)).toContain("log unavailable");
+    expect(h.children).toHaveLength(1);
+  });
+
+  test("log on an unknown id is the management error, never the unknown-persona text", async () => {
+    h = makeHarness();
+
+    const error = await callDelegate({ action: "log", id: "d-nope" }, makeCtx()).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('unknown delegation id "d-nope"');
+    expect((error as Error).message).not.toContain("no persona named");
+    expect(h.children).toHaveLength(0);
+  });
+
+  test("abort routes through the merged tool — registry kill path, no NEW spawn", async () => {
+    h = makeHarness("tui");
+    await callDelegate({ agent: "architect", task: "seed the run" }, makeCtx(), undefined, "call-seed");
+
+    const abort = await callDelegate({ action: "abort", id: "d-1" }, makeCtx());
+
+    expect(contentOf(abort)).toContain("d-1");
+    expect(h.api!.registry.get("d-1").state).toBe("aborted");
+    expect(h.children[0]!.signals).toContain("SIGTERM");
+    expect(h.children).toHaveLength(1);
+  });
+
+  test("results routes through the merged tool — the cached structured result rides details.result", async () => {
+    h = makeHarness("tui");
+    await callDelegate({ agent: "architect", task: "cache me" }, makeCtx(), undefined, "call-seed");
+    h.children[0]!.write(`${assistantEnd("the cached answer")}\n`);
+    h.children[0]!.exit(0);
+
+    const results = await callDelegate({ action: "results", id: "d-1" }, makeCtx());
+
+    expect((results.details as { result: { delegation_id: string } }).result.delegation_id).toBe("d-1");
+    expect(contentOf(results)).toContain("the cached answer");
+  });
+
+  test("peek routes through the merged tool — the cached answer tail", async () => {
+    h = makeHarness("tui");
+    await callDelegate({ agent: "architect", task: "peek me" }, makeCtx(), undefined, "call-seed");
+    h.children[0]!.write(`${assistantEnd("the peeked answer")}\n`);
+    h.children[0]!.exit(0);
+
+    const peek = await callDelegate({ action: "peek", id: "d-1" }, makeCtx());
+
+    expect(contentOf(peek)).toContain("the peeked answer");
+    expect(peek.details).toMatchObject({ id: "d-1", source: "cache" });
+  });
+
+  test("resolve routes through the merged tool — the live registry's global id", async () => {
+    h = makeHarness("tui");
+    const seed = await callDelegate({ agent: "architect", task: "resolve me" }, makeCtx(), undefined, "call-seed");
+
+    const resolved = await callDelegate({ action: "resolve", id: "d-1" }, makeCtx());
+
+    expect(resolved.details).toMatchObject({ id: "d-1", globalId: seed.details.globalId, source: "registry" });
+  });
+
+  test("a persona named like a verb still delegates when action is absent — the verb name is never dispatch", async () => {
+    h = makeHarness("tui");
+    writeFileSync(join(h.projectDir, ...AGENTS_DIR, "list.md"), `---\nname: list\ndescription: Persona named like a management verb.\n---\n\nBody.\n`);
+
+    const result = await callDelegate({ agent: "list", task: "spawn me" }, makeCtx(), undefined, "call-list");
+
+    expect(result.details.agent).toBe("list");
+    expect(result.details.state).toBe("running");
+    expect(h.children).toHaveLength(1);
+    expect(h.spawnOptions).toHaveLength(1);
+  });
+
+  test("no action and missing agent/task throws the exact usage error naming both — seeded run proves no spawn", async () => {
+    h = makeHarness("tui");
+    // Seed one real run first, so "no spawn" is a comparison, not the harness's default state.
+    await callDelegate({ agent: "architect", task: "seed the run" }, makeCtx(), undefined, "call-seed");
+    expect(h.children).toHaveLength(1);
+
+    for (const params of [{}, { task: "only a task" }, { agent: "architect" }]) {
+      const error = await callDelegate(params, makeCtx(), undefined, "call-bad").catch((caught) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(MISSING_BOTH_USAGE);
+      expect((error as Error).message).toContain('"agent"');
+      expect((error as Error).message).toContain('"task"');
+      expect((error as Error).message).not.toContain("no persona named");
+      expect(h.children).toHaveLength(1); // nothing new spawned
+    }
+  });
+
+  test("the merged description keeps the delegate wording and adds the management half (M6)", () => {
+    h = makeHarness();
+    const description = String(h.tools.get("delegate")!.description);
+
+    expect(description).toContain("followUp");
+    expect(description).toContain("one-element serial group");
+    for (const verb of ["list", "log", "abort", "results", "peek", "resolve"]) {
+      expect(description).toContain(verb);
+    }
+    expect(description).toContain("last 8");
   });
 });
 
@@ -1031,7 +1178,7 @@ describe("M5 — the structured result rides the delegation-result cards (f: 202
 
     expect(h.sent).toHaveLength(1); // the lead went out; d-2 is held inside the open window
 
-    const delegations = h.tools.get("delegations") as unknown as {
+    const delegations = h.tools.get("delegate") as unknown as {
       execute(toolCallId: string, params: Record<string, unknown>, signal: unknown, onUpdate: unknown, ctx: unknown): Promise<DelegateResult>;
     };
     const result = await delegations.execute("tc", { action: "results", id: "d-2" }, undefined, undefined, makeCtx());
@@ -1308,7 +1455,7 @@ describe("T92–T100 — burst batching on the notification wire (deferral pkg P
 
 describe("T114 — registry empty ≠ blind (RR1, pkg P2)", () => {
   const runList = async (params: Record<string, unknown>) => {
-    const tool = h.tools.get("delegations") as {
+    const tool = h.tools.get("delegate") as {
       execute(toolCallId: string, params: Record<string, unknown>, signal: undefined, onUpdate: undefined, ctx: unknown): Promise<DelegateResult>;
     };
     return tool.execute("call-0", params, undefined, undefined, makeCtx());
@@ -1389,7 +1536,7 @@ describe("S3 — the boolean pidAlive probe is unchanged and pinned (pkg P2)", (
 
 describe("T118 — empty registry lists reconstructed stale runs with their log paths (RR4, pkg P3)", () => {
   const runList = async (): Promise<string> => {
-    const tool = h.tools.get("delegations") as {
+    const tool = h.tools.get("delegate") as {
       execute(toolCallId: string, params: Record<string, unknown>, signal: undefined, onUpdate: undefined, ctx: unknown): Promise<DelegateResult>;
     };
     return contentOf(await tool.execute("call-0", { action: "list" }, undefined, undefined, makeCtx()));
@@ -1598,7 +1745,7 @@ describe("T122 — the stale query is prune-free (d-52 SHOULD-1)", () => {
     writeFileSync(stalePath, `${JSON.stringify({ type: "run", runId: "d-9", agent: "architect", persona: "architect", task: "lost work", argv: ["-p"], cwd: "/p", pid: 424242, startedAt: NOW - 90 * 24 * 60 * 60 * 1000 })}\n`);
     utimesSync(stalePath, new Date(NOW - 90 * 24 * 60 * 60 * 1000), new Date(NOW - 90 * 24 * 60 * 60 * 1000));
 
-    const tool = h.tools.get("delegations") as {
+    const tool = h.tools.get("delegate") as {
       execute(toolCallId: string, params: Record<string, unknown>, signal: undefined, onUpdate: undefined, ctx: unknown): Promise<DelegateResult>;
     };
     const toolText = contentOf(await tool.execute("call-0", { action: "list" }, undefined, undefined, makeCtx()));
