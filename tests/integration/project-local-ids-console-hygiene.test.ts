@@ -138,10 +138,6 @@ function delegateTool(session: Session): ToolLike {
   return session.pi.tools.get("delegate") as unknown as ToolLike;
 }
 
-function delegationsTool(session: Session): ToolLike {
-  return session.pi.tools.get("delegations") as unknown as ToolLike;
-}
-
 /** Start a real background run through the extension's delegate tool (mode "tui"). */
 function startRun(session: Session, task: string, toolCallId: string): Promise<ToolResult> {
   return delegateTool(session).execute(toolCallId, { agent: "architect", task }, undefined, undefined, session.ctx);
@@ -160,9 +156,9 @@ function reconstructionRuns(session: Session): Array<{ id: string; logFile?: str
   return (entry!.data as { runs: Array<{ id: string; logFile?: string }> }).runs;
 }
 
-/** Drive the real `delegations list` action and return both its text and its records. */
+/** Drive the real `delegate list` action and return both its text and its records. */
 async function listDelegations(session: Session): Promise<{ text: string; records: Array<{ id: string; logFile?: string }> }> {
-  const result = await delegationsTool(session).execute("tc-list", { action: "list" }, undefined, undefined, session.ctx);
+  const result = await delegateTool(session).execute("tc-list", { action: "list" }, undefined, undefined, session.ctx);
   return {
     text: result.content.map((part) => part.text).join("\n"),
     records: (result.details.records ?? []) as Array<{ id: string; logFile?: string }>,
@@ -170,7 +166,7 @@ async function listDelegations(session: Session): Promise<{ text: string; record
 }
 
 function resolveViaTool(session: Session, id: string): Promise<ToolResult> {
-  return delegationsTool(session).execute("tc-resolve", { action: "resolve", id }, undefined, undefined, session.ctx);
+  return delegateTool(session).execute("tc-resolve", { action: "resolve", id }, undefined, undefined, session.ctx);
 }
 
 // ------------------------------------------------------------------ A5.1 completion round-trip
