@@ -166,7 +166,7 @@ describe("E-A1: the poll guard blocks the 4th counted call in the window", () =>
 // ------------------------------------------------------------------ E-A2
 
 describe("E-A2: what never counts, the env switch, and the reset", () => {
-  test("wait/abort/queue/monitor-cancel are allowed and never counted", () => {
+  test("abort/peek/resolve, the bare delegate start and the separate wait tool are allowed and never counted", () => {
     const { pi } = makeCombinedHarness();
     const delegations = registeredDelegationsName(pi);
 
@@ -174,8 +174,12 @@ describe("E-A2: what never counts, the env switch, and the reset", () => {
     // if ANY exempt call had counted, this third list would already be the 4th and block.
     expect(fireToolCall(pi, delegations, { action: "list" })).toBeUndefined();
     expect(fireToolCall(pi, delegations, { action: "list" })).toBeUndefined();
-    expect(fireToolCall(pi, delegations, { action: "wait", timeoutMs: 1000 })).toBeUndefined();
     expect(fireToolCall(pi, delegations, { action: "abort", id: "all" })).toBeUndefined();
+    expect(fireToolCall(pi, delegations, { action: "peek", id: "d-1" })).toBeUndefined();
+    expect(fireToolCall(pi, delegations, { action: "resolve", id: "d-1" })).toBeUndefined();
+    // Action absent: the merged name now owns the delegate start path — exempt, like the
+    // six-verb schema's non-counted verbs.
+    expect(fireToolCall(pi, delegations, { agent: "architect", task: "x" })).toBeUndefined();
     expect(fireToolCall(pi, "queue", { action: "add", tasks: ["x"] })).toBeUndefined();
     expect(fireToolCall(pi, "monitor", { action: "cancel", id: "m-1" })).toBeUndefined();
     expect(fireToolCall(pi, "wait", {})).toBeUndefined();

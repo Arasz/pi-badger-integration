@@ -1382,6 +1382,9 @@ describe("P2 — delegations peek (live preview first, cached tail when settled)
 
     await fx.harness.commands.get("delegations")!.handler("peek d-1 --lines many", fx.ctx);
     expect(lastNotification(fx).type).toBe("warning");
+    // Exact command prefix: the pre-fix wording (bare "delegations peek --lines …") also
+    // contains the got-and-usage fragments, so pin the /delegations identity itself.
+    expect(lastNotification(fx).message).toContain("/delegations peek --lines needs a number");
     expect(lastNotification(fx).message).toContain('--lines needs a number (got "many")');
     expect(lastNotification(fx).message).toContain("usage: /delegations");
   });

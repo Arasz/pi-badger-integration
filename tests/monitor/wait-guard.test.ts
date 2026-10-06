@@ -91,10 +91,16 @@ describe("W-G — manual-wait enforcement: shell sleeps are blocked at the harne
     expect(fireToolCall(pi, "bash", { command: "npm run sleep-test" })).toBeUndefined();
   });
 
-  test("W-G5: non-shell tools are never wait-guarded (delegate list reaches the poll guard untouched)", () => {
+  test("W-G5: non-shell tools are never wait-guarded", () => {
     const { pi } = makeHarness();
 
     expect(fireToolCall(pi, "delegate", { action: "list" })).toBeUndefined();
+
+    // Guard identity: the same registration blocks a shell sleep with the wait-guard reason —
+    // W-G5's pass is the non-shell filter, not an unregistered handler.
+    const blocked = fireToolCall(pi, "bash", { command: "sleep 30" });
+    expect(blocked?.block).toBe(true);
+    expect(blocked?.reason).toContain("main loop");
   });
 
   test("W-G6: PI_BADGER_WAIT_GUARD=0 disables the guard — the sleep passes", () => {

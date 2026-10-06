@@ -990,7 +990,7 @@ describe("B-A3 — delegate + delegations descriptions pin the R1 redirect wordi
 
 /** The merged tool's schema as the fake harness holds it (the harness does not validate schemas, 
  * so optionality is asserted directly on `required`). */
-function delegateSchema(): { required?: string[]; properties: Record<string, { anyOf?: Array<{ const?: unknown }> }> } {
+function delegateSchema(): { required?: string[]; properties: Record<string, { anyOf?: Array<{ const?: unknown; type?: unknown; items?: { type?: unknown } }> }> } {
   return h.tools.get("delegate")!.parameters as never;
 }
 
@@ -1004,8 +1004,14 @@ describe("M1/M2 — the merge: one registered tool, optional delegate params, si
 
     expect(schema.required ?? []).not.toContain("agent");
     expect(schema.required ?? []).not.toContain("task");
+    // The fake harness never validates schemas, so dropping an action field would stay green
+    // while real pi rejected `delegate log/abort/results/peek/resolve {id}` — pin them here.
+    expect(Object.keys(schema.properties)).toEqual(expect.arrayContaining(["action", "id", "bytes", "lines"]));
     const literals = (schema.properties.action?.anyOf ?? []).map((variant) => variant.const);
     expect(literals).toEqual(["list", "log", "abort", "results", "peek", "resolve"]);
+    const idVariants = schema.properties.id?.anyOf ?? [];
+    expect(idVariants.map((variant) => variant.type)).toEqual(expect.arrayContaining(["string", "array"]));
+    expect(idVariants.find((variant) => variant.type === "array")?.items?.type).toBe("string");
   });
 
   test("list routes through the merged tool — the seeded run is visible", async () => {
@@ -1030,15 +1036,16 @@ describe("M1/M2 — the merge: one registered tool, optional delegate params, si
     expect(h.children).toHaveLength(1); // management calls never spawn
   });
 
-  test("log on an unknown id is the management error, never the unknown-persona text", async () => {
-    h = makeHarness();
+  test("log on an unknown id is the management error, never the unknown-persona text, and spawns nothing new", async () => {
+    h = makeHarness("tui");
+    await callDelegate({ agent: "architect", task: "seed the run" }, makeCtx(), undefined, "call-seed");
 
     const error = await callDelegate({ action: "log", id: "d-nope" }, makeCtx()).catch((caught) => caught);
 
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain('unknown delegation id "d-nope"');
     expect((error as Error).message).not.toContain("no persona named");
-    expect(h.children).toHaveLength(0);
+    expect(h.children).toHaveLength(1); // the seed, and no spawn from the failed management call
   });
 
   test("abort routes through the merged tool — registry kill path, no NEW spawn", async () => {
@@ -1063,6 +1070,7 @@ describe("M1/M2 — the merge: one registered tool, optional delegate params, si
 
     expect((results.details as { result: { delegation_id: string } }).result.delegation_id).toBe("d-1");
     expect(contentOf(results)).toContain("the cached answer");
+    expect(h.children).toHaveLength(1); // management calls never spawn
   });
 
   test("peek routes through the merged tool — the cached answer tail", async () => {
@@ -1075,6 +1083,7 @@ describe("M1/M2 — the merge: one registered tool, optional delegate params, si
 
     expect(contentOf(peek)).toContain("the peeked answer");
     expect(peek.details).toMatchObject({ id: "d-1", source: "cache" });
+    expect(h.children).toHaveLength(1); // management calls never spawn
   });
 
   test("resolve routes through the merged tool — the live registry's global id", async () => {
@@ -1084,6 +1093,7 @@ describe("M1/M2 — the merge: one registered tool, optional delegate params, si
     const resolved = await callDelegate({ action: "resolve", id: "d-1" }, makeCtx());
 
     expect(resolved.details).toMatchObject({ id: "d-1", globalId: seed.details.globalId, source: "registry" });
+    expect(h.children).toHaveLength(1); // management calls never spawn
   });
 
   test("a persona named like a verb still delegates when action is absent — the verb name is never dispatch", async () => {

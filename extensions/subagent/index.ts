@@ -351,7 +351,7 @@ function unknownPersonaMessage(agent: string, agentsDir: string, personas: Array
  * `--mode json` turns the child's stdout into the JSON event stream delegation-core parses —
  * that is what makes live progress, usage and answer extraction possible (R3). `--no-session`
  * keeps a delegation out of the session store; `--exclude-tools delegate,queue,monitor,wait` removes
- * both call types from the child so delegation cannot recurse; `--append-system-prompt` carries
+ * the delegation surface from the child so delegation cannot recurse; `--append-system-prompt` carries
  * the persona's body (pi appends it to the coding-assistant prompt rather than replacing it, so
  * the child keeps its tool guidance); `--` ends option parsing so a task starting with `-` is a
  * task.
@@ -1312,8 +1312,9 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     },
   });
 
-  // The single registry instance for this runtime — reachable for the P4 status surface, which
-  // the orchestrator wires here at merge: registerDelegationStatus(pi, registry).
+  // The single registry instance for this runtime — the P4 status surface is already wired
+  // against it above (registerDelegationStatus(pi, registry, …), the W3 seam), and the
+  // returned registry is that same instance, so every consumer sees one registry.
   return { registry };
 
   // ------------------------------------------------------------------ result builders
