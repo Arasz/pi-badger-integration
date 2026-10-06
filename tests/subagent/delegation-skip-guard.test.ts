@@ -302,7 +302,7 @@ describe("D-S4: non-shell tools and non-string commands never reach the predicat
 
     for (
       const [toolName, input] of [
-        ["delegations", { action: "list" }],
+        ["delegate", { action: "list" }],
         ["read", { path: "pi" }],
         ["delegate", { agent: "architect", task: "pi run" }],
       ] as Array<[string, Record<string, unknown>]>
