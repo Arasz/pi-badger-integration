@@ -70,8 +70,8 @@ export const BUS_MAIL_TICK_MS = 1000;
 /** Custom entry type of the shutdown report (M-B4). */
 export const SHUTDOWN_ENTRY_TYPE = "monitor-shutdown";
 
-/** The delegations tool the poll guard counts (R9) — overridable via deps for tests. */
-export const POLL_GUARD_TOOL_NAME = "delegations";
+/** The merged delegation tool the poll guard counts (R9/I2) — overridable via deps for tests. */
+export const POLL_GUARD_TOOL_NAME = "delegate";
 
 /** Env kill switch for the poll guard, read PER CALL (R9/N-4): 0 disables the guard. */
 export const POLL_GUARD_ENV = "PI_BADGER_MONITOR_POLL_MAX";
@@ -94,7 +94,7 @@ export interface MonitorDeps {
 	maxMonitors?: number;
 	/** Test seam: resolve a tool context's mode; defaults to reading ctx.mode. */
 	mode?: (ctx: unknown) => string | undefined;
-	/** Poll-guard overrides (R9): window 120 s, max 3 allowed, counted tool "delegations". */
+	/** Poll-guard overrides (R9): window 120 s, max 3 allowed, counted tool "delegate". */
 	pollGuard?: { windowMs?: number; max?: number; toolName?: string };
 	/** Bash-predicate seams (bash-predicate.ts): one-evaluation budget (default 5000 ms),
 	 * SIGTERM→SIGKILL grace (default 500 ms) and the `bash -n` gate budget (default 2000 ms).
@@ -662,7 +662,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			return { abortedIds, abortErrors: ["Cannot abort watched delegations: nested tool execution is unavailable."] };
 		}
 		try {
-			const outcome = await toolCtx.executeTool("delegations", { action: "abort", id: targets });
+			const outcome = await toolCtx.executeTool("delegate", { action: "abort", id: targets });
 			if (outcome.isError) {
 				const detail = outcome.result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
 				abortErrors.push(`Abort failed: ${detail}`);
@@ -1106,7 +1106,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			"A throwing or non-primitive predicate is an error card and disarms the monitor.",
 			"With predicateKind 'bash' the predicate is a bash script, not a JS expression: it runs UNSANDBOXED as `bash -c` with your full user privileges — only register what your own agent wrote — reading the monitor snapshot JSON on stdin (never argv/env; env/cwd inherit), e.g. `grep -q '\"state\":\"completed\"'`. Exit 0 fires (trimmed stdout, ≤1 KB, is the fire value; empty means true), exit 1 is idle, any other exit / signal death / 5 s timeout / spawn failure is an error card and disarms.",
 			"Registering or draining a bash monitor can block up to 5 s per evaluation; expiry, cancel and shutdown kill in-flight bash children. On Windows bash must be on PATH (Git Bash or WSL).",
-			"Prefer monitors or wait over polling delegations list — repeated polling is blocked.",
+			"Prefer monitors or wait over polling delegate list — repeated polling is blocked.",
 		].join(" "),
 		parameters: MonitorParams,
 		execute,
@@ -1122,7 +1122,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			"(ids filter; default any live delegation), an armed monitor fires, the user sends a message, or the timeout",
 			"(default 5 min, max 600s, clamped). TIMEOUT ABORTS watched live delegations: ids scopes cancellation;",
 			"without ids, all live delegations in this session at expiry are targeted. Both running and queued work are",
-			"cancelled through delegations abort (SIGTERM then SIGKILL for children). Completion/input/mail/monitor wakes",
+			"cancelled through delegate abort (SIGTERM then SIGKILL for children). Completion/input/mail/monitor wakes",
 			"do not cancel work. Timeout returns observed 'timeout', abortedIds, abortErrors and a post-abort fleet snapshot;",
 			"blocked or unavailable cancellation is reported explicitly, never as success. With nothing",
 			"live and nothing armed (tui) it arms a `wait-timer` monitor for the timeout and keeps blocking — pass the",

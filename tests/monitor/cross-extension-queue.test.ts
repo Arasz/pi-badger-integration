@@ -156,7 +156,7 @@ function fireWaitTimeout(h: Harness): void {
   entry[1].fn();
 }
 
-describe("wait timeout cancels delegation work through delegations abort", () => {
+describe("wait timeout cancels delegation work through delegate abort", () => {
   test("unscoped timeout aborts running and queued runs, without spawning queued children", async () => {
     const h = makeCombinedHarness();
     startSession(h);
@@ -171,7 +171,7 @@ describe("wait timeout cancels delegation work through delegations abort", () =>
       expect(h.children[0]!.signals).toContain("SIGTERM");
       expect(result.details.abortedIds).toHaveLength(3);
       expect((result.details.records as Array<{ state: string }>).every((r) => r.state === "aborted")).toBe(true);
-      const cached = await tool(h.pi, "delegations")("tc-results", { action: "results" }, undefined, undefined, makeCtx(h));
+      const cached = await tool(h.pi, "delegate")("tc-results", { action: "results" }, undefined, undefined, makeCtx(h));
       expect(cached.details.results).toHaveLength(3);
       expect(h.scheduler.timers.size).toBe(0);
     } finally {
@@ -194,7 +194,7 @@ describe("wait timeout cancels delegation work through delegations abort", () =>
       expect(h.children).toHaveLength(2); // only the unwatched third member is promoted
       expect(h.children[0]!.signals).toContain("SIGTERM");
       expect(h.children[1]!.signals).toEqual([]);
-      const fleet = await tool(h.pi, "delegations")("tc-list", { action: "list" }, undefined, undefined, makeCtx(h));
+      const fleet = await tool(h.pi, "delegate")("tc-list", { action: "list" }, undefined, undefined, makeCtx(h));
       expect(fleet.content[0]!.text).toContain(`${ids[2]} architect`);
     } finally {
       for (const handler of h.pi.handlers.get("session_shutdown") ?? []) handler({}, makeCtx(h));
@@ -302,7 +302,7 @@ describe("P9: a queue-driven group settle wakes a pending wait through the real 
 });
 
 describe("P9: enforcement coexists with queue flow", () => {
-  test("queue actions never count; delegations list counting works mid-queue", async () => {
+  test("queue actions never count; delegate list counting works mid-queue", async () => {
     const h = makeCombinedHarness();
     const { pi } = h;
     startSession(h);
@@ -325,7 +325,7 @@ describe("P9: enforcement coexists with queue flow", () => {
     const fire = (input: Record<string, unknown>) => {
       let verdict: { block?: boolean; reason?: string } | undefined;
       for (const handler of listHandlers) {
-        const out = handler({ type: "tool_call", toolName: "delegations", input }, makeCtx(h));
+        const out = handler({ type: "tool_call", toolName: "delegate", input }, makeCtx(h));
         if (out && typeof out === "object" && (out as { block?: boolean }).block) verdict = out;
       }
       return verdict;

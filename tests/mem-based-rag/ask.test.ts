@@ -519,7 +519,7 @@ describe("(7) missing project/session id", () => {
 describe("(8) CHILD_EXCLUDED_TOOLS pin", () => {
 	test("ask excluded-tools duplicates subagent value (copy literal, no runtime import)", async () => {
 		expect(ASK_CHILD_EXCLUDED_TOOLS).toBe(CHILD_EXCLUDED_TOOLS);
-		expect(ASK_CHILD_EXCLUDED_TOOLS).toBe("delegate,delegations,queue,monitor,wait");
+		expect(ASK_CHILD_EXCLUDED_TOOLS).toBe("delegate,queue,monitor,wait");
 		clearRagEnv();
 		process.env["AI_BADGER_PROJECT_ID"] = "proj-ask-8";
 		const { pi, spawnCalls } = installAsk({ results: MEM_HITS, code: CODE_HITS }, async () => ({

@@ -372,7 +372,7 @@ export class DelegationRunner {
       return handle;
     }
     state.child = child;
-    // The record is the status surface's source of truth: the widget, `delegations list` and
+    // The record is the status surface's source of truth: the widget, `delegate list` and
     // R8's orphan pid probe all read it. Smoke row 52 (real child) caught this — FakeChild
     // has no pid, so the ungated suite never could.
     if (child.pid !== undefined) state.record.pid = child.pid;

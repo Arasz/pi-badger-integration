@@ -441,7 +441,7 @@ export interface PollGuardConfig {
 	readonly enabled: boolean;
 }
 
-/** Pure decision for one `delegations list|log` call: allow it, or block it with guidance. */
+/** Pure decision for one `delegate list|log` call: allow it, or block it with guidance. */
 export type PollingDecision = { readonly action: "allow" } | { readonly action: "block"; readonly reason: string };
 export type ManualWaitDecision = { readonly action: "allow" } | { readonly action: "block"; readonly reason: string };
 
@@ -488,7 +488,7 @@ export function pollingDecision(callTimestamps: readonly number[], now: number, 
 	const attempted = counted + 1;
 	const windowSeconds = Math.round(cfg.windowMs / 1000);
 	const reason =
-		`Manual polling blocked: this would be delegations list/log call #${attempted} within the last ${windowSeconds} s (limit ${cfg.max}). ` +
+		`Manual polling blocked: this would be delegate list/log call #${attempted} within the last ${windowSeconds} s (limit ${cfg.max}). ` +
 		`Stop polling — use wait to spend idle time, register a monitor to wake on a condition, or end turn and let a monitor-event wake you.`;
 	return { action: "block", reason };
 }

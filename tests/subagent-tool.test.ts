@@ -9,10 +9,10 @@
  * was witnessed against the current implementation, and the exact argv/orderings pinned here
  * are the ones the current code emits.
  *
- * Row 1 pins the planned argv (`--mode json`, denylist `delegate,delegations`) that lane P0
+ * Row 1 pins the planned argv (`--mode json`, denylist `delegate,queue,monitor,wait`) that lane P0
  * witnessed RED; lane P3 unskipped it in the same commit as the `delegationArgs` change that
  * satisfies it. Rows 2–3 pinned the pre-P3 argv details that legitimately changed (R3/R6:
- * JSON mode + the two-tool denylist): row 2's full-array expectations were amended consciously
+ * JSON mode + the excluded delegation surfaces): row 2's full-array expectations were amended consciously
  * to the new argv; row 3's structural assertions (task behind `--`, single `--`) hold unchanged.
  */
 
@@ -56,8 +56,8 @@ function persona(overrides: Partial<Persona> = {}): Persona {
 
 describe("delegationArgs", () => {
   // row 1 — witnessed RED in lane P0; unskipped in P3 together with the argv change that
-  // satisfies it (`--mode json` + the delegate,delegations denylist, R3/R6). Q-C5 (plan v2
-  // R5): the denylist is final — delegate,delegations,queue,monitor,wait.
+  // satisfies it (`--mode json` + the excluded delegation surfaces, R3/R6). Q-C5 (plan v2
+  // R5): the denylist is final — delegate,queue,monitor,wait (I2: one merged delegation tool).
   test("row 1 — argv carries JSON mode + new denylist", () => {
     const args = delegationArgs(persona({ systemPrompt: "" }), "Draft the plan");
 
@@ -67,7 +67,7 @@ describe("delegationArgs", () => {
       "json",
       "--no-session",
       "--exclude-tools",
-      "delegate,delegations,queue,monitor,wait",
+      "delegate,queue,monitor,wait",
     ]);
     const dash = args.indexOf("--");
     expect(dash).toBeGreaterThan(0);
@@ -86,7 +86,7 @@ describe("delegationArgs", () => {
       "json",
       "--no-session",
       "--exclude-tools",
-      "delegate,delegations,queue,monitor,wait",
+      "delegate,queue,monitor,wait",
       "--model",
       "openrouter/moonshotai/kimi-k2.6",
       "--append-system-prompt",
@@ -106,7 +106,7 @@ describe("delegationArgs", () => {
       "json",
       "--no-session",
       "--exclude-tools",
-      "delegate,delegations,queue,monitor,wait",
+      "delegate,queue,monitor,wait",
       "--model",
       "m",
       "--",

@@ -33,7 +33,7 @@ bun run check
 
 | Extension | What it adds |
 |---|---|
-| subagent | Background delegation to ai-badger personas (`delegate`, `delegations`, `queue`) |
+| subagent | Background delegation to ai-badger personas (`delegate`, `queue`) |
 | monitor | One-shot predicate monitors and the idle `wait` tool (`monitor`, `/monitors`) |
 | router-fallback | Session-only fallback over OpenRouter `:free`, Groq, Gemini on router failure (`/fallback`) |
 | decision-router | One Jev decision call per turn: additive tool selection, model tier, shadow skill routing (`/decisions`) |

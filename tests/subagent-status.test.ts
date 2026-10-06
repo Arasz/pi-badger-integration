@@ -32,7 +32,7 @@ import {
   DEFAULT_LOG_TAIL_BYTES,
   DEFAULT_WIDGET_KEY,
   DELEGATION_EVENTS_CHANNEL,
-  DELEGATIONS_TOOL_NAME,
+  DELEGATIONS_TOOL_DESCRIPTION,
   formatLogTail,
   MAX_LOG_TAIL_BYTES,
   MIN_LOG_TAIL_BYTES,
@@ -42,6 +42,7 @@ import {
   widgetLines,
   type PidLiveness,
   type ResolveContext,
+  type DelegationStatusApi,
 } from "../extensions/subagent/delegation-status.ts";
 import { GLOBAL_ID_PATTERN } from "../extensions/subagent/global-id.ts";
 import { appendIndexEntry } from "../extensions/subagent/global-index.ts";
@@ -145,6 +146,8 @@ interface Fixture {
 	widgetKey: string;
 	/** The result cache the status surface reads — rows seed it through `put`. */
 	cache: DelegationResultCache;
+	/** M1: the seam registerDelegationStatus returns — the suite drives runAction through it. */
+	statusApi: DelegationStatusApi;
 }
 
 function makeFixture(
@@ -169,7 +172,7 @@ function makeFixture(
 		...overrides,
 	});
 	const cache = new DelegationResultCache();
-	registerDelegationStatus(harness.pi, registry, {
+	const statusApi = registerDelegationStatus(harness.pi, registry, {
 		...(opts.widgetKey ? { widgetKey: opts.widgetKey } : {}),
 		...(opts.probePid ? { probePid: opts.probePid } : {}),
 		// Same injected clock the registry was built with — records carry its startedAt.
@@ -191,6 +194,7 @@ function makeFixture(
 		},
 		widgetKey: opts.widgetKey ?? DEFAULT_WIDGET_KEY,
 		cache,
+		statusApi,
 	};
 }
 
@@ -227,12 +231,11 @@ function lastWidget(fx: Fixture): [string, string[] | undefined] | undefined {
 	return widgets[widgets.length - 1];
 }
 
-/** The captured delegations tool (typed loosely; the suite only exercises its execute). */
+/** The management surface (M1): registerDelegationStatus's returned `runAction` — the merged
+ * `delegate` tool calls exactly this, so the fixture and production share one path. */
 function delegationsTool(fx: Fixture, ctxOverride?: Record<string, unknown>): { execute: (params: Record<string, unknown>) => ReturnType<ToolRecord["execute"]> } {
-	const tool = fx.harness.tools.get(DELEGATIONS_TOOL_NAME);
-	if (!tool) throw new Error("delegations tool not registered");
 	return {
-		execute: (params) => tool.execute("tool-call-id", params as never, undefined as never, undefined as never, (ctxOverride ?? fx.ctx) as never),
+		execute: (params) => fx.statusApi.runAction(params as never, (ctxOverride ?? fx.ctx) as never),
 	};
 }
 
@@ -480,10 +483,9 @@ describe("T76: delegations tool contract details (review CR10)", () => {
 			await expect(delegationsTool(fx).execute({ action, id: ["d-1"] })).rejects.toThrow(/single string id/);
 		}
 	});
-	test("the tool is registered under the exact name the child denylist names", () => {
+	test("the status module registers no tool of its own — the merged delegate tool owns the name (M1)", () => {
 		const fx = makeFixture();
-		expect(DELEGATIONS_TOOL_NAME).toBe("delegations");
-		expect(fx.harness.tools.has("delegations")).toBe(true);
+		expect(fx.harness.tools.size).toBe(0);
 	});
 
 	test("abort without an id is a usage error", async () => {
@@ -590,7 +592,7 @@ describe("T76: delegations tool contract details (review CR10)", () => {
 			const result = await delegationsTool(fx).execute({ action: "log", id: "d-1" });
 			const text = result.content[0]!.text;
 			expect(text).toContain("holds only the run header");
-			expect(text).toContain("delegations peek d-1"); // the surface that does have live output
+			expect(text).toContain("delegate peek d-1"); // the surface that does have live output
 			expect(text).not.toContain("showing the tail"); // the old lie
 			expect((result.details as { source?: string }).source).toBe("log");
 		} finally {
@@ -667,9 +669,8 @@ describe("M6/M7 — the delegations results action over the in-memory cache (f: 
 		seedResult(fx, "d-1", "sess-test", NOW + 1);
 		const { ctx } = makeCtx();
 		delete (ctx as Record<string, unknown>).sessionManager;
-		const tool = fx.harness.tools.get(DELEGATIONS_TOOL_NAME)!;
 
-		const result = await (tool.execute as ToolRecord["execute"])("tc", { action: "results" }, undefined as never, undefined as never, ctx as never);
+		const result = await delegationsTool(fx, ctx as Record<string, unknown>).execute({ action: "results" });
 
 		const details = result.details as { parentId: string | undefined; results: DelegationResultEntry[] };
 		expect(details.parentId).toBeUndefined();
@@ -687,10 +688,7 @@ describe("M6/M7 — the delegations results action over the in-memory cache (f: 
 				},
 			},
 		};
-		const tool = fx.harness.tools.get(DELEGATIONS_TOOL_NAME)!;
-		const error = await (tool.execute as ToolRecord["execute"])("tc", { action: "results" }, undefined as never, undefined as never, throwingCtx as never).catch(
-			(caught: unknown) => caught,
-		);
+		const error = await delegationsTool(fx, throwingCtx).execute({ action: "results" }).catch((caught: unknown) => caught);
 
 		expect(error).toBeInstanceOf(Error);
 		expect((error as Error).message).toContain("cannot determine the current session — pass an id");
@@ -710,14 +708,14 @@ describe("M6/M7 — the delegations results action over the in-memory cache (f: 
 
 	test("a surface registered without the resultCache seam answers loudly and never crashes on the missing reads", async () => {
 		const fx = makeFixture();
-		// The seam is optional by design (staleRuns pattern) — re-register without it; the fake
-		// harness keys tools by name, so this row's surface replaces the fixture's.
-		registerDelegationStatus(fx.harness.pi as never, fx.registry, { now: () => NOW });
+		// The seam is optional by design (staleRuns pattern) — re-register without it and drive
+		// the RETURNED runAction (M1): there is no tool lookup left to replace.
+		const replaced = registerDelegationStatus(fx.harness.pi as never, fx.registry, { now: () => NOW });
 
-		const noId = await delegationsTool(fx).execute({ action: "results" });
+		const noId = await replaced.runAction({ action: "results" } as never, fx.ctx as never);
 		expect(String(noId.content[0]!.text)).toContain("no cached results");
 
-		const unknown = await delegationsTool(fx).execute({ action: "results", id: "d-9" });
+		const unknown = await replaced.runAction({ action: "results", id: "d-9" } as never, fx.ctx as never);
 		expect(String(unknown.content[0]!.text)).toContain("not in the cache (last 8)");
 	});
 
@@ -732,38 +730,36 @@ describe("M6/M7 — the delegations results action over the in-memory cache (f: 
 		expect(queued.content[0]!.text).toBe("delegation d-2: no cached result yet (state: queued)");
 	});
 
-	test("results with an id that settled outside the cache window → 'not in the cache (last 8) — the run may predate the window; use delegations list'", async () => {
+	test("results with an id that settled outside the cache window → 'not in the cache (last 8) — the run may predate the window; use delegate list'", async () => {
 		const fx = makeFixture();
 		await startBackground(fx, "d-1");
 		fx.children[0]!.exit(0);
 
 		const result = await delegationsTool(fx).execute({ action: "results", id: "d-1" });
 		expect(result.content[0]!.text).toBe(
-			"delegation d-1: not in the cache (last 8) — the run may predate the window; use delegations list",
+			"delegation d-1: not in the cache (last 8) — the run may predate the window; use delegate list",
 		);
 	});
 
-	test("an unknown action is a usage error naming the full set: list, log, abort, results", async () => {
+	test("an unknown action is a usage error naming the full set", async () => {
 		const fx = makeFixture();
 		await expect(delegationsTool(fx).execute({ action: "wait" } as never)).rejects.toThrow(
-			"delegations action must be one of list, log, abort, results",
+			"delegate action must be one of list, log, abort, results, peek, resolve",
 		);
 	});
 
-	test("the delegations description documents the results action and the last-8 window", () => {
-		const fx = makeFixture();
-		const description = String((fx.harness.tools.get(DELEGATIONS_TOOL_NAME) as unknown as { description: string }).description);
-		expect(description).toContain("results");
-		expect(description).toContain("last 8");
+	test("the merged tool's management description documents the results action and the last-8 window", () => {
+		expect(DELEGATIONS_TOOL_DESCRIPTION).toContain("results");
+		expect(DELEGATIONS_TOOL_DESCRIPTION).toContain("last 8");
 	});
 });
 
 // ------------------------------------------------------------------ T77: session-signals tick-defer (review A3/Q2i)
 
 describe("T77: session-signals tick-defer and the delegations watch-list entry", () => {
-	test("delegations is in the default watch list so `wait` is footer-visible", () => {
-		expect(parseToolNames({})).toEqual(["delegate", "delegations"]);
-		expect(parseToolNames({ PI_BADGER_DELEGATION_TOOLS: "  " })).toEqual(["delegate", "delegations"]);
+	test("delegate is the default watch list so blocking runs stay footer-visible (I1)", () => {
+		expect(parseToolNames({})).toEqual(["delegate"]);
+		expect(parseToolNames({ PI_BADGER_DELEGATION_TOOLS: "  " })).toEqual(["delegate"]);
 	});
 
 	test("a background receipt landing before the first tick never renders the footer", async () => {
@@ -962,7 +958,7 @@ describe("A3.4 — delegations resolve (local id ↔ global GUID)", () => {
 			await expect(delegationsTool(fx).execute({ action: "resolve", id: "d-99" })).rejects.toThrow(/unknown delegation id "d-99"/);
 			await expect(
 				delegationsTool(fx).execute({ action: "resolve", id: "01926b4a-2222-7000-8000-000000000002" }),
-			).rejects.toThrow(/delegations resolve/);
+			).rejects.toThrow(/delegate resolve/);
 			// Shape gate: neither `d-N` nor a GUID is named loudly without touching the disk.
 			for (const garbage of ["not-an-id", "d-", "d-1x", "..", "../../etc/passwd"]) {
 				await expect(delegationsTool(fx).execute({ action: "resolve", id: garbage })).rejects.toThrow(/unknown delegation id/);
@@ -1048,10 +1044,8 @@ describe("T89/T91 — timeout surfaces on the delegations tool (deferral pkg P2)
 		expect(String(list.content[0]!.text)).not.toContain("(timeout)");
 	});
 
-	test("T91 (delegations side): the description drops the no-automatic-timeout claim and names timeoutMs", () => {
-		const fx = makeFixture();
-		const tool = fx.harness.tools.get(DELEGATIONS_TOOL_NAME)!;
-		const description = String((tool as unknown as { description: string }).description);
+	test("T91 (management side): the description drops the no-automatic-timeout claim and names timeoutMs", () => {
+		const description = DELEGATIONS_TOOL_DESCRIPTION;
 
 		expect(description).not.toContain("no automatic per-run timeout");
 		expect(description).toContain("timeoutMs");
@@ -1388,6 +1382,9 @@ describe("P2 — delegations peek (live preview first, cached tail when settled)
 
     await fx.harness.commands.get("delegations")!.handler("peek d-1 --lines many", fx.ctx);
     expect(lastNotification(fx).type).toBe("warning");
+    // Exact command prefix: the pre-fix wording (bare "delegations peek --lines …") also
+    // contains the got-and-usage fragments, so pin the /delegations identity itself.
+    expect(lastNotification(fx).message).toContain("/delegations peek --lines needs a number");
     expect(lastNotification(fx).message).toContain('--lines needs a number (got "many")');
     expect(lastNotification(fx).message).toContain("usage: /delegations");
   });

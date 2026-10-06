@@ -302,7 +302,7 @@ describe("D-S4: non-shell tools and non-string commands never reach the predicat
 
     for (
       const [toolName, input] of [
-        ["delegations", { action: "list" }],
+        ["delegate", { action: "list" }],
         ["read", { path: "pi" }],
         ["delegate", { agent: "architect", task: "pi run" }],
       ] as Array<[string, Record<string, unknown>]>
@@ -312,6 +312,12 @@ describe("D-S4: non-shell tools and non-string commands never reach the predicat
 
     expect(notified).toHaveLength(0);
     expect(entriesOf(pi, "delegation-skip")).toHaveLength(0);
+
+    // Guard identity: the same registration blocks a shell pi spawn with the skip-guard
+    // reason — the silence above is the shell-tool predicate, not an unregistered handler.
+    expect(fireToolCall(pi, "bash", { command: "pi run --task x" }, ctxFor())).toEqual([
+      { block: true, reason: SKIP_BLOCK_MESSAGE },
+    ]);
   });
 
   test("bash calls without a string command are silent", () => {

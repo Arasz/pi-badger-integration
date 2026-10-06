@@ -192,7 +192,7 @@ export class DelegationRegistry {
       // rejection renders as an error result in P3 — never a receipt).
       return {
         ok: false,
-        reason: `${step.decision.reason} — wait for a running delegation to finish (the monitor extension's wait tool observes it) or abort one (delegations abort <id>), then retry`,
+        reason: `${step.decision.reason} — wait for a running delegation to finish (the monitor extension's wait tool observes it) or abort one (delegate abort <id>), then retry`,
       };
     }
     this.admission = step.state;
@@ -250,7 +250,7 @@ export class DelegationRegistry {
     if (step.decision.action === "reject") {
       // All-or-nothing: nothing was registered — every member gets the rejection verbatim
       // (with the same guidance start() appends, surfaced to callers unchanged).
-      const reason = `${step.decision.reason} — wait for a running delegation to finish (the monitor extension's wait tool observes it) or abort one (delegations abort <id>), then retry`;
+      const reason = `${step.decision.reason} — wait for a running delegation to finish (the monitor extension's wait tool observes it) or abort one (delegate abort <id>), then retry`;
       return requests.map(() => ({ ok: false as const, reason }));
     }
     this.admission = step.state; // the whole drain committed before any spawn (Q-B2)
@@ -338,7 +338,7 @@ export class DelegationRegistry {
   abort(id: string): void {
     const record = this.records.get(id);
     if (!record) {
-      throw new Error(`ai-badger: unknown delegation id "${id}" — use delegations list for current ids`);
+      throw new Error(`ai-badger: unknown delegation id "${id}" — use delegate list for current ids`);
     }
     if (isTerminal(record.state)) return; // idempotent — exactly one notification per run
     if (record.state === "queued") {
@@ -371,7 +371,7 @@ export class DelegationRegistry {
   abortMany(ids: string[]): string[] {
     const selected = new Set(ids);
     for (const id of selected) {
-      if (!this.records.has(id)) throw new Error(`ai-badger: unknown delegation id "${id}" — use delegations list for current ids`);
+      if (!this.records.has(id)) throw new Error(`ai-badger: unknown delegation id "${id}" — use delegate list for current ids`);
     }
     const live = [...this.records.values()].filter((record) => selected.has(record.id) && !isTerminal(record.state));
     const queued = live.filter((record) => record.state === "queued");

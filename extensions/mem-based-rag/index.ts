@@ -87,7 +87,7 @@ export type AskCardKind = "answer" | "skip" | "failure";
  * NO cross-extension runtime import so the two extensions never couple at load.
  * Pinned equal by tests/mem-based-rag/ask.test.ts (8).
  */
-export const ASK_CHILD_EXCLUDED_TOOLS = "delegate,delegations,queue,monitor,wait";
+export const ASK_CHILD_EXCLUDED_TOOLS = "delegate,queue,monitor,wait";
 
 /** Isolated child budget: spawn killed past this (default seam + injected opts). */
 export const ASK_CHILD_TIMEOUT_MS = 90000;

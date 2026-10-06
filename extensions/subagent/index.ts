@@ -38,7 +38,8 @@
  * settles aborted with abortReason "lost"; its card says so plainly ("stopped responding (no
  * output for 10m00s) and was aborted"). Silent child death is the defect class this extension
  * exists to end; the watchdog turns it into a normal terminal transition instead of a run that
- * stays `running` in every surface forever. Around the watchdog: the delegations tool probes
+ * stays `running` in every surface forever. Around the watchdog: the delegate tool's management
+ * actions probe
  * the pid of every running record (alive / unknown / lost (dead pid), report-only, RR3) and,
  * when the registry is empty, reconstructs stale runs from the log dir so a dead runner
  * generation still leaves a trace (RR4). A lost run's log has no `exit` line, so it is
@@ -80,7 +81,7 @@ import {
   type StartOutcome,
 } from "./delegation-registry.ts";
 import type { DelegationNote, DelegationProgress, SpawnFn } from "./delegation-runner.ts";
-import { registerDelegationStatus } from "./delegation-status.ts";
+import { registerDelegationStatus, DelegationActionFields, DELEGATIONS_TOOL_DESCRIPTION, type DelegationActionParams } from "./delegation-status.ts";
 import { registerDelegationSkipGuard } from "./delegation-skip-guard.ts";
 import { newGlobalId } from "./global-id.ts";
 import { appendIndexEntry } from "./global-index.ts";
@@ -93,13 +94,9 @@ import { Type, type Static } from "typebox";
 /** The tool the LLM calls. Also excluded from the child, so a delegation cannot re-delegate. */
 export const TOOL_NAME = "delegate";
 
-/** The plural status tool P4 registers (`delegation-status.ts`); excluded from children too. */
-export const TOOL_NAME_PLURAL = "delegations";
-
 /** `--exclude-tools` value for children (R5, FINAL): a child can neither recurse delegation
- * nor reach the queue, monitor or wait surfaces. monitor/wait land with the monitor extension;
- * the value is final now per plan v2 R5 (six pin sites migrated in the same commit). */
-export const CHILD_EXCLUDED_TOOLS = `${TOOL_NAME},${TOOL_NAME_PLURAL},queue,monitor,wait`;
+ * (the one merged `delegate` tool, I1) nor reach the queue, monitor or wait surfaces. */
+export const CHILD_EXCLUDED_TOOLS = `${TOOL_NAME},queue,monitor,wait`;
 
 /** Where adjust_agents.py writes, relative to the project root. */
 export const AGENTS_DIR = [".pi", "agents"];
@@ -353,8 +350,8 @@ function unknownPersonaMessage(agent: string, agentsDir: string, personas: Array
  *
  * `--mode json` turns the child's stdout into the JSON event stream delegation-core parses —
  * that is what makes live progress, usage and answer extraction possible (R3). `--no-session`
- * keeps a delegation out of the session store; `--exclude-tools delegate,delegations` removes
- * both call types from the child so delegation cannot recurse; `--append-system-prompt` carries
+ * keeps a delegation out of the session store; `--exclude-tools delegate,queue,monitor,wait` removes
+ * the delegation surface from the child so delegation cannot recurse; `--append-system-prompt` carries
  * the persona's body (pi appends it to the coding-assistant prompt rather than replacing it, so
  * the child keeps its tool guidance); `--` ends option parsing so a task starting with `-` is a
  * task.
@@ -498,7 +495,7 @@ export interface SubagentDeps {
 /** Receipt details (row 45, §4): the background tool result's `details`. */
 export interface ReceiptDetails {
   id: string;
-  /** PKG-3: the run's global GUID — the cross-project handle for `delegations resolve`. */
+  /** PKG-3: the run's global GUID — the cross-project handle for `delegate resolve`. */
   globalId?: string;
   agent: string;
   state: DelegationState;
@@ -713,7 +710,7 @@ export function reconstructFromLogDir(
   }
 
   // d-52 SHOULD-1: a report-shaped query must not retire evidence logs. Pruning is the
-  // caller's policy (session_start); the delegations stale query classifies prune-free.
+  // caller's policy (session_start); the delegate stale query classifies prune-free.
   let kept: LogDirEntry[] = entries;
   if (opts?.prune !== false) {
     const plan = pruneLogFiles(entries, now);
@@ -752,8 +749,8 @@ export function pidAlive(pid: number): boolean {
 // ------------------------------------------------------------------ tool schemas and results
 
 const DelegateParams = Type.Object({
-  agent: Type.String({ description: "Name of the ai-badger persona to delegate to" }),
-  task: Type.String({ description: "The task, stated so the persona can act on it alone" }),
+  agent: Type.Optional(Type.String({ description: "Name of the ai-badger persona to delegate to" })),
+  task: Type.Optional(Type.String({ description: "The task, stated so the persona can act on it alone" })),
   timeoutMs: Type.Optional(
     Type.Number({
       description:
@@ -766,7 +763,14 @@ const DelegateParams = Type.Object({
         "Absolute working directory for the delegated child. Personas are still read from this project's .pi/agents. Validated with stat; must be an existing directory.",
     }),
   ),
+  // I1/M6: the management half of the one schema — `action` absent keeps the delegate path.
+  ...DelegationActionFields,
 });
+
+/** The merged tool's usage guard (I1/M5): no action and a missing agent/task is loud — both
+ * parameters are named and nothing spawns. Exported so the one wording is not duplicated. */
+export const MISSING_DELEGATE_PARAMS_USAGE =
+  'ai-badger: delegate needs both "agent" and "task" to start a delegation, or an "action" (list/log/abort/results/peek/resolve) for management';
 
 /** The one content shape tool results return. */
 function text(body: string) {
@@ -910,7 +914,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     }
     // f: 2026-09-02 (option c): the structured result is cached at the delivery ENTRY, before
     // the batch-window branch — a note held inside an open window is already queryable via
-    // `delegations results`, and a sendMessage failure still leaves the result cached.
+    // `delegate results`, and a sendMessage failure still leaves the result cached.
     // flushHeldNotes/sendCards never put; they only read the cache back onto the cards.
     resultCache.put(enriched, { now });
     if (batchWindowTimer === undefined) {
@@ -975,7 +979,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       ? { emit: (transition: DelegationTransition) => pi.events.emit(TRANSITION_CHANNEL, transition) }
       : {}),
     // T73: ids allocate over the LIVE project log dir listing, past the highest id ever seen —
-    // a restarted session never reuses an id, so `delegations log d-N` stays unambiguous. The
+    // a restarted session never reuses an id, so `delegate log d-N` stays unambiguous. The
     // closure also excludes the registry's live records: a queued run has no log file yet, so
     // without that check, concurrent queueing (a 7-panel burst) would allocate the same id
     // twice — exposed by T95–T97 and fixed here, not in the frozen core allocator.
@@ -1026,7 +1030,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
 
   /** f: 2026-09-02 (option c): the in-memory result cache — ring of the LAST 8 structured
    * results, dual-indexed by delegation_id and parent_id. Filled at deliverNote's entry; read
-   * by the cards (details.result) and by the delegations tool's `results` action through the
+   * by the cards (details.result) and by the delegate tool's `results` action through the
    * status seam below. In-memory only: it dies with the session. */
   const resultCache = new DelegationResultCache();
 
@@ -1040,7 +1044,8 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     registry.shutdown();
   });
 
-  // W3 merge wiring (plan §5 interface freeze): the delegations tool, the /delegations command
+  // W3 merge wiring (plan §5 interface freeze): the management actions of the merged `delegate`
+  // tool, the /delegations command
   // and the background-run widget are P4's delegation-status.ts, wired here against its
   // frozen signature — the one instance of the registry this session constructed. RR4: the
   // status surface consults the log dir through the same reconstruction session_start uses,
@@ -1138,16 +1143,18 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       `separate pi process with its own context. Personas live in ${AGENTS_DIR.join("/")}/*.md;`,
       "call this with an unknown agent name to get the list of available ones.",
       "In the TUI the tool returns a receipt immediately and the result arrives as a followUp",
-      "message on its own — never poll for it (repeated delegations list/log is blocked). EVERY",
+      "message on its own — never poll for it (repeated delegate list/log is blocked). EVERY",
       "delegation enters the queue as a one-element serial group: on an idle system it starts",
       "immediately, otherwise it queues behind a blocked queue head (cap full, a mid-flight serial",
       "group, or a parallel group that cannot use a slot) — there is no other admission path; to",
       "spend idle time until results land, use the monitor extension's wait",
-      "tool (user input interrupts it) or register a monitor; to stop a run, delegations abort.",
+      "tool (user input interrupts it) or register a monitor; to stop a run, delegate abort.",
       "A wait timeout aborts its watched live delegations (ids scopes cancellation; without ids it targets the whole session).",
       "Headless modes still block: there the result IS the tool result. A run is unbounded unless",
       "you pass timeoutMs, which bounds the run's wall-clock time and aborts it on expiry; use",
-      "the delegations tool to inspect or abort running delegations.",
+      "the delegate tool's management actions (list/log/abort/results/peek/resolve) to inspect or abort running delegations.",
+      // I1/M6: the management half of the one tool's description.
+      DELEGATIONS_TOOL_DESCRIPTION,
     ].join(" "),
     parameters: DelegateParams,
 
@@ -1164,6 +1171,18 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     },
 
     async execute(toolCallId, params, signal, onUpdate, ctx) {
+      // I1/M11: dispatch rides on action PRESENCE only. `action === undefined` is the unchanged
+      // delegate path, so `{agent: "list"}` still delegates to a persona named `list`; pi's
+      // Type.Union rejects `action: ""` before execute, so there is deliberately no
+      // empty-string branch here.
+      if (params.action !== undefined) {
+        return statusApi.runAction(params as DelegationActionParams, ctx);
+      }
+      const agent = params.agent;
+      const task = params.task;
+      if (agent === undefined || task === undefined) {
+        throw new Error(MISSING_DELEGATE_PARAMS_USAGE);
+      }
       const toolCtx = ctx as unknown as DelegateToolContext;
       const scan = scanPersonas(toolCtx.cwd);
       const agentsDir = scan.missingDir ?? join(toolCtx.cwd, ...AGENTS_DIR);
@@ -1173,7 +1192,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         toolCtx.ui.notify(message, "warning");
         return {
           content: text(message),
-          details: { agent: params.agent, exitCode: null, agentsDir, errors: [] } satisfies BlockingDetails,
+          details: { agent, exitCode: null, agentsDir, errors: [] } satisfies BlockingDetails,
         };
       }
       for (const error of scan.errors) {
@@ -1183,13 +1202,13 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
         toolCtx.ui.notify(`ai-badger: duplicate persona — ${duplicate}`, "warning");
       }
 
-      const persona = scan.personas.find((p) => p.name === params.agent);
+      const persona = scan.personas.find((p) => p.name === agent);
       if (!persona) {
-        const message = unknownPersonaMessage(params.agent, agentsDir, scan.personas);
+        const message = unknownPersonaMessage(agent, agentsDir, scan.personas);
         toolCtx.ui.notify(message, "warning");
         return {
           content: text(message),
-          details: { agent: params.agent, exitCode: null, agentsDir, errors: scan.errors } satisfies BlockingDetails,
+          details: { agent, exitCode: null, agentsDir, errors: scan.errors } satisfies BlockingDetails,
         };
       }
 
@@ -1213,7 +1232,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       // result arrives as a followUp on its own. There is no opt-out: the `background` param
       // is gone (a stale key is stripped by prepareArguments before validation), so nothing
       // here reads it — ordered work belongs to the queue tool, idle waiting to the monitor
-      // extension's wait tool, stopping runs to delegations abort.
+      // extension's wait tool, stopping runs to delegate abort.
       // R2: background iff ctx.mode === "tui" (NOT hasUI — rpc has UI and still blocks).
       // Headless modes stay fully blocking: there the result IS the tool result.
       const wantsBackground = toolCtx.mode === "tui";
@@ -1231,7 +1250,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       });
       if (resolution.levelWarning) toolCtx.ui.notify(`ai-badger: ${resolution.levelWarning}`, "warning");
       if (resolution.modelWarning) toolCtx.ui.notify(`ai-badger: ${resolution.modelWarning}`, "warning");
-      const args = delegationArgs(persona, params.task, model, loaded.registry);
+      const args = delegationArgs(persona, task, model, loaded.registry);
       const invocation = piInvocation(args);
       const fallbackArgs = fallbackArgsFor(invocation.args, persona, model, loaded.registry);
       let sessionId: string | undefined;
@@ -1252,7 +1271,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       // "queue add/add-parallel keep explicit group semantics").
       const outcome = await registry.start({
         agent: persona.name,
-        task: params.task,
+        task,
         args: invocation.args,
         ...(fallbackArgs !== undefined ? { fallbackArgs } : {}),
         command: invocation.command,
@@ -1293,8 +1312,9 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     },
   });
 
-  // The single registry instance for this runtime — reachable for the P4 status surface, which
-  // the orchestrator wires here at merge: registerDelegationStatus(pi, registry).
+  // The single registry instance for this runtime — the P4 status surface is already wired
+  // against it above (registerDelegationStatus(pi, registry, …), the W3 seam), and the
+  // returned registry is that same instance, so every consumer sees one registry.
   return { registry };
 
   // ------------------------------------------------------------------ result builders

@@ -180,7 +180,7 @@ export interface DelegationRecord {
   modelFallback?: string;
   /** P2 live answer preview: the capped in-memory tail of streamed assistant text
    * (text_delta deltas + message_end text blocks), stamped by the runner per event while the
-   * run is live; `delegations peek` reads it. Absent until the first assistant text lands. */
+   * run is live; `delegate peek` reads it. Absent until the first assistant text lands. */
   answerPreview?: string;
 }
 
@@ -834,7 +834,7 @@ export const RUN_ID_PREFIX = "d-";
 /**
  * Next run id over the existing log-dir listing (T53, R10 review CR1): always past the
  * highest id ever seen, never into a gap — `d-1,d-3` allocates `d-4`, not `d-2`, so an id is
- * never reused after its log was pruned and `delegations log d-2` stays unambiguous.
+ * never reused after its log was pruned and `delegate log d-2` stays unambiguous.
  * `exists` re-checks the chosen name against the live directory (allocation race); it
  * receives the bare candidate id. Ids sort lexicographically == numerically only below
  * d-10; callers should not rely on ordering — `startedAt` is the ordering.
@@ -900,7 +900,7 @@ export function extractAnswer(events: ChildEvent[], exitCode: number | null | un
  * shared record without bound. */
 export const PEEK_PREVIEW_MAX_CHARS = 3000;
 
-/** `delegations peek` line count: clamp range and default (mirrors the log-tail clamp). */
+/** `delegate peek` line count: clamp range and default (mirrors the log-tail clamp). */
 export const MIN_PEEK_LINES = 1;
 export const MAX_PEEK_LINES = 100;
 export const DEFAULT_PEEK_LINES = 20;

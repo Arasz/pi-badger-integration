@@ -4,6 +4,9 @@
  * factory wiring driven through a fake pi. Each test names the failure mode it targets.
  */
 import { beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	DelegationTracker,
 	default as sessionSignals,
@@ -13,6 +16,8 @@ import {
 	shouldInterrupt,
 	type MarkerName,
 } from "../../extensions/session-signals/index.ts";
+import subagent from "../../extensions/subagent/index.ts";
+import { createFakePi } from "../helpers/fake-pi.ts";
 
 describe("marker grammar: meaning and importance are split", () => {
 	test("every base marker parses with its long and short alias", () => {
@@ -135,15 +140,28 @@ describe("status rendering: footer text or an explicit clear", () => {
 });
 
 describe("tool-name source: env override or the default delegation tools", () => {
-	test("default watches both ai-badger delegation tools (T77: delegations so wait is visible)", () => {
-		expect(parseToolNames({})).toEqual(["delegate", "delegations"]);
-		expect(parseToolNames({ PI_BADGER_DELEGATION_TOOLS: "  " })).toEqual(["delegate", "delegations"]);
+	test("delegate is the default watch tool (I1: one merged tool)", () => {
+		expect(parseToolNames({})).toEqual(["delegate"]);
+		expect(parseToolNames({ PI_BADGER_DELEGATION_TOOLS: "  " })).toEqual(["delegate"]);
+	});
+
+	test("every default name is a registered tool (S11: the defaults never name a removed tool)", () => {
+		const pi = createFakePi();
+		const logDir = mkdtempSync(join(tmpdir(), "aib-session-signals-tools-"));
+		try {
+			subagent(pi as never, { logDir, projectKey: "sig", now: () => pi.clock.now, escalateAfterMs: 0 });
+			for (const name of parseToolNames({})) {
+				expect(pi.tools.has(name)).toBe(true);
+			}
+		} finally {
+			rmSync(logDir, { recursive: true, force: true });
+		}
 	});
 
 	test("override is a comma-separated list; empty entries drop out; a fully empty value falls back", () => {
 		expect(parseToolNames({ PI_BADGER_DELEGATION_TOOLS: "delegate, spawn , task" }))
 			.toEqual(["delegate", "spawn", "task"]);
-		expect(parseToolNames({ PI_BADGER_DELEGATION_TOOLS: ",," })).toEqual(["delegate", "delegations"]);
+		expect(parseToolNames({ PI_BADGER_DELEGATION_TOOLS: ",," })).toEqual(["delegate"]);
 	});
 });
 
