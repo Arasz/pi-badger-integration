@@ -93,13 +93,9 @@ import { Type, type Static } from "typebox";
 /** The tool the LLM calls. Also excluded from the child, so a delegation cannot re-delegate. */
 export const TOOL_NAME = "delegate";
 
-/** The plural status tool P4 registers (`delegation-status.ts`); excluded from children too. */
-export const TOOL_NAME_PLURAL = "delegations";
-
 /** `--exclude-tools` value for children (R5, FINAL): a child can neither recurse delegation
- * nor reach the queue, monitor or wait surfaces. monitor/wait land with the monitor extension;
- * the value is final now per plan v2 R5 (six pin sites migrated in the same commit). */
-export const CHILD_EXCLUDED_TOOLS = `${TOOL_NAME},${TOOL_NAME_PLURAL},queue,monitor,wait`;
+ * (the one merged `delegate` tool, I1) nor reach the queue, monitor or wait surfaces. */
+export const CHILD_EXCLUDED_TOOLS = `${TOOL_NAME},queue,monitor,wait`;
 
 /** Where adjust_agents.py writes, relative to the project root. */
 export const AGENTS_DIR = [".pi", "agents"];
