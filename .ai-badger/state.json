@@ -17,7 +17,9 @@
       "followUps": [
         "pi 1.0.4 landed upstream mid-task (partial publish briefly 404ed pi-agent-core/pi-telemetry 1.0.4 tarballs and failed CI's global install once; rerun green). CI's global install resolves ^1.0.3 ranges, so it now mixes 1.0.3 with 1.0.4 subpackages; the next changelog-integration task must assess 1.0.4",
         "router-fallback's default-free-model chain has no catalog-parity test, so model rotations are invisible to CI (minimax/minimax-m3:free is already absent and degrades cleanly via resolveTargets)",
-        "The Copilot review round does not run on this repo (zero reviews and inline comments on PRs 40-44); the internal plan, join and phase-4 reviews are the recorded gates"
+        "The Copilot review round does not run on this repo (zero reviews and inline comments on PRs 40-44); the internal plan, join and phase-4 reviews are the recorded gates",
+        "Phase-6 doc audit F4: the pi instruction files (.github/instructions/pi.instructions.md, .ai-badger/instructions/pi.instructions.md) name pi 0.99.1/0.84.3 as their measurement basis with a re-measure caveat; two upgrades (1.0.0, 1.0.3) have landed since, so re-measuring the MCP and hook lines is due",
+        "Phase-6 doc audit F5: research record D1 says a pin bump switches both CI and local suite runs; locally the harness resolves pi from the user's global install, which a pin bump does not refresh \u2014 correct the wording when the record is next touched"
       ]
     },
     {
