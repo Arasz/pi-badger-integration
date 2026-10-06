@@ -443,6 +443,43 @@ describe("T75: the widget renders background/queued runs only (review CR17)", ()
 // ------------------------------------------------------------------ T76: delegations tool contract details
 
 describe("T76: delegations tool contract details (review CR10)", () => {
+	test("abort accepts a scoped array, deduplicates ids, and leaves other runs alive", async () => {
+		const fx = makeFixture();
+		try {
+			await startBackground(fx, "d-1");
+			await startBackground(fx, "d-2");
+			const result = await delegationsTool(fx).execute({ action: "abort", id: ["d-1", "d-1"] });
+			expect((result.details as { abortedIds: string[] }).abortedIds).toEqual(["d-1"]);
+			expect(fx.registry.get("d-1")?.state).toBe("aborted");
+			expect(fx.registry.get("d-2")?.state).toBe("running");
+			expect(fx.children[1]!.signals).toEqual([]);
+		} finally {
+			fx.registry.shutdown();
+			fx.harness.fire("session_shutdown", {}, fx.ctx);
+		}
+	});
+
+	test("a malformed or unknown scoped abort fails before cancelling any run", async () => {
+		const fx = makeFixture();
+		try {
+			await startBackground(fx, "d-1");
+			for (const id of [[], ["all"], [""], ["d-1", "unknown"]]) {
+				await expect(delegationsTool(fx).execute({ action: "abort", id })).rejects.toThrow();
+			}
+			expect(fx.registry.get("d-1")?.state).toBe("running");
+			expect(fx.children[0]!.signals).toEqual([]);
+		} finally {
+			fx.registry.shutdown();
+			fx.harness.fire("session_shutdown", {}, fx.ctx);
+		}
+	});
+
+	test("non-abort actions reject array ids rather than silently ignoring them", async () => {
+		const fx = makeFixture();
+		for (const action of ["list", "log", "peek", "results", "resolve"]) {
+			await expect(delegationsTool(fx).execute({ action, id: ["d-1"] })).rejects.toThrow(/single string id/);
+		}
+	});
 	test("the tool is registered under the exact name the child denylist names", () => {
 		const fx = makeFixture();
 		expect(DELEGATIONS_TOOL_NAME).toBe("delegations");

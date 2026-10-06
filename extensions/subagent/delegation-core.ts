@@ -672,7 +672,7 @@ export function admitRequest(
  * batch-commit-before-spawn invariant, Q-B2): a synchronous settle inside a spawn finds every
  * admitted id already in `running`.
  */
-function drainAdmission(
+export function drainAdmission(
   state: GroupAdmissionState,
   caps: AdmissionCaps,
 ): { state: GroupAdmissionState; admitted: string[] } {

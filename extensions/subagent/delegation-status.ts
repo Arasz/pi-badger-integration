@@ -582,7 +582,7 @@ export function registerDelegationStatus(
 			[Type.Literal("list"), Type.Literal("log"), Type.Literal("abort"), Type.Literal("results"), Type.Literal("peek"), Type.Literal("resolve")],
 			{ description: "list: every delegation with its state; log: tail one run's log (a running run's file holds only its run header, so log answers with the in-memory live preview until it settles); abort: stop one run or all; results: one delegation's cached structured result, or (without an id) every cached result this session parented; peek: the answer tail — the cached output for settled runs, the live preview while running; resolve: a local run id's global GUID, or a global GUID's run/project/log — the cross-project lookup" },
 		),
-		id: Type.Optional(Type.String({ description: 'Run id for log/abort/peek/results (abort also accepts "all"; results without an id means this session); resolve accepts a local run id or a global GUID' })),
+		id: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String(), { minItems: 1 })], { description: 'Run id for log/abort/peek/results; abort also accepts "all" or an array of run ids for atomic scoped cancellation. Other actions require a string. Results without an id means this session; resolve accepts a local run id or a global GUID.' })),
 		bytes: Type.Optional(Type.Number({ description: `log: tail size in bytes (${MIN_LOG_TAIL_BYTES}–${MAX_LOG_TAIL_BYTES}, default ${DEFAULT_LOG_TAIL_BYTES})` })),
 		lines: Type.Optional(Type.Number({ description: "peek: answer tail in lines (1–100, default 20)" })),
 	});
@@ -593,6 +593,9 @@ export function registerDelegationStatus(
 	}
 
 	async function runAction(params: DelegationsParams): Promise<{ content: Array<{ type: "text"; text: string }>; details: unknown }> {
+		if (params.action !== "abort" && Array.isArray(params.id)) {
+			throw new Error(`delegations ${params.action} requires a single string id, not an array`);
+		}
 		switch (params.action) {
 			case "list": {
 				const records = [...registry.list()].sort((a, b) => a.startedAt - b.startedAt);
@@ -633,6 +636,13 @@ export function registerDelegationStatus(
 				});
 			}
 			case "abort": {
+				if (Array.isArray(params.id)) {
+					if (params.id.length === 0 || params.id.some((id) => typeof id !== "string" || !id.trim() || id.trim() === "all")) {
+						throw new Error("delegations abort needs a non-empty array of run ids (not 'all')");
+					}
+					const abortedIds = registry.abortMany(params.id.map((id) => id.trim()));
+					return textResult(`abort requested for ${abortedIds.length} live delegation(s)`, { abortedIds });
+				}
 				if (typeof params.id !== "string" || !params.id.trim()) {
 					throw new Error(`delegations abort needs a run id, or "all" — e.g. delegations abort d-3 or delegations abort all`);
 				}
@@ -709,12 +719,12 @@ export function registerDelegationStatus(
 			"Query and manage background subagent delegations. Actions:",
 			"list (every delegation with its state),",
 			"log id (bounded tail of a run's log file plus the full log path),",
-			'abort id|"all" (stop one delegation or every live one),',
+			'abort id|ids|"all" (stop one delegation, an array of run ids atomically, or every live one),',
 			"results [id] (one delegation's cached structured result — without an id, every result this session parented; the cache keeps the last 8 results and dies with the session).",
 			"peek id [lines N] (the answer tail: the cached output for settled runs, the live preview while running).",
 			"resolve id|guid (a local run id's global GUID, or a global GUID's run, project and log file — the cross-project lookup; log/peek/abort keep local ids).",
 			"Completion results arrive as followUp messages on their own — never poll with list/log (repeated polling is blocked). There is NO wait verb (removed f: 2026-09-02 — it blocked the main loop and ignored user input): to spend waiting time use the monitor extension's wait tool (user input interrupts it) or register a monitor, or simply end your turn and let the followUps wake you.",
-			'A run is unbounded unless the delegate call passes timeoutMs: on expiry the run is aborted through the normal kill path and settles aborted (timeout) — use abort to stop one yourself.',
+			'Timeouts are aborting: delegate timeoutMs aborts that child; wait timeoutMs aborts its watched live delegations (ids scopes it; omitted ids watches the whole session). Use abort to stop work yourself.',
 		].join(" "),
 		parameters: DelegationsParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
