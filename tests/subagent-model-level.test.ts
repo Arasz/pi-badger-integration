@@ -257,7 +257,7 @@ describe("5b resolveLevel — pure level resolution", () => {
         high: FIXTURE.groups.high,
       },
     });
-    for (const id of ["opus", "openrouter/sonnet", "openrouter/a/b/c", "--model x", "openrouter/a/b c", ""]) {
+    for (const id of ["opus", "--model x", "openrouter/a/b c", ""]) {
       expect(() => resolveLevel(bad(id), { level: "low" }), String(id)).toThrow(/refus|emit|shape|pattern/i);
     }
   });
@@ -301,7 +301,7 @@ describe("5b explicit pin shape gate (M8/H4 — the d-324 class)", () => {
   test("every shape-failing pin is refused before emit; the level resolves instead, warned", () => {
     for (const bad of [
       "sonnet", "Opus", "OPUS", "haiku", "fable-5.1",
-      "openrouter/sonnet", "openrouter/", "openrouter", "openrouter/a/b/c", "openrouter/a/b c", "--model x",
+      "openrouter/", "openrouter", "openrouter/a/b c", "--model x",
     ]) {
       const r = resolveLevel(FIXTURE, { level: "low", model: bad });
       expect(r.model, bad).toBe("openrouter/z-ai/glm-5.3-flash");
@@ -423,15 +423,15 @@ describe("5b delegationArgs — level wiring (L1-D1..D5, T-NOPIN)", () => {
     expect(delegationArgs(tierPersona(), "t", undefined, FIXTURE)).not.toContain("--model");
   });
 
-  test("L1-D5 + H4: the value after --model always matches the tight openrouter shape", () => {
+  test("L1-D5 + H4: the value after --model always matches the provider/model shape", () => {
     for (const level of ["low", "medium", "high"] as const) {
       const value = modelOf(delegationArgs(tierPersona({ level }), "t", "openrouter/s/p", FIXTURE));
       expect(value ?? `${level}: missing --model`).toMatch(MODEL_ID_PATTERN);
     }
-    // The bar itself: bare aliases (any case), single-segment ids, and over-long ids never match.
+    // The bar itself: bare aliases (any case), incomplete ids, and whitespace never match.
     for (const bad of [
       "opus", "Opus", "OPUS", "sonnet", "Sonnet", "haiku", "Haiku", "fable", "Fable-5.1", "FABLE",
-      "openrouter/sonnet", "openrouter/", "openrouter", "openrouter/a/b/c", "openrouter/a/b ",
+      "openrouter/", "openrouter", "openrouter/a/b ",
     ]) {
       expect(bad).not.toMatch(MODEL_ID_PATTERN);
     }

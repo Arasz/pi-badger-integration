@@ -1046,11 +1046,10 @@ export const VALID_LEVELS = ["low", "medium", "high"] as const;
 export type ModelLevel = (typeof VALID_LEVELS)[number];
 
 /**
- * Tight model-id shape (M8): `openrouter/` + two bounded segments — no whitespace, no
- * leading dash, no shell metacharacters. A resolved id that fails this is refused, never
- * emitted into `--model` argv.
+ * Fully-qualified provider/model shape (M8), with one or more nonempty model segments.
+ * The absolute-end assertion rejects trailing newlines; matching IDs pass to argv unchanged.
  */
-export const MODEL_ID_PATTERN = /^openrouter\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+export const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9~@][A-Za-z0-9._~@:+-]*)+$(?![\s\S])/;
 
 /**
  * Minimal structural view of one registry member. Member-objects only (T-FAKESHAPE: never
