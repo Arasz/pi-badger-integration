@@ -641,10 +641,50 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		busTimer = undefined;
 	};
 
+	/** Timeout cancellation goes through pi's nested tool API: validation, permissions and
+	 * tool hooks still apply. One atomic abort request prevents queued cancellation targets
+	 * from starting when another target releases admission. */
+	async function abortWaitScope(ctx: unknown, ids: string[] | undefined): Promise<{ abortedIds: string[]; abortErrors: string[] }> {
+		const live = fleetSnapshot().filter((view) => !isTerminalState(view.state) && (!ids || ids.includes(view.id)));
+		const targets = live.map((view) => view.id);
+		const abortedIds: string[] = [];
+		const abortErrors: string[] = [];
+		if (targets.length === 0) return { abortedIds, abortErrors };
+		// Structural subset of pi 1.0.3's ExtensionToolContext. Older host SDKs lack this
+		// member; runtime detection reports cancellation unavailable instead of lying.
+		const toolCtx = ctx as {
+			executeTool?: (name: string, args: unknown) => Promise<{
+				isError: boolean;
+				result: { content: Array<{ type: string; text?: string }>; details?: unknown };
+			}>;
+		} | undefined;
+		if (typeof toolCtx?.executeTool !== "function") {
+			return { abortedIds, abortErrors: ["Cannot abort watched delegations: nested tool execution is unavailable."] };
+		}
+		try {
+			const outcome = await toolCtx.executeTool("delegations", { action: "abort", id: targets });
+			if (outcome.isError) {
+				const detail = outcome.result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+				abortErrors.push(`Abort failed: ${detail}`);
+			} else {
+				const details = outcome.result.details as { abortedIds?: unknown } | undefined;
+				if (Array.isArray(details?.abortedIds) && details.abortedIds.every((id) => typeof id === "string")) {
+					abortedIds.push(...details.abortedIds);
+				} else {
+					abortErrors.push("Abort returned no acknowledgement; cancellation could not be confirmed.");
+				}
+			}
+		} catch (error) {
+			abortErrors.push(`Abort failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		return { abortedIds, abortErrors };
+	}
+
 	function waitResult(
 		observed: "delegation" | "monitor" | "input" | "timeout" | "empty" | "aborted" | "mail",
 		startedAt: number,
 		records?: DelegationView[],
+		cancellation?: { abortedIds: string[]; abortErrors: string[] },
 	): ToolResult {
 		const waitedMs = Math.max(0, now() - startedAt);
 		const first = records?.[0];
@@ -652,7 +692,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			delegation: `Wait resolved: delegation ${first?.id ?? "?"} settled (${first?.state ?? "?"}) after ${formatMonitorLifetime(waitedMs)}.`,
 			monitor: `Wait resolved: a monitor fired after ${formatMonitorLifetime(waitedMs)} — see the monitor-event card for the snapshot (not duplicated here).`,
 			input: `Wait resolved: the user sent a message after ${formatMonitorLifetime(waitedMs)}.`,
-			timeout: `Wait ended: timeout after ${formatMonitorLifetime(waitedMs)} — no watched delegation settled; fleet snapshot in details.`,
+			timeout: `Wait ended: timeout after ${formatMonitorLifetime(waitedMs)} — abort requested for ${cancellation?.abortedIds.length ?? 0} watched delegation(s); fleet snapshot in details.${cancellation?.abortErrors.length ? ` WARNING: ${cancellation.abortErrors.join("; ")}` : ""}`,
 			empty:
 				"Nothing to wait for — no live delegations and no armed monitors. Start a delegation (delegate) or arm a monitor (monitor register), then wait again.",
 			aborted: `Wait ended: aborted (the turn was aborted or the session is shutting down) after ${formatMonitorLifetime(waitedMs)}.`,
@@ -662,18 +702,19 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			observed,
 			waitedMs,
 			...(records !== undefined ? { records } : {}),
+			...(cancellation ?? {}),
 		});
 	}
 
 	const WaitParams = Type.Object({
 		ids: Type.Optional(
 			Type.Array(Type.String(), {
-				description: "delegate run ids to watch; default: every delegation — the FIRST settle resolves the wait",
+				description: "delegate run ids to watch and abort on timeout; default: every live delegation in this session — the FIRST settle resolves the wait",
 			}),
 		),
 		timeoutMs: Type.Optional(
 			Type.Number({
-				description: `give up after this long (default ${WAIT_DEFAULT_MS / 1000}s, max ${WAIT_MAX_MS / 1000}s, clamped) — resolves with a fleet snapshot, never an error`,
+				description: `abort watched delegations after this long (default ${WAIT_DEFAULT_MS / 1000}s, max ${WAIT_MAX_MS / 1000}s, clamped) — resolves with observed timeout, post-abort fleet snapshot and any abort errors`,
 			}),
 		),
 	});
@@ -720,7 +761,15 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 				if (wait.settled) return; // resolve-once (W-A3)
 				wait.settled = true;
 				cleanupWait(wait);
-				resolve(waitResult(observed, startedAt, records));
+				if (observed === "timeout") {
+					// Claim the wake and unsubscribe BEFORE abort emits terminal transitions.
+					// They still deliver completion cards, but must not relabel this timeout.
+					void abortWaitScope(ctx, wait.ids).then((cancellation) => {
+						resolve(waitResult("timeout", startedAt, fleetSnapshot(), cancellation));
+					});
+				} else {
+					resolve(waitResult(observed, startedAt, records));
+				}
 			};
 			wait.settle = finish;
 
@@ -737,7 +786,7 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			pendingWaits.add(wait);
 			armBusTick(); // the internal mail loop starts with the first pending wait
 			// 3. the input source is the persistent pi.on("input") observer;
-			// 4. the timeout — resolves with a snapshot, never an error.
+			// 4. the timeout — cancels the watched scope, then resolves with a snapshot.
 			wait.timer = scheduler.setTimeout(() => finish("timeout", fleetSnapshot()), timeoutMs);
 			// W-A5: the turn's abort signal ends the wait without an unhandled rejection.
 			if (signal) {
@@ -800,9 +849,11 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 			...(record.name !== undefined ? { name: record.name } : {}),
 			lifetimeMs: Math.max(0, now() - record.armedAt),
 		});
-		// W-A7: expiry is a monitor wake too — fired cards wake pending waits already, and the
-		// idle wait's timer monitor relies on this when its expiry wins the race against the
-		// wait's own timeout.
+		// Its own idle timer expiring is a timeout, even if it wins the timer race. It
+		// must cancel watched work that appeared after the initially empty fleet.
+		for (const wait of [...pendingWaits]) {
+			if (wait.timerMonitorId === id) wait.settle("timeout");
+		}
 		notifyWaitsOfMonitorFire();
 	};
 
@@ -1069,7 +1120,11 @@ export default function (pi: ExtensionAPI, deps: MonitorDeps = {}) {
 		description: [
 			"Spend idle time without polling: block this turn until the FIRST of — a watched delegation settles",
 			"(ids filter; default any live delegation), an armed monitor fires, the user sends a message, or the timeout",
-			"(default 5 min, max 600s, clamped — the timeout resolves with a fleet snapshot, never an error). With nothing",
+			"(default 5 min, max 600s, clamped). TIMEOUT ABORTS watched live delegations: ids scopes cancellation;",
+			"without ids, all live delegations in this session at expiry are targeted. Both running and queued work are",
+			"cancelled through delegations abort (SIGTERM then SIGKILL for children). Completion/input/mail/monitor wakes",
+			"do not cancel work. Timeout returns observed 'timeout', abortedIds, abortErrors and a post-abort fleet snapshot;",
+			"blocked or unavailable cancellation is reported explicitly, never as success. With nothing",
 			"live and nothing armed (tui) it arms a `wait-timer` monitor for the timeout and keeps blocking — pass the",
 			"wait time as timeoutMs; outside tui it resolves immediately with observed 'empty'.",
 			"Allowed in every mode. The result is a terse pointer: a monitor wake's payload rides the monitor-event card,",

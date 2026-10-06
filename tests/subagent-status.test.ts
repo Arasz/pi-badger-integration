@@ -279,6 +279,53 @@ describe("row 49: /delegations status command with a mixed fleet", () => {
 // ------------------------------------------------------------------ row 50: widget key distinct from session-signals status key
 
 describe("row 50: the widget key is distinct from session-signals' status key", () => {
+	test("queue-first delegations render immediately and clear when the group settles", async () => {
+		const fx = makeFixture();
+		try {
+			fx.harness.fire("session_start", {}, fx.ctx);
+			fx.harness.fire("tool_call", { toolName: "queue", toolCallId: "tc-queue", input: { action: "add" } }, fx.ctx);
+			await fx.registry.enqueueGroup([
+				startRequest({ id: "d-1", toolCallId: "tc-queue" }),
+				startRequest({ id: "d-2", toolCallId: "tc-queue" }),
+			], "serial");
+			fx.harness.fire("tool_result", { toolName: "queue", toolCallId: "tc-queue" }, fx.ctx);
+
+			expect(lastWidget(fx)?.[1]?.join("\n")).toContain("d-1 architect");
+			expect(lastWidget(fx)?.[1]?.join("\n")).toContain("1 queued");
+			fx.children[0]!.exit(0);
+			expect(lastWidget(fx)?.[1]?.join("\n")).toContain("d-2 architect");
+			fx.children[1]!.exit(0);
+			expect(lastWidget(fx)?.[1]).toBeUndefined();
+		} finally {
+			fx.registry.shutdown();
+			fx.harness.fire("session_shutdown", {}, fx.ctx);
+		}
+	});
+
+	test("session_start makes registry transitions visible before any status tool call", async () => {
+		const fx = makeFixture();
+		try {
+			fx.harness.fire("session_start", {}, fx.ctx);
+			await fx.registry.enqueueGroup([startRequest({ id: "d-1", toolCallId: "tc-queue" })], "serial");
+			expect(lastWidget(fx)?.[1]?.join("\n")).toContain("d-1 architect");
+		} finally {
+			fx.registry.shutdown();
+			fx.harness.fire("session_shutdown", {}, fx.ctx);
+		}
+	});
+
+	test("queue tool calls provide a fresh UI context without a prior delegate", async () => {
+		const fx = makeFixture();
+		try {
+			fx.harness.fire("tool_call", { toolName: "queue", toolCallId: "tc-queue", input: { action: "add-parallel" } }, fx.ctx);
+			await fx.registry.enqueueGroup([startRequest({ id: "d-1", toolCallId: "tc-queue" })], "parallel");
+			expect(lastWidget(fx)?.[1]?.join("\n")).toContain("d-1 architect");
+		} finally {
+			fx.registry.shutdown();
+			fx.harness.fire("session_shutdown", {}, fx.ctx);
+		}
+	});
+
 	test("default widget key is not the footer's 'pi-badger'", () => {
 		expect(DEFAULT_WIDGET_KEY).not.toBe("pi-badger");
 		expect(DEFAULT_WIDGET_KEY).toBe("pi-badger-delegations");
@@ -396,6 +443,43 @@ describe("T75: the widget renders background/queued runs only (review CR17)", ()
 // ------------------------------------------------------------------ T76: delegations tool contract details
 
 describe("T76: delegations tool contract details (review CR10)", () => {
+	test("abort accepts a scoped array, deduplicates ids, and leaves other runs alive", async () => {
+		const fx = makeFixture();
+		try {
+			await startBackground(fx, "d-1");
+			await startBackground(fx, "d-2");
+			const result = await delegationsTool(fx).execute({ action: "abort", id: ["d-1", "d-1"] });
+			expect((result.details as { abortedIds: string[] }).abortedIds).toEqual(["d-1"]);
+			expect(fx.registry.get("d-1")?.state).toBe("aborted");
+			expect(fx.registry.get("d-2")?.state).toBe("running");
+			expect(fx.children[1]!.signals).toEqual([]);
+		} finally {
+			fx.registry.shutdown();
+			fx.harness.fire("session_shutdown", {}, fx.ctx);
+		}
+	});
+
+	test("a malformed or unknown scoped abort fails before cancelling any run", async () => {
+		const fx = makeFixture();
+		try {
+			await startBackground(fx, "d-1");
+			for (const id of [[], ["all"], [""], ["d-1", "unknown"]]) {
+				await expect(delegationsTool(fx).execute({ action: "abort", id })).rejects.toThrow();
+			}
+			expect(fx.registry.get("d-1")?.state).toBe("running");
+			expect(fx.children[0]!.signals).toEqual([]);
+		} finally {
+			fx.registry.shutdown();
+			fx.harness.fire("session_shutdown", {}, fx.ctx);
+		}
+	});
+
+	test("non-abort actions reject array ids rather than silently ignoring them", async () => {
+		const fx = makeFixture();
+		for (const action of ["list", "log", "peek", "results", "resolve"]) {
+			await expect(delegationsTool(fx).execute({ action, id: ["d-1"] })).rejects.toThrow(/single string id/);
+		}
+	});
 	test("the tool is registered under the exact name the child denylist names", () => {
 		const fx = makeFixture();
 		expect(DELEGATIONS_TOOL_NAME).toBe("delegations");

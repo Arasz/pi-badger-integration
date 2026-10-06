@@ -105,6 +105,11 @@ function makeCtx(h: Harness, mode = "tui"): unknown {
     sessionManager: { getSessionId: () => "sess-p9" },
     model: undefined,
     signal: undefined,
+    // Production wait timeout uses pi's nested tool API, not a second registry.
+    executeTool: async (name: string, args: Record<string, unknown>) => ({
+      result: await tool(h.pi, name)("tc-nested", args, undefined, undefined, makeCtx(h)),
+      isError: false,
+    }),
   };
 }
 
@@ -143,6 +148,92 @@ function sentOf(pi: FakePi, customType: string): Array<{ message: Record<string,
 }
 
 // ------------------------------------------------------------------ the join
+
+function fireWaitTimeout(h: Harness): void {
+  const entry = [...h.scheduler.timers.entries()].find(([, timer]) => timer.ms === 5_000);
+  if (!entry) throw new Error("wait timeout was not armed");
+  h.scheduler.timers.delete(entry[0]);
+  entry[1].fn();
+}
+
+describe("wait timeout cancels delegation work through delegations abort", () => {
+  test("unscoped timeout aborts running and queued runs, without spawning queued children", async () => {
+    const h = makeCombinedHarness();
+    startSession(h);
+    try {
+      await tool(h.pi, "queue")("tc-q", { action: "add", agent: "architect", tasks: ["one", "two", "three"] }, undefined, undefined, makeCtx(h));
+      const pending = tool(h.pi, "wait")("tc-w", { timeoutMs: 5_000 }, undefined, undefined, makeCtx(h));
+      await Promise.resolve();
+      fireWaitTimeout(h);
+      const result = await pending;
+      expect(result.details.observed).toBe("timeout"); // abort transitions must not steal the wake
+      expect(h.children).toHaveLength(1);
+      expect(h.children[0]!.signals).toContain("SIGTERM");
+      expect(result.details.abortedIds).toHaveLength(3);
+      expect((result.details.records as Array<{ state: string }>).every((r) => r.state === "aborted")).toBe(true);
+      const cached = await tool(h.pi, "delegations")("tc-results", { action: "results" }, undefined, undefined, makeCtx(h));
+      expect(cached.details.results).toHaveLength(3);
+      expect(h.scheduler.timers.size).toBe(0);
+    } finally {
+      for (const handler of h.pi.handlers.get("session_shutdown") ?? []) handler({}, makeCtx(h));
+    }
+  });
+
+  test("scoped timeout removes watched queued work before killing its head and spares other runs", async () => {
+    const h = makeCombinedHarness();
+    startSession(h);
+    try {
+      const group = await tool(h.pi, "queue")("tc-q", { action: "add", agent: "architect", tasks: ["one", "two", "three"] }, undefined, undefined, makeCtx(h));
+      const ids = (group.details.tasks as Array<{ id: string }>).map((r) => r.id);
+      const pending = tool(h.pi, "wait")("tc-w", { ids: ids.slice(0, 2), timeoutMs: 5_000 }, undefined, undefined, makeCtx(h));
+      await Promise.resolve();
+      fireWaitTimeout(h);
+      const result = await pending;
+      expect(result.details.observed).toBe("timeout");
+      expect((result.details.abortedIds as string[]).slice().sort()).toEqual(ids.slice(0, 2).sort());
+      expect(h.children).toHaveLength(2); // only the unwatched third member is promoted
+      expect(h.children[0]!.signals).toContain("SIGTERM");
+      expect(h.children[1]!.signals).toEqual([]);
+      const fleet = await tool(h.pi, "delegations")("tc-list", { action: "list" }, undefined, undefined, makeCtx(h));
+      expect(fleet.content[0]!.text).toContain(`${ids[2]} architect`);
+    } finally {
+      for (const handler of h.pi.handlers.get("session_shutdown") ?? []) handler({}, makeCtx(h));
+    }
+  });
+
+  test.each([false, true])("parallel queued cancellation is atomic (scoped=%s)", async (scoped) => {
+    const h = makeCombinedHarness();
+    startSession(h);
+    try {
+      await tool(h.pi, "queue")("tc-running", { action: "add-parallel", agent: "architect", tasks: ["a", "b", "c"] }, undefined, undefined, makeCtx(h));
+      const queued = await tool(h.pi, "queue")("tc-queued", { action: "add-parallel", agent: "architect", tasks: ["d", "e"] }, undefined, undefined, makeCtx(h));
+      const ids = (queued.details.tasks as Array<{ id: string }>).map((r) => r.id);
+      const pending = tool(h.pi, "wait")("tc-w", { timeoutMs: 5_000, ...(scoped ? { ids } : {}) }, undefined, undefined, makeCtx(h));
+      await Promise.resolve();
+      fireWaitTimeout(h);
+      expect((await pending).details.observed).toBe("timeout");
+      expect(h.children).toHaveLength(3); // shrinking a parallel head must not start its remaining target
+      expect(h.children.every((child) => child.signals.includes("SIGTERM"))).toBe(!scoped);
+    } finally {
+      for (const handler of h.pi.handlers.get("session_shutdown") ?? []) handler({}, makeCtx(h));
+    }
+  });
+
+  test("input waking a wait does not cancel the delegation", async () => {
+    const h = makeCombinedHarness();
+    startSession(h);
+    try {
+      await tool(h.pi, "queue")("tc-q", { action: "add", agent: "architect", tasks: ["one"] }, undefined, undefined, makeCtx(h));
+      const pending = tool(h.pi, "wait")("tc-w", { timeoutMs: 5_000 }, undefined, undefined, makeCtx(h));
+      await Promise.resolve();
+      for (const handler of h.pi.handlers.get("input") ?? []) handler({ text: "continue", source: "interactive" }, makeCtx(h));
+      expect((await pending).details.observed).toBe("input");
+      expect(h.children[0]!.signals).toEqual([]);
+    } finally {
+      for (const handler of h.pi.handlers.get("session_shutdown") ?? []) handler({}, makeCtx(h));
+    }
+  });
+});
 
 describe("P9: a queue-driven group settle wakes a pending wait through the real wire", () => {
   test("queue add spawns the serial head; its settle resolves wait and delivers the completion card", async () => {

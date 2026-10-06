@@ -104,9 +104,10 @@ one-element serial group — on an idle system it starts immediately, otherwise 
 turn behind a blocked queue head (cap full, a mid-flight serial group, or a parallel group that cannot use a slot); the queue is the only admission path. In headless modes (`-p`, json, rpc) delegation stays **blocking** — the result
 is the tool result, byte-compatible with the pre-background contract, plus `details.usage`;
 there is no background opt-in to degrade, so the result carries no `degraded` key and no
-degrade line. There is no automatic wall-clock timeout: runs
-are unbounded unless the `delegate` call passes `timeoutMs` (clamped to 1 s–24 h; on expiry
-the run is aborted and settles as `aborted (timeout)`). The inactivity watchdog is
+degrade line. A `delegate` call can set `timeoutMs` (clamped to 1 s–24 h, counted
+from child spawn); expiry aborts that run as `aborted (timeout)`. A `wait` timeout
+also aborts its watched live runs, including queued work, using the normal abort
+path. Without either deadline there is no wall-clock limit. The inactivity watchdog is
 automatic: a child that emits no stream events for 10 minutes (default) is aborted and
 settles as `aborted (lost)`.
 
@@ -118,7 +119,8 @@ Checking on delegations:
   until the run settles),
   `peek <id> [--lines N]` (last N lines of the delegated task output, default 20, 1-100;
   settled runs read the cached answer, live runs read the in-memory preview, queued runs
-  report position), `abort <id|all>`, `results [id]` (the cached
+  report position), `abort <id|all>` (the tool also accepts an array of IDs for atomic
+  scoped cancellation), `results [id]` (the cached
   structured result — `{parent_id, delegation_id, task_summary, persona, input, output,
   timestamp}` — of one delegation, or, without an id, every result this session parented;
   an in-memory cache of the LAST 8 results that dies with the session), and
@@ -219,17 +221,34 @@ name, predicate excerpt, age, time left); `cancel <id>` disarms one, and argumen
 completion offers `cancel` plus the armed monitor ids. In headless modes it notifies
 nothing.
 
-The `wait` tool spends idle time without polling — and is allowed in every mode. It blocks
-the turn (the pending-tool idiom) until the FIRST of: a watched delegation settles (pass
-`ids` to scope the watch; the default is any live delegation), an armed monitor fires, the
-user sends a message, or the timeout passes (default 5 min, max 600 s, clamped). The
-tie-break is listener order (delegation → monitor → input → timeout) and the wait resolves
-exactly once. With nothing live and nothing armed it resolves immediately with
-`observed: "empty"` and guidance instead of idling. The result is a terse pointer
-(`details: {observed, waitedMs, records?}`) — a monitor wake's payload rides the
-monitor-event card and is never duplicated. A turn abort or session shutdown resolves the
-wait as `observed: "aborted"`; nothing sends after shutdown. Bus mail wakes a
-wait via its internal 1 s check; see `docs/howto/wait-check-loop.md`.
+The `wait` tool is allowed in every mode. Its pending promise resolves on the first
+watched delegation settling, monitor event, user input, bus mail, or timeout
+(default 5 min, maximum 600 s, clamped). **Timeout aborts watched live delegations.**
+Pass `ids` to limit both the watch and cancellation; omit it to target all live
+runs in this session at expiry, including work started after the wait began.
+Queued tasks are removed atomically before admission resumes. Running children
+receive SIGTERM, followed by SIGKILL if they do not close within the runner's grace
+period. Other wake sources do not cancel work.
+
+A timeout claims the wake before sending the abort request, so its own abort
+transitions cannot relabel the result as a delegation wake. It returns
+`details: {observed: "timeout", waitedMs, records, abortedIds, abortErrors}`;
+`records` is the post-request fleet snapshot, and `abortedIds` acknowledges
+accepted aborts, not OS process reaping. Cancellation uses pi's nested
+`delegations abort` tool call, preserving validation and permission hooks.
+Pi 1.0.3 supplies that API; an unavailable, blocked, or failed abort is reported
+in `abortErrors` and a warning in the result, never as successful cancellation.
+
+In TUI mode, an empty fleet with no monitors arms a visible `wait-timer` monitor
+and keeps waiting. Its expiry is still a timeout, even if it wins the timer race.
+Outside TUI, an empty fleet resolves immediately with `observed: "empty"`.
+Non-timeout results retain `{observed, waitedMs, records?}`. Monitor payloads
+ride their own cards. Turn abort and shutdown resolve as `observed: "aborted"`;
+new bus mail wakes the wait through its internal 1 s check.
+
+See [Wait for mail](../howto/wait-check-loop.md) and the
+[aborting-timeouts ADR](../work/2026-10-06-aborting-delegation-wait-timeouts-adr.md).
+<!-- trust:trustchecked evidence=extensions/monitor/index.ts:645 evidence=extensions/subagent/delegation-registry.ts:370 -->
 
 The monitor extension also enforces the no-polling rule: a `tool_call` observer counts
 `delegations list`/`log`/`results` calls (nothing else — `wait`, `abort`, `peek`, `queue` and `monitor`

@@ -204,6 +204,51 @@ describe("W-A1: delegation settles resolve the wait", () => {
 
 // ------------------------------------------------------------------ W-A2
 
+describe("timeout cancellation failures and idle timer race", () => {
+  test.each(["missing", "blocked", "throws", "no-ack"])("cancellation failure is explicit (%s), never reported as success", async (failure) => {
+    const { pi, scheduler } = makeHarness({ readMailMark: () => null });
+    startSession(pi);
+    pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running"));
+    const ctx = {
+      ...(makeCtx() as object),
+      ...(failure === "missing" ? {} : { executeTool: async () => {
+        if (failure === "throws") throw new Error("tool crashed");
+        return { isError: failure === "blocked", result: { content: [{ type: "text", text: "blocked by permission gate" }], details: {} } };
+      } }),
+    };
+    const pending = waitTool(pi)("tc-wait", { timeoutMs: 5_000 }, undefined, undefined, ctx);
+    await Promise.resolve();
+    scheduler.fire(timeoutHandle(scheduler));
+    const result = await pending;
+    expect(result.details.observed).toBe("timeout");
+    expect(result.details.abortedIds).toEqual([]);
+    expect(result.details.abortErrors).toHaveLength(1);
+    expect(result.content[0]!.text).toContain("WARNING");
+    expect(scheduler.timers.size).toBe(0);
+  });
+
+  test("an idle timer expiring cancels work that appeared after the wait started", async () => {
+    const { pi, scheduler } = makeHarness({ readMailMark: () => null });
+    startSession(pi);
+    const calls: unknown[] = [];
+    const ctx = { ...(makeCtx() as object), executeTool: async (name: string, args: unknown) => {
+      calls.push({ name, args });
+      pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "aborted"));
+      return { isError: false, result: { content: [], details: { abortedIds: ["d-1"] } } };
+    } };
+    const pending = waitTool(pi)("tc-wait", { timeoutMs: 5_000 }, undefined, undefined, ctx);
+    await Promise.resolve();
+    const handles = [...scheduler.timers.keys()];
+    pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running"));
+    scheduler.fire(handles[handles.length - 1]!);
+    const result = await pending;
+    expect(result.details.observed).toBe("timeout");
+    expect(result.details.abortedIds).toEqual(["d-1"]);
+    expect(calls).toEqual([{ name: "delegations", args: { action: "abort", id: ["d-1"] } }]);
+    expect(scheduler.timers.size).toBe(0);
+  });
+});
+
 describe("W-A2: timeout and the empty fleet", () => {
   test("wait resolves at its clamped timeout with a fleet snapshot, never an error", async () => {
     const { pi, scheduler } = makeHarness();
@@ -255,7 +300,7 @@ describe("W-A2: timeout and the empty fleet", () => {
     expect(sentMonitorEvents(pi)).toHaveLength(0); // silently: no expired card after the result
   });
 
-  test("W-A7: if the timer monitor's expiry wins the race, the wait resolves monitor and the expired card arrives", async () => {
+  test("W-A7: if the timer monitor's expiry wins the race, the wait still resolves timeout and the expired card arrives", async () => {
     const { pi, scheduler } = makeHarness();
     const pending = waitTool(pi)("tc-wait", {}, undefined, undefined, makeCtx());
     await tick();
@@ -263,8 +308,8 @@ describe("W-A2: timeout and the empty fleet", () => {
     scheduler.fire(handles[handles.length - 1]!); // the timer monitor's expiry (inserted last, after tick + timeout)
 
     const result = await pending;
-    expect(result.details.observed).toBe("monitor");
-    expect(result.details.records).toBeUndefined(); // the payload rides the card, never the result
+    expect(result.details.observed).toBe("timeout");
+    expect(result.details.records).toEqual([]);
     const events = sentMonitorEvents(pi);
     expect(events).toHaveLength(1);
     expect((events[0]!.details as { kind?: string }).kind).toBe("expired");
@@ -450,6 +495,49 @@ describe("W-A6: the user-input source", () => {
     const second = await waitTool(pi)("tc-wait", {}, undefined, undefined, makeCtx("print"));
     expect(second.details.observed).toBe("empty");
     expect(pi.handlers.get("input")).toHaveLength(1); // armed once, persistent, no-op when idle
+  });
+
+  test.each(["steer", "followUp"] as const)("real AgentSession.%s wakes a pending wait before its timeout without consuming input", async (method) => {
+    const { AgentSession, ExtensionRunner } = await import("@earendil-works/pi-coding-agent");
+    const { pi, scheduler } = makeHarness({ readMailMark: () => null });
+    startSession(pi);
+    pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running"));
+    const pending = waitTool(pi)("tc-wait", { timeoutMs: 300_000 }, undefined, undefined, makeCtx());
+    await Promise.resolve();
+    expect(scheduler.timers.size).toBeGreaterThan(0);
+
+    // Real upstream input routing, including streaming steer/followUp -> input handlers.
+    // Only outgoing message queues are replaced; no model/network call is needed.
+    const extension = {
+      path: "/probe/monitor/index.ts", resolvedPath: "/probe/monitor/index.ts",
+      sourceInfo: { type: "user" }, handlers: pi.handlers,
+      tools: new Map(), messageRenderers: new Map(), commands: new Map(),
+      flags: new Map(), shortcuts: new Map(),
+    };
+    const runner = new ExtensionRunner([extension as never], {} as never, "/p", undefined as never, undefined as never);
+    const queued: Array<{ behavior: string; text: string }> = [];
+    const session = Object.create(AgentSession.prototype);
+    Object.assign(session, {
+      _extensionRunner: runner,
+      _resourceLoader: { getPrompts: () => ({ prompts: [] }) },
+      _queueSteer: async (text: string) => { queued.push({ behavior: "steer", text }); },
+      _queueFollowUp: async (text: string) => { queued.push({ behavior: "followUp", text }); },
+    });
+    Object.defineProperty(session, "isStreaming", { value: true });
+    try {
+      expect(await session[method]("please continue")).toBe("queued");
+      // Do not await a possibly broken wait: assert its resolved state after microtasks,
+      // so a lost input wake fails immediately rather than hanging for 5 minutes.
+      let observed: unknown;
+      void pending.then((result) => { observed = result.details.observed; });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(observed).toBe("input");
+      expect(queued).toEqual([{ behavior: method, text: "please continue" }]);
+      expect(scheduler.timers.size).toBe(0);
+    } finally {
+      for (const handler of pi.handlers.get("session_shutdown") ?? []) handler({}, makeCtx());
+    }
   });
 
   test("Tier-1: the real ExtensionRunner delivers input to a registered extension handler (S-1 probe)", async () => {

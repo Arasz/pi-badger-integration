@@ -18,6 +18,7 @@ import {
   DEFAULT_ADMISSION_CAP,
   DEFAULT_QUEUE_CAP,
   emptyAdmission,
+  drainAdmission,
   enqueueGroup as enqueueGroupInCore,
   releaseRun,
   removePending,
@@ -345,14 +346,7 @@ export class DelegationRegistry {
       // group continue; an all-aborted group collapses so the next group can dequeue.
       const removed = removePending(this.admission, id, this.caps);
       this.admission = removed.state;
-      record.state = "aborted"; // no kill — there is no child (T61, review CR2)
-      record.endedAt = this.now();
-      this.queuedRequests.delete(id);
-      this.emitTransition(record);
-      this.deferreds.get(id)?.resolve(snapshotRecord(record));
-      this.deferreds.delete(id);
-      this.notify(this.noteForAborted(record)); // R5: aborted-before-start notifies (dropped after shutdown)
-      this.checkWaiters();
+      this.settleQueuedAbort(record);
       if (!this.stopped) {
         for (const promoted of removed.admitted) this.spawnQueued(promoted); // the collapse promoted the next group (Q-A6)
       }
@@ -361,15 +355,46 @@ export class DelegationRegistry {
     this.handles.get(id)?.abort(); // SIGTERM → grace → SIGKILL, settles aborted, releases via onSettle
   }
 
-  /** Abort every live run (queued first, so a synchronous settle cannot spawn fresh work). */
-  abortAll(): void {
-    for (const record of [...this.records.values()]) {
-      if (record.state === "queued") this.abort(record.id);
+  private settleQueuedAbort(record: DelegationRecord): void {
+    record.state = "aborted"; // no child to kill
+    record.endedAt = this.now();
+    this.queuedRequests.delete(record.id);
+    this.emitTransition(record);
+    this.deferreds.get(record.id)?.resolve(snapshotRecord(record));
+    this.deferreds.delete(record.id);
+    this.notify(this.noteForAborted(record));
+    this.checkWaiters();
+  }
+
+  /** Cancel a scope atomically: remove ALL selected queued members before admission drains.
+   * Otherwise shrinking a blocked parallel group can spawn another cancellation target. */
+  abortMany(ids: string[]): string[] {
+    const selected = new Set(ids);
+    for (const id of selected) {
+      if (!this.records.has(id)) throw new Error(`ai-badger: unknown delegation id "${id}" — use delegations list for current ids`);
     }
-    for (const record of [...this.records.values()]) {
+    const live = [...this.records.values()].filter((record) => selected.has(record.id) && !isTerminal(record.state));
+    const queued = live.filter((record) => record.state === "queued");
+    const removed = new Set(queued.map((record) => record.id));
+    const groups = this.admission.groups
+      .map((group) => ({ ...group, pending: group.pending.filter((id) => !removed.has(id)) }))
+      .filter((group) => group.members.length > 0 || group.pending.length > 0);
+    const drained = drainAdmission({ ...this.admission, queue: this.admission.queue.filter((id) => !removed.has(id)), groups }, this.caps);
+    this.admission = drained.state;
+    for (const record of queued) this.settleQueuedAbort(record);
+    if (!this.stopped) {
+      for (const id of drained.admitted) this.spawnQueued(id);
+    }
+    for (const record of live) {
       if (!isTerminal(record.state)) this.handles.get(record.id)?.abort();
     }
-    this.checkWaiters(); // T65: pending waits resolve with terminal states
+    this.checkWaiters();
+    return live.map((record) => record.id);
+  }
+
+  /** Abort every live run without admitting a selected queued child. */
+  abortAll(): void {
+    this.abortMany([...this.records.keys()]);
   }
 
   /** R8: SIGKILL every live child synchronously — the process-exit hook's path (T64). */

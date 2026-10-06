@@ -1144,6 +1144,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       "group, or a parallel group that cannot use a slot) — there is no other admission path; to",
       "spend idle time until results land, use the monitor extension's wait",
       "tool (user input interrupts it) or register a monitor; to stop a run, delegations abort.",
+      "A wait timeout aborts its watched live delegations (ids scopes cancellation; without ids it targets the whole session).",
       "Headless modes still block: there the result IS the tool result. A run is unbounded unless",
       "you pass timeoutMs, which bounds the run's wall-clock time and aborts it on expiry; use",
       "the delegations tool to inspect or abort running delegations.",
