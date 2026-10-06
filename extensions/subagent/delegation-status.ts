@@ -818,7 +818,7 @@ export function registerDelegationStatus(
 					if (rawLines !== undefined) {
 						const parsed = Number(rawLines);
 						if (!Number.isFinite(parsed)) {
-							commandResult(ctx, `delegations peek --lines needs a number (got ${JSON.stringify(rawLines)}) — ${USAGE_LINE}`, "warning");
+							commandResult(ctx, `/delegations peek --lines needs a number (got ${JSON.stringify(rawLines)}) — ${USAGE_LINE}`, "warning");
 							return;
 						}
 						lines = parsed;
