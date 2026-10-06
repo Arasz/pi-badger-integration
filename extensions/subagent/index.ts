@@ -38,7 +38,8 @@
  * settles aborted with abortReason "lost"; its card says so plainly ("stopped responding (no
  * output for 10m00s) and was aborted"). Silent child death is the defect class this extension
  * exists to end; the watchdog turns it into a normal terminal transition instead of a run that
- * stays `running` in every surface forever. Around the watchdog: the delegations tool probes
+ * stays `running` in every surface forever. Around the watchdog: the delegate tool's management
+ * actions probe
  * the pid of every running record (alive / unknown / lost (dead pid), report-only, RR3) and,
  * when the registry is empty, reconstructs stale runs from the log dir so a dead runner
  * generation still leaves a trace (RR4). A lost run's log has no `exit` line, so it is
@@ -349,7 +350,7 @@ function unknownPersonaMessage(agent: string, agentsDir: string, personas: Array
  *
  * `--mode json` turns the child's stdout into the JSON event stream delegation-core parses —
  * that is what makes live progress, usage and answer extraction possible (R3). `--no-session`
- * keeps a delegation out of the session store; `--exclude-tools delegate,delegations` removes
+ * keeps a delegation out of the session store; `--exclude-tools delegate,queue,monitor,wait` removes
  * both call types from the child so delegation cannot recurse; `--append-system-prompt` carries
  * the persona's body (pi appends it to the coding-assistant prompt rather than replacing it, so
  * the child keeps its tool guidance); `--` ends option parsing so a task starting with `-` is a
@@ -494,7 +495,7 @@ export interface SubagentDeps {
 /** Receipt details (row 45, §4): the background tool result's `details`. */
 export interface ReceiptDetails {
   id: string;
-  /** PKG-3: the run's global GUID — the cross-project handle for `delegations resolve`. */
+  /** PKG-3: the run's global GUID — the cross-project handle for `delegate resolve`. */
   globalId?: string;
   agent: string;
   state: DelegationState;
@@ -709,7 +710,7 @@ export function reconstructFromLogDir(
   }
 
   // d-52 SHOULD-1: a report-shaped query must not retire evidence logs. Pruning is the
-  // caller's policy (session_start); the delegations stale query classifies prune-free.
+  // caller's policy (session_start); the delegate stale query classifies prune-free.
   let kept: LogDirEntry[] = entries;
   if (opts?.prune !== false) {
     const plan = pruneLogFiles(entries, now);
@@ -913,7 +914,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     }
     // f: 2026-09-02 (option c): the structured result is cached at the delivery ENTRY, before
     // the batch-window branch — a note held inside an open window is already queryable via
-    // `delegations results`, and a sendMessage failure still leaves the result cached.
+    // `delegate results`, and a sendMessage failure still leaves the result cached.
     // flushHeldNotes/sendCards never put; they only read the cache back onto the cards.
     resultCache.put(enriched, { now });
     if (batchWindowTimer === undefined) {
@@ -978,7 +979,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       ? { emit: (transition: DelegationTransition) => pi.events.emit(TRANSITION_CHANNEL, transition) }
       : {}),
     // T73: ids allocate over the LIVE project log dir listing, past the highest id ever seen —
-    // a restarted session never reuses an id, so `delegations log d-N` stays unambiguous. The
+    // a restarted session never reuses an id, so `delegate log d-N` stays unambiguous. The
     // closure also excludes the registry's live records: a queued run has no log file yet, so
     // without that check, concurrent queueing (a 7-panel burst) would allocate the same id
     // twice — exposed by T95–T97 and fixed here, not in the frozen core allocator.
@@ -1029,7 +1030,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
 
   /** f: 2026-09-02 (option c): the in-memory result cache — ring of the LAST 8 structured
    * results, dual-indexed by delegation_id and parent_id. Filled at deliverNote's entry; read
-   * by the cards (details.result) and by the delegations tool's `results` action through the
+   * by the cards (details.result) and by the delegate tool's `results` action through the
    * status seam below. In-memory only: it dies with the session. */
   const resultCache = new DelegationResultCache();
 
@@ -1043,7 +1044,8 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
     registry.shutdown();
   });
 
-  // W3 merge wiring (plan §5 interface freeze): the delegations tool, the /delegations command
+  // W3 merge wiring (plan §5 interface freeze): the management actions of the merged `delegate`
+  // tool, the /delegations command
   // and the background-run widget are P4's delegation-status.ts, wired here against its
   // frozen signature — the one instance of the registry this session constructed. RR4: the
   // status surface consults the log dir through the same reconstruction session_start uses,
@@ -1230,7 +1232,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       // result arrives as a followUp on its own. There is no opt-out: the `background` param
       // is gone (a stale key is stripped by prepareArguments before validation), so nothing
       // here reads it — ordered work belongs to the queue tool, idle waiting to the monitor
-      // extension's wait tool, stopping runs to delegations abort.
+      // extension's wait tool, stopping runs to delegate abort.
       // R2: background iff ctx.mode === "tui" (NOT hasUI — rpc has UI and still blocks).
       // Headless modes stay fully blocking: there the result IS the tool result.
       const wantsBackground = toolCtx.mode === "tui";

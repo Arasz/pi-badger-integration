@@ -1,5 +1,6 @@
 /**
- * Delegation status surface (plan §2 R11 module map: "the delegations tool, /delegations
+ * Delegation status surface (plan §2 R11 module map: "the management actions of the merged
+ * `delegate` tool, /delegations
  * command, widget — owns its own files so P3/P4 can parallelise").
  *
  * Three surfaces over one injected registry (this module never spawns, kills or reads child
