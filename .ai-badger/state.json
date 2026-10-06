@@ -1,7 +1,25 @@
 {
-  "lastUpdated": "2026-10-05T21:10:37Z",
+  "lastUpdated": "2026-10-06T07:20:32Z",
   "next": null,
   "completedTasks": [
+    {
+      "taskId": "pbi-pi-v103-changelog-integration-adjust",
+      "title": "Adjust integration for pi 1.0.3",
+      "finishedAt": "2026-10-06T07:20:32Z",
+      "summary": "pi devDependency 1.0.2 -> 1.0.3 after diffing the installed 1.0.3 tree against the pinned 1.0.2 tree and reading the 1.0.3 changelog (low loop). The extension API surface (dist/index.d.ts, core/extensions/types.d.ts) and pi-ai retry.js/overflow.js are byte-identical, so no extension code changed; the azure provider rename, Home/End -> Ctrl+Home/Ctrl+End keybinding move, codemode image temp files, user-only output-file perms and the additive detectInstallChange have no consumer here. Pin + lock refresh + a new docs/howto/update-integrations.md section + research record; typecheck 0, full suite 1824 pass / 8 skip / 0 fail, real pi 1.0.3 print-mode session load with no extension diagnostics, publish/check in sync; CI green on the PR (one transient upstream 404 while pi-agent-core/pi-telemetry 1.0.4 tarballs were mid-publish; rerun green). PR #44 squash-merged b660e505; auto-bump released 1.1.46.",
+      "decisions": [
+        "Global pi install verify-only in the pin-bump lane: the machine already ran 1.0.3, and reinstalling under the running session buys no evidence (1.0.3's own detectInstallChange exists for that hazard)",
+        "Full suite run locally rather than a touched-surface slice: the runtime under test IS the changed dependency, so the whole suite is the touched surface",
+        "VERSION untouched; auto-bump.yml carries the release on merge",
+        "Docs section carries five changelog items plus a re-sync row; the retry.js/overflow.js byte-identity row is a verification, not a release item",
+        "Research record A1 lists the relevant dist changes with an explicit bundle-chunks exclusion and the provider-dir renames after the phase-4 review"
+      ],
+      "followUps": [
+        "pi 1.0.4 landed upstream mid-task (partial publish briefly 404ed pi-agent-core/pi-telemetry 1.0.4 tarballs and failed CI's global install once; rerun green). CI's global install resolves ^1.0.3 ranges, so it now mixes 1.0.3 with 1.0.4 subpackages; the next changelog-integration task must assess 1.0.4",
+        "router-fallback's default-free-model chain has no catalog-parity test, so model rotations are invisible to CI (minimax/minimax-m3:free is already absent and degrades cleanly via resolveTargets)",
+        "The Copilot review round does not run on this repo (zero reviews and inline comments on PRs 40-44); the internal plan, join and phase-4 reviews are the recorded gates"
+      ]
+    },
     {
       "taskId": "pbi-ling-flash-default-free-model",
       "title": "Use inclusionai/ling-3.1-flash as default free model in router fallback",
