@@ -148,14 +148,15 @@ describe("delegationArgs", () => {
   test("runs headless, in JSON mode, keeps no session, and excludes the delegation surfaces so delegation cannot recurse", () => {
     const args = delegationArgs(persona(), "Draft the plan");
 
-    // Q-C5 (plan v2 R5): the child denylist is FINAL — delegate,delegations,queue,monitor,wait.
+    // Q-C5 (plan v2 R5): the child denylist is FINAL — delegate,queue,monitor,wait (I2: the
+    // merged delegate tool is the one delegation surface left to exclude).
     expect(args).toEqual([
       "-p",
       "--mode",
       "json",
       "--no-session",
       "--exclude-tools",
-      "delegate,delegations,queue,monitor,wait",
+      "delegate,queue,monitor,wait",
       "--append-system-prompt",
       "# Architect\n",
       "--",

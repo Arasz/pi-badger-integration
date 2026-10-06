@@ -69,12 +69,13 @@ function fireToolCall(pi: FakePi, toolName: string, input: Record<string, unknow
 }
 
 /**
- * E-A1 drift guard: the delegations tool name AS REGISTERED by the subagent factory — read
- * from pi.tools by identifying the status tool's action union (the only registered tool whose
- * action literals contain both "list" and "log"). A rename anywhere in the subagent's
- * registration makes this throw, failing the rows loudly instead of testing a dead name.
+ * E-A1 drift guard: the delegation tool name AS REGISTERED by the subagent factory — read
+ * from pi.tools by identifying the status tool's action union. EXACTLY ONE registered tool
+ * may expose both `list` and `log` (I1/M7): the merged `delegate` tool. Any other count fails
+ * the rows loudly instead of testing a stale or ambiguous name.
  */
 function registeredDelegationsName(pi: FakePi): string {
+  const matches: string[] = [];
   for (const [name, tool] of pi.tools) {
     const params = tool.parameters as
       | { properties?: { action?: { anyOf?: Array<{ const?: unknown }> } } }
@@ -82,9 +83,14 @@ function registeredDelegationsName(pi: FakePi): string {
     const literals = (params?.properties?.action?.anyOf ?? [])
       .map((variant) => variant?.const)
       .filter((value): value is string => typeof value === "string");
-    if (literals.includes("list") && literals.includes("log")) return name;
+    if (literals.includes("list") && literals.includes("log")) matches.push(name);
   }
-  throw new Error("drift: no registered tool exposes list+log actions — the subagent's delegations registration moved");
+  if (matches.length !== 1) {
+    throw new Error(
+      `drift: expected exactly one registered tool exposing list+log actions, found ${matches.length} (${matches.join(", ") || "none"}) — the subagent's delegations registration moved`,
+    );
+  }
+  return matches[0]!;
 }
 
 function shutdownSession(pi: FakePi): void {
@@ -97,7 +103,8 @@ describe("E-A1: the poll guard blocks the 4th counted call in the window", () =>
   test("3 delegations list calls are allowed, the 4th is blocked with the wait/monitor guidance — fired with the registered name", () => {
     const { pi } = makeCombinedHarness();
     const delegations = registeredDelegationsName(pi); // drift guard: never a hardcoded string
-    expect(delegations.length).toBeGreaterThan(0);
+    expect(delegations).toBe("delegate"); // I1: the merged identity owns list+log
+    expect(pi.tools.has("delegations")).toBe(false);
 
     expect(fireToolCall(pi, delegations, { action: "list" })).toBeUndefined();
     expect(fireToolCall(pi, delegations, { action: "list" })).toBeUndefined();

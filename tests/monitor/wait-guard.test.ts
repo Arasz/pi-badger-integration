@@ -91,10 +91,10 @@ describe("W-G — manual-wait enforcement: shell sleeps are blocked at the harne
     expect(fireToolCall(pi, "bash", { command: "npm run sleep-test" })).toBeUndefined();
   });
 
-  test("W-G5: non-shell tools are never wait-guarded (delegations list reaches the poll guard untouched)", () => {
+  test("W-G5: non-shell tools are never wait-guarded (delegate list reaches the poll guard untouched)", () => {
     const { pi } = makeHarness();
 
-    expect(fireToolCall(pi, "delegations", { action: "list" })).toBeUndefined();
+    expect(fireToolCall(pi, "delegate", { action: "list" })).toBeUndefined();
   });
 
   test("W-G6: PI_BADGER_WAIT_GUARD=0 disables the guard — the sleep passes", () => {
@@ -109,14 +109,15 @@ describe("W-G — manual-wait enforcement: shell sleeps are blocked at the harne
     fireToolCall(pi, "bash", { command: "sleep 30" });
     fireToolCall(pi, "bash", { command: "sleep 10 && echo done" });
 
-    // Three delegations list calls — the poll guard's limit is 3 allowed / 4th blocked; two
+    // Three delegate list calls — the poll guard's limit is 3 allowed / 4th blocked; two
     // blocked sleeps must not have consumed any of that budget.
-    expect(fireToolCall(pi, "delegations", { action: "list" })).toBeUndefined();
-    expect(fireToolCall(pi, "delegations", { action: "list" })).toBeUndefined();
-    expect(fireToolCall(pi, "delegations", { action: "list" })).toBeUndefined();
-    const fourth = fireToolCall(pi, "delegations", { action: "list" });
+    expect(fireToolCall(pi, "delegate", { action: "list" })).toBeUndefined();
+    expect(fireToolCall(pi, "delegate", { action: "list" })).toBeUndefined();
+    expect(fireToolCall(pi, "delegate", { action: "list" })).toBeUndefined();
+    const fourth = fireToolCall(pi, "delegate", { action: "list" });
     expect(fourth?.block).toBe(true); // blocked by the POLL guard (its reason), not the wait guard
-    expect(fourth?.reason).toContain("delegations list/log call #4");
+    expect(fourth?.reason).toContain("delegate list/log call #4");
+    expect(fourth?.reason).not.toContain("delegations"); // I2: the reason names the merged tool only
   });
 
   test("W-G8: shell-keyword boundaries are blocked too — for/do, then, subshell, brace, negation (f: sleep-loop miss)", () => {

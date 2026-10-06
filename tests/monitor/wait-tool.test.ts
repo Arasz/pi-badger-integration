@@ -244,7 +244,7 @@ describe("timeout cancellation failures and idle timer race", () => {
     const result = await pending;
     expect(result.details.observed).toBe("timeout");
     expect(result.details.abortedIds).toEqual(["d-1"]);
-    expect(calls).toEqual([{ name: "delegations", args: { action: "abort", id: ["d-1"] } }]);
+    expect(calls).toEqual([{ name: "delegate", args: { action: "abort", id: ["d-1"] } }]);
     expect(scheduler.timers.size).toBe(0);
   });
 });

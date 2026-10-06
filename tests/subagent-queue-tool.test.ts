@@ -153,10 +153,11 @@ function sentIds(message: Record<string, unknown>): string[] {
 // ------------------------------------------------------------------ registration wiring
 
 describe("queue tool — registration wiring (plan v2 R4)", () => {
-  test("the queue tool registers alongside delegate and delegations on the one registry", () => {
+  test("the queue tool registers alongside the one merged delegate tool on the one registry", () => {
     h = makeHarness();
 
-    expect([...h.tools.keys()]).toEqual(expect.arrayContaining(["delegate", "delegations", "queue"]));
+    expect([...h.tools.keys()]).toEqual(expect.arrayContaining(["delegate", "queue"]));
+    expect([...h.tools.keys()]).not.toContain("delegations");
   });
 });
 
@@ -301,7 +302,7 @@ describe("Q-C2 — queue list renders live positions, mode, running/pending per 
     expect(positionsAfterAdmission.get(b[1])).toBe(4); // was 5
     expect(contentOf(afterAdmission)).toContain("live position 1");
 
-    // member-level clears (delegations abort on queued members): survivors recompute again
+    // member-level clears (delegate abort on queued members): survivors recompute again
     h.api!.registry.abort(a[1]);
     h.api!.registry.abort(a[2]);
     const afterClears = await callQueue({ action: "list" }, makeCtx());
