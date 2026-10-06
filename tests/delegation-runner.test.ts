@@ -752,10 +752,11 @@ describe("registry transition events and wait (T60, T65)", () => {
 describe("per-run timeout (T79–T85, deferral pkg P1)", () => {
   test("T79: timeout expiry kills through the abort path — SIGTERM then SIGKILL", async () => {
     const h = makeRunner(); // escalateAfterMs 0
-    h.runner.run(runRequest({ timeoutMs: 5 }));
+    const handle = h.runner.run(runRequest({ timeoutMs: 5 }));
     const child = h.children[0]!;
-
-    await drainMacrotasks(1100); // past the applied 1000 ms expiry
+    await handle.done; // SIGTERM + settle are done, clock-free
+    const deadline = Date.now() + 5_000;
+    while (child.signals.length < 2 && Date.now() < deadline) await drainMacrotasks(5);
 
     expect(child.signals).toEqual(["SIGTERM", "SIGKILL"]); // the R8 kill machinery, not a second implementation
     expect(h.notes).toHaveLength(1);
@@ -832,8 +833,9 @@ describe("per-run timeout (T79–T85, deferral pkg P1)", () => {
     expect(h.children).toHaveLength(2);
     expect(h.registry.get(secondId)?.state).toBe("running");
 
-    await drainMacrotasks(1100); // the spawn-armed expiry
-    expect(h.registry.get(secondId)?.state).toBe("aborted");
+    const deadline = Date.now() + 5_000;
+    while (h.registry.get(secondId)?.state !== "aborted" && Date.now() < deadline) await drainMacrotasks(5);
+    expect(h.registry.get(secondId)?.state).toBe("aborted"); // the spawn-armed expiry
     expect(h.registry.get(secondId)?.abortReason).toBe("timeout");
     expect(h.children[0]!.signals).toEqual([]); // the first child was never signaled
     const secondNotes = h.notes.filter((note) => note.id === secondId);
