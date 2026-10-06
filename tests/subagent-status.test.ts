@@ -279,6 +279,53 @@ describe("row 49: /delegations status command with a mixed fleet", () => {
 // ------------------------------------------------------------------ row 50: widget key distinct from session-signals status key
 
 describe("row 50: the widget key is distinct from session-signals' status key", () => {
+	test("queue-first delegations render immediately and clear when the group settles", async () => {
+		const fx = makeFixture();
+		try {
+			fx.harness.fire("session_start", {}, fx.ctx);
+			fx.harness.fire("tool_call", { toolName: "queue", toolCallId: "tc-queue", input: { action: "add" } }, fx.ctx);
+			await fx.registry.enqueueGroup([
+				startRequest({ id: "d-1", toolCallId: "tc-queue" }),
+				startRequest({ id: "d-2", toolCallId: "tc-queue" }),
+			], "serial");
+			fx.harness.fire("tool_result", { toolName: "queue", toolCallId: "tc-queue" }, fx.ctx);
+
+			expect(lastWidget(fx)?.[1]?.join("\n")).toContain("d-1 architect");
+			expect(lastWidget(fx)?.[1]?.join("\n")).toContain("1 queued");
+			fx.children[0]!.exit(0);
+			expect(lastWidget(fx)?.[1]?.join("\n")).toContain("d-2 architect");
+			fx.children[1]!.exit(0);
+			expect(lastWidget(fx)?.[1]).toBeUndefined();
+		} finally {
+			fx.registry.shutdown();
+			fx.harness.fire("session_shutdown", {}, fx.ctx);
+		}
+	});
+
+	test("session_start makes registry transitions visible before any status tool call", async () => {
+		const fx = makeFixture();
+		try {
+			fx.harness.fire("session_start", {}, fx.ctx);
+			await fx.registry.enqueueGroup([startRequest({ id: "d-1", toolCallId: "tc-queue" })], "serial");
+			expect(lastWidget(fx)?.[1]?.join("\n")).toContain("d-1 architect");
+		} finally {
+			fx.registry.shutdown();
+			fx.harness.fire("session_shutdown", {}, fx.ctx);
+		}
+	});
+
+	test("queue tool calls provide a fresh UI context without a prior delegate", async () => {
+		const fx = makeFixture();
+		try {
+			fx.harness.fire("tool_call", { toolName: "queue", toolCallId: "tc-queue", input: { action: "add-parallel" } }, fx.ctx);
+			await fx.registry.enqueueGroup([startRequest({ id: "d-1", toolCallId: "tc-queue" })], "parallel");
+			expect(lastWidget(fx)?.[1]?.join("\n")).toContain("d-1 architect");
+		} finally {
+			fx.registry.shutdown();
+			fx.harness.fire("session_shutdown", {}, fx.ctx);
+		}
+	});
+
 	test("default widget key is not the footer's 'pi-badger'", () => {
 		expect(DEFAULT_WIDGET_KEY).not.toBe("pi-badger");
 		expect(DEFAULT_WIDGET_KEY).toBe("pi-badger-delegations");

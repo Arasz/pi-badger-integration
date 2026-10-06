@@ -807,19 +807,27 @@ export function registerDelegationStatus(
 
 	// ---------------------------------------------------------------- wiring
 
-	pi.on("tool_call", (event, ctx) => {
-		if (event.toolName !== DELEGATE_TOOL_NAME) return undefined;
+	pi.on("session_start", (_event, ctx) => {
 		currentCtx = ctx;
-		pendingResult.add(event.toolCallId); // result not landed → blocking delegation in flight
+		renderWidget();
+		ensureWidgetTicker();
+	});
+
+	pi.on("tool_call", (event, ctx) => {
+		if (event.toolName !== DELEGATE_TOOL_NAME && event.toolName !== "queue") return undefined;
+		currentCtx = ctx;
+		// Queue calls return receipts without blocking on their children. Never hide their
+		// members behind pendingResult; only delegate has a blocking execution path.
+		if (event.toolName === DELEGATE_TOOL_NAME) pendingResult.add(event.toolCallId);
 		renderWidget();
 		ensureWidgetTicker();
 		return undefined;
 	});
 
 	pi.on("tool_result", (event, ctx) => {
-		if (event.toolName !== DELEGATE_TOOL_NAME) return undefined;
+		if (event.toolName !== DELEGATE_TOOL_NAME && event.toolName !== "queue") return undefined;
 		currentCtx = ctx;
-		if (!pendingResult.delete(event.toolCallId)) return undefined;
+		if (event.toolName === DELEGATE_TOOL_NAME && !pendingResult.delete(event.toolCallId)) return undefined;
 		// The receipt landed while the run may still go — whatever is still live is background.
 		renderWidget();
 		ensureWidgetTicker();

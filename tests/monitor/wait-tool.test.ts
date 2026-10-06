@@ -452,6 +452,49 @@ describe("W-A6: the user-input source", () => {
     expect(pi.handlers.get("input")).toHaveLength(1); // armed once, persistent, no-op when idle
   });
 
+  test.each(["steer", "followUp"] as const)("real AgentSession.%s wakes a pending wait before its timeout without consuming input", async (method) => {
+    const { AgentSession, ExtensionRunner } = await import("@earendil-works/pi-coding-agent");
+    const { pi, scheduler } = makeHarness({ readMailMark: () => null });
+    startSession(pi);
+    pi.fireTransition(TRANSITION_CHANNEL, transition("d-1", "running"));
+    const pending = waitTool(pi)("tc-wait", { timeoutMs: 300_000 }, undefined, undefined, makeCtx());
+    await Promise.resolve();
+    expect(scheduler.timers.size).toBeGreaterThan(0);
+
+    // Real upstream input routing, including streaming steer/followUp -> input handlers.
+    // Only outgoing message queues are replaced; no model/network call is needed.
+    const extension = {
+      path: "/probe/monitor/index.ts", resolvedPath: "/probe/monitor/index.ts",
+      sourceInfo: { type: "user" }, handlers: pi.handlers,
+      tools: new Map(), messageRenderers: new Map(), commands: new Map(),
+      flags: new Map(), shortcuts: new Map(),
+    };
+    const runner = new ExtensionRunner([extension as never], {} as never, "/p", undefined as never, undefined as never);
+    const queued: Array<{ behavior: string; text: string }> = [];
+    const session = Object.create(AgentSession.prototype);
+    Object.assign(session, {
+      _extensionRunner: runner,
+      _resourceLoader: { getPrompts: () => ({ prompts: [] }) },
+      _queueSteer: async (text: string) => { queued.push({ behavior: "steer", text }); },
+      _queueFollowUp: async (text: string) => { queued.push({ behavior: "followUp", text }); },
+    });
+    Object.defineProperty(session, "isStreaming", { value: true });
+    try {
+      expect(await session[method]("please continue")).toBe("queued");
+      // Do not await a possibly broken wait: assert its resolved state after microtasks,
+      // so a lost input wake fails immediately rather than hanging for 5 minutes.
+      let observed: unknown;
+      void pending.then((result) => { observed = result.details.observed; });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(observed).toBe("input");
+      expect(queued).toEqual([{ behavior: method, text: "please continue" }]);
+      expect(scheduler.timers.size).toBe(0);
+    } finally {
+      for (const handler of pi.handlers.get("session_shutdown") ?? []) handler({}, makeCtx());
+    }
+  });
+
   test("Tier-1: the real ExtensionRunner delivers input to a registered extension handler (S-1 probe)", async () => {
     // The user-input source ships only if THIS holds on the installed pi build: a handlers-map
     // extension registered on the real runner receives emitInput passthrough.
