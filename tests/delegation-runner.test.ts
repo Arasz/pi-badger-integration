@@ -755,8 +755,12 @@ describe("per-run timeout (T79–T85, deferral pkg P1)", () => {
     const handle = h.runner.run(runRequest({ timeoutMs: 5 }));
     const child = h.children[0]!;
     await handle.done; // SIGTERM + settle are done, clock-free
-    const deadline = Date.now() + 5_000;
-    while (child.signals.length < 2 && Date.now() < deadline) await drainMacrotasks(5);
+    // The 0 ms grace escalation is the next macrotask, and the runner settles at SIGTERM — so
+    // the SIGKILL lands after `done`. Wait for the kill event itself (rows 35/T82's pattern),
+    // never a clock poll: a busy event loop can delay the escalation past any fixed drain, and
+    // a bounded deadline only turns the flake into a slower one. The sync guard covers a grace
+    // that already fired before this continuation ran — then there is no event left to await.
+    if (child.signals.length < 2) await new Promise<void>((resolve) => child.once("kill", () => resolve()));
 
     expect(child.signals).toEqual(["SIGTERM", "SIGKILL"]); // the R8 kill machinery, not a second implementation
     expect(h.notes).toHaveLength(1);
@@ -833,8 +837,7 @@ describe("per-run timeout (T79–T85, deferral pkg P1)", () => {
     expect(h.children).toHaveLength(2);
     expect(h.registry.get(secondId)?.state).toBe("running");
 
-    const deadline = Date.now() + 5_000;
-    while (h.registry.get(secondId)?.state !== "aborted" && Date.now() < deadline) await drainMacrotasks(5);
+    await h.registry.wait([secondId]); // settles the instant the spawn-armed expiry aborts — no clock poll
     expect(h.registry.get(secondId)?.state).toBe("aborted"); // the spawn-armed expiry
     expect(h.registry.get(secondId)?.abortReason).toBe("timeout");
     expect(h.children[0]!.signals).toEqual([]); // the first child was never signaled
