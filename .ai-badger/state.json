@@ -1,7 +1,25 @@
 {
-  "lastUpdated": "2026-10-06T07:20:32Z",
+  "lastUpdated": "2026-10-06T21:41:44Z",
   "next": null,
   "completedTasks": [
+    {
+      "taskId": "pbi-merge-delegate-delegations-tools",
+      "title": "Merge delegate and delegations into one unified tool",
+      "finishedAt": "2026-10-06T21:41:44Z",
+      "summary": "Merged the `delegations` tool into the single model-facing `delegate` tool via an explicit `action` param (list/log/abort/results/peek/resolve); an absent or empty action takes the existing delegate path unchanged, any populated action routes to management (a persona named 'list' arrives as `agent`, never as a verb -- no loose verb dispatch). `registerDelegationStatus` stopped registering its own tool and returns `{contextWindow, runAction}` for index.ts's one registration seam; a merged call missing both `agent` and `task` gets a loud usage guard where the schema used to reject it; the `/delegations` command, widget and tool-event handlers stayed. The four pin sites moved to the merged identity in sync: child denylist, monitor's nested abort executeTool, poll-guard name, session-signals default. VERSION 1.1.49 -> 1.2.0 and extensions/subagent/package.json 1.3.0 -> 1.4.0; README, extension-catalog and wait-check-loop docs + research record updated. PR #48 squash-merged 168a4f4 (typecheck clean, 1854 pass / 8 skip / 0 fail, /delegations command preserved); follow-up T79 de-flake PR #50 squash-merged 6a60899 (1909 pass / 0 fail) replaced the 1100 ms fixed sleep in tests/delegation-runner.test.ts with a bounded poll, test-only -- extensions/subagent/* byte-identical.",
+      "decisions": [
+        "One `delegate` tool with an explicit `action` param over a second `delegations` registration or a deferred alias: one model-facing identity, strict action-absent -> delegate dispatch, and a bounded grep-auditable diff",
+        "Pin sites re-pointed together (the merge's identity contract): CHILD_EXCLUDED_TOOLS/ASK_CHILD_EXCLUDED_TOOLS `delegate,queue,monitor,wait`; monitor's nested `executeTool(\"delegate\",{action:\"abort\"})`; `POLL_GUARD_TOOL_NAME = \"delegate\"` (still counts only list/log/results via the action test); session-signals default `[\"delegate\"]`",
+        "T79 de-flake kept test-only and bounded: await RunHandle.done (clock-free settle at SIGTERM) then poll up to 5 s for the 0 ms SIGKILL grace; T84 gets the same bounded poll; extensions/subagent/* byte-identical",
+        "Knowledge-log divergence (close-out): `.ai-badger/skills/task/references/file-schemas.md` specifies a three-file split -- state.json lean index + notesRef (status-notes.json) + historyRef (status-history.json) -- which this repo has NOT migrated to; state.json is still the legacy combined shape and status-notes.json does not exist",
+        "Close-out follows the repo's actual convention instead of migrating: one full entry prepended to state.json's completedTasks, mirroring the newest entry's six keys; no status-notes shape invented and no knowledge-log migration attempted"
+      ],
+      "followUps": [
+        "status-history.json already carries a duplicate `pbi-monitor-queue-delegation-rework` entry (full summary at index 0, lean hasNotes:false version at index 4) -- dedupe when the knowledge log is next touched",
+        "Knowledge-log migration decision still open: adopt the doc's three-file split or amend file-schemas.md to the repo's combined shape; until then state.json keeps 35+ full entries (the doc's 8-most-recent trim is unenforced)",
+        "The local branch `task/pbi-deflake-t79-timeout` still points at pre-squash aef4a49; remote `task/pbi-merge-delegate-delegations-tools` was recreated for evidence and both are intentionally not deleted (close-out constraint)"
+      ]
+    },
     {
       "taskId": "pbi-pi-v103-changelog-integration-adjust",
       "title": "Adjust integration for pi 1.0.3",
