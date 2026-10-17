@@ -101,4 +101,22 @@ describe("proxyHeaders", () => {
 		expect(proxyHeaders("/p", undefined)).toEqual({ "x-rtk-project": "/p" });
 		expect(proxyHeaders("/p", "")).toEqual({ "x-rtk-project": "/p" });
 	});
+	test.each([
+		["Polish cwd", "/tmp/łódź", "s1", { "x-rtk-session": "s1" }],
+		["CJK cwd", "/Users/a/项目/プロジェクト", "s1", { "x-rtk-session": "s1" }],
+		["Latin-1 cwd", "/Users/józef/app", "s1", { "x-rtk-session": "s1" }],
+		["control char in cwd", "/tmp/a\nb", "s1", { "x-rtk-session": "s1" }],
+		["non-ASCII session", "/p", "sesja-ż", { "x-rtk-project": "/p" }],
+		["both non-ASCII", "/tmp/łódź", "ż", {}],
+	])("%s: the non-printable-ASCII header is omitted, the other kept", (_name, cwd, session, want) => {
+		const headers = proxyHeaders(cwd, session);
+		expect(headers).toEqual(want);
+		const merged = { "x-api-key": "k", ...headers };
+		expect(() => new Headers(merged)).not.toThrow();
+	});
+	test("printable ASCII headers always build a fetch Headers object", () => {
+		const headers = proxyHeaders("/work/my app (1)/~x", "019a-b2c3");
+		expect(headers).toEqual({ "x-rtk-project": "/work/my app (1)/~x", "x-rtk-session": "019a-b2c3" });
+		expect(() => new Headers(headers)).not.toThrow();
+	});
 });

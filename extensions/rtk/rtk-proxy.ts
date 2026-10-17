@@ -66,9 +66,13 @@ export function isRouted(baseUrl: string | undefined, bind: string): boolean {
 	return a !== undefined && a === b;
 }
 
-/** Attribution headers for rtk-proxy; the session header is omitted when absent. */
+// fetch rejects header values outside Latin-1 after the handler returns, failing the request.
+const sendable = (value: string | undefined): value is string => !!value && /^[\x20-\x7e]*$/.test(value);
+
+/** Attribution headers for rtk-proxy; each is omitted when absent or not printable ASCII. */
 export function proxyHeaders(cwd: string, sessionId: string | undefined): Record<string, string> {
-	const headers: Record<string, string> = { "x-rtk-project": cwd };
-	if (sessionId) headers["x-rtk-session"] = sessionId;
+	const headers: Record<string, string> = {};
+	if (sendable(cwd)) headers["x-rtk-project"] = cwd;
+	if (sendable(sessionId)) headers["x-rtk-session"] = sessionId;
 	return headers;
 }

@@ -678,6 +678,18 @@ describe("rtk proxy routing", () => {
 		expect((await p.headers()).event.headers).toEqual({ "x-api-key": "k" });
 	});
 
+	for (const cwd of ["/tmp/łódź", "/Users/a/项目"]) {
+		test(`a routed request from a non-ASCII cwd (${cwd}) leaves the headers unchanged and sendable`, async () => {
+			const p = await proxySetup();
+			await p.start();
+			p.ctx.cwd = cwd;
+			delete p.ctx.sessionManager;
+			const { event } = await p.headers();
+			expect(event.headers).toEqual({ "x-api-key": "k" });
+			expect(() => new Headers(event.headers)).not.toThrow();
+		});
+	}
+
 	test("a header handler with a broken ctx never throws", async () => {
 		const p = await proxySetup();
 		const event = { type: "before_provider_headers", headers: { a: "b" } };
