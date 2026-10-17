@@ -768,7 +768,7 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 		// Prefer the raw pre-expansion prompt; fall back to the expanded one
 		// (rpc/extension-injected turns may never pass through `input`, and a
 		// whitespace-only capture carries no query).
-		const raw = queued !== undefined && queued.trim() ? queued : String(event.prompt ?? "");
+		const raw = queued !== undefined && queued.trim() ? queued : String(("prompt" in event ? event.prompt : undefined) ?? "");
 		const decision = shouldEnrich(raw, { minChars: config.minChars, minWords: config.minWords });
 		// PKG-1 skill-precondition gate: auto-enrich is skill-only. shouldEnrich
 		// stays the single filter (bare-skill-call > control-word/command > length,
