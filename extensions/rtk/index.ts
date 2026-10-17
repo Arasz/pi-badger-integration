@@ -39,6 +39,8 @@ async function probe(pi: ExtensionAPI): Promise<string | undefined> {
 	}
 }
 
+const ANTHROPIC_URL = "https://api.anthropic.com";
+
 function isStockAnthropic(baseUrl: string | undefined): boolean {
 	try {
 		return baseUrl !== undefined && new URL(baseUrl).hostname === "api.anthropic.com";
@@ -120,16 +122,20 @@ function setup(pi: ExtensionAPI, deps: RtkDeps) {
 		}
 	};
 
-	/** Points pi's stock anthropic provider at rtk-proxy while it is up; re-registers the saved stock URL when it goes down. */
+	/** Re-registers only baseUrl, so another extension's anthropic settings survive (unregister would drop them). */
+	const restore = (stock: string) => {
+		stockBaseUrl = undefined;
+		pi.registerProvider("anthropic", { baseUrl: stock });
+	};
+
+	/** Points stock anthropic at rtk-proxy while it is up; restores stock when it is down, also after an earlier instance. */
 	const syncRouting = (ctx: StatusContext, up: boolean) => {
 		try {
-			if (stockBaseUrl !== undefined && !up) {
-				const stock = stockBaseUrl;
-				stockBaseUrl = undefined;
-				// Only baseUrl changes, so another extension's anthropic settings survive (unregister would drop them).
-				pi.registerProvider("anthropic", { baseUrl: stock });
-			} else if (stockBaseUrl === undefined && up && routingAllowed() && ctx.model?.provider === "anthropic" && isStockAnthropic(ctx.model.baseUrl)) {
-				const stock = ctx.model.baseUrl as string;
+			const anthropic = ctx.model?.provider === "anthropic";
+			if (!up && stockBaseUrl !== undefined) restore(stockBaseUrl);
+			else if (!up && anthropic && routingAllowed() && isRouted(ctx.model?.baseUrl, proxyBind(deps.env))) restore(ANTHROPIC_URL);
+			else if (up && stockBaseUrl === undefined && anthropic && routingAllowed() && isStockAnthropic(ctx.model?.baseUrl)) {
+				const stock = ctx.model?.baseUrl as string;
 				pi.registerProvider("anthropic", { baseUrl: proxyUrl(deps.env) });
 				stockBaseUrl = stock;
 			}
@@ -137,6 +143,15 @@ function setup(pi: ExtensionAPI, deps: RtkDeps) {
 			console.warn("[rtk] could not change the anthropic provider route", error);
 		}
 	};
+
+	// pi keeps the model runtime across /reload and /new, so routing must not outlive this instance.
+	pi.on("session_shutdown", () => {
+		try {
+			if (stockBaseUrl !== undefined) restore(stockBaseUrl);
+		} catch (error) {
+			console.warn("[rtk] could not restore the anthropic provider on shutdown", error);
+		}
+	});
 
 	pi.on("before_provider_headers", (event, ctx) => {
 		try {

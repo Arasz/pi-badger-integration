@@ -676,14 +676,64 @@ describe("rtk proxy routing", () => {
 		});
 	}
 
-	test("a fresh extension instance registers again", async () => {
-		const a = await proxySetup();
-		await a.start();
-		const b = await proxySetup();
-		await b.start();
-		expect(a.registered.length).toBe(1);
-		expect(b.registered.length).toBe(1);
+	describe("routing state across extension instances sharing one model runtime (/reload, /new)", () => {
+		const shutdown = (p: { fake: unknown; ctx: unknown }) =>
+			fire(p.fake as never, "session_shutdown", { type: "session_shutdown", reason: "reload" }, p.ctx);
+
+		test("A routes, A shuts down -> the stock baseUrl is back; B then routes again", async () => {
+			const a = await proxySetup();
+			await a.start();
+			expect(a.ctx.model.baseUrl).toBe(PROXY_URL);
+
+			await expect(shutdown(a)).resolves.toStrictEqual([undefined]);
+			expect(a.registered.at(-1)).toEqual(["anthropic", { baseUrl: STOCK_URL }]);
+			expect(a.ctx.model.baseUrl).toBe(STOCK_URL);
+
+			const b = await proxySetup({ registry: a.registry });
+			await b.start();
+			expect(b.registered).toEqual([["anthropic", { baseUrl: PROXY_URL }]]);
+		});
+
+		test("shutdown of an instance that never routed changes nothing", async () => {
+			const a = await proxySetup({ status: down });
+			await a.start();
+			await shutdown(a);
+			expect(a.registered).toEqual([]);
+			expect(a.unregistered).toEqual([]);
+		});
+
+		test("a throwing registerProvider on shutdown never throws", async () => {
+			const a = await proxySetup();
+			await a.start();
+			Object.assign(a.fake as object, { registerProvider: () => { throw new Error("stale ctx"); } });
+			await expect(shutdown(a)).resolves.toStrictEqual([undefined]);
+		});
+
+		test("A routes and never shuts down; B sees the proxy down with the model on the proxy -> B restores stock", async () => {
+			const a = await proxySetup();
+			await a.start();
+			expect(a.ctx.model.baseUrl).toBe(PROXY_URL);
+
+			const b = await proxySetup({ registry: a.registry, status: down });
+			await b.start();
+			expect(b.registered).toEqual([["anthropic", { baseUrl: STOCK_URL }]]);
+			expect(b.ctx.model.baseUrl).toBe(STOCK_URL);
+			expect(b.statuses.at(-1)).toEqual(["rtk", formatStatus({ proxy: "off", ...status0 })]);
+		});
+
+		test("B leaves a non-anthropic provider on the proxy URL alone while the proxy is down", async () => {
+			const b = await proxySetup({ status: down, model: { provider: "my-proxy", id: "claude", baseUrl: PROXY_URL } });
+			await b.start();
+			expect(b.registered).toEqual([]);
+		});
+
+		test("B leaves an anthropic proxy URL alone while the proxy is up", async () => {
+			const b = await proxySetup({ model: { provider: "anthropic", id: "claude", baseUrl: PROXY_URL } });
+			await b.start();
+			expect(b.registered).toEqual([]);
+		});
 	});
+
 
 	test("a throwing registerProvider leaves the session working", async () => {
 		const p = await proxySetup({ registerThrows: true });
