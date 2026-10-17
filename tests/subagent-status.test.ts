@@ -786,7 +786,7 @@ describe("T77: session-signals tick-defer and the delegations watch-list entry",
 
 		const rendered = ui.statuses.filter(([, text]) => text !== undefined);
 		expect(rendered.length).toBeGreaterThan(0);
-		expect(rendered[rendered.length - 1]![1]).toContain("delegate architect —");
+		expect(rendered[rendered.length - 1]![1]).toMatch(/architect.*\d+s/);
 
 		harness.fire("tool_result", { toolName: "delegate", toolCallId: "c1" }, ctx); // let the ticker wind down
 	}, 15_000);
