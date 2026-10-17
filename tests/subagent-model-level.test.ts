@@ -297,6 +297,53 @@ describe("5b resolveDelegationModel — G-6 four-source precedence, verbatim", (
   });
 });
 
+describe("provider affinity — a level picks a tier inside the session's provider", () => {
+  const MIXED: LevelRegistry = {
+    registryVersion: 3,
+    groups: {
+      low: [{ id: "openrouter/z-ai/glm-5.3-flash" }, { id: "anthropic/claude-haiku-4-5" }],
+      medium: [{ id: "openrouter/deepseek/deepseek-v4.1-flash" }],
+      high: [{ id: "anthropic/claude-opus-5" }, { id: "openrouter/anthropic/claude-opus-5" }],
+    },
+  };
+
+  test("anthropic session + level with no anthropic member inherits the session model, never openrouter", () => {
+    const r = resolveDelegationModel(FIXTURE, { level: "medium", sessionModel: "anthropic/claude-opus-4-7" });
+    expect(r.model).toBe("anthropic/claude-opus-4-7");
+    expect(r.providerAffinity).toContain("anthropic");
+  });
+
+  test("anthropic session picks the first same-provider member of the level's group", () => {
+    const r = resolveDelegationModel(MIXED, { level: "low", sessionModel: "anthropic/claude-opus-4-7" });
+    expect(r.model).toBe("anthropic/claude-haiku-4-5");
+    expect(r.resolvedLevel).toBe("low");
+  });
+
+  test("same-provider preferred is kept unchanged (openrouter session, openrouter registry)", () => {
+    const r = resolveDelegationModel(MIXED, { level: "low", sessionModel: "openrouter/x/y" });
+    expect(r.model).toBe("openrouter/z-ai/glm-5.3-flash");
+    expect(r.providerAffinity).toBeUndefined();
+  });
+
+  test("explicit pins still win across providers (unless specified otherwise)", () => {
+    expect(
+      resolveDelegationModel(FIXTURE, { frontmatterModel: "openrouter/f/f", level: "low", sessionModel: "anthropic/a" }).model,
+    ).toBe("openrouter/f/f");
+    expect(
+      resolveDelegationModel(FIXTURE, { toolModel: "openrouter/t/t", level: "low", sessionModel: "anthropic/a" }).model,
+    ).toBe("openrouter/t/t");
+  });
+
+  test("no session model keeps the registry preferred", () => {
+    expect(resolveDelegationModel(MIXED, { level: "high" }).model).toBe("anthropic/claude-opus-5");
+  });
+
+  test("delegationArgs carries the affinity: anthropic session never spawns an openrouter child", () => {
+    const args = delegationArgs(tierPersona({ level: "high" }), "t", "anthropic/claude-opus-4-7", FIXTURE);
+    expect(modelOf(args)).toBe("anthropic/claude-opus-4-7");
+  });
+});
+
 describe("5b explicit pin shape gate (M8/H4 — the d-324 class)", () => {
   test("every shape-failing pin is refused before emit; the level resolves instead, warned", () => {
     for (const bad of [
