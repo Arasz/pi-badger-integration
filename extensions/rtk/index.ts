@@ -13,19 +13,8 @@ import type { ExtensionAPI, ToolCallEvent, BashToolCallEvent, ToolResultEvent } 
 import { homedir } from "node:os";
 import { runHook, timeoutFor } from "./rtk-hook-runner.ts";
 import { fromHookOutput, toHookPayload } from "./rtk-posthook.ts";
-import {
-	formatStatus,
-	isRouted,
-	parseGain,
-	parseProxyStatus,
-	proxyBind,
-	proxyDbPath,
-	proxyHeaders,
-	proxyUrl,
-	readProxyUsage,
-	shouldRefresh,
-	type ProxyState,
-} from "./rtk-status.ts";
+import { formatStatus, parseGain, parseProxyStatus, shouldRefresh, type ProxyState } from "./rtk-status.ts";
+import { isRouted, proxyBind, proxyDbPath, proxyHeaders, proxyUrl, readProxyUsage } from "./rtk-proxy.ts";
 import { decideRewrite, isRewriteCandidate, REWRITE_TIMEOUT_MS, versionProblem } from "./rtk-core.ts";
 
 type StatusContext = {
