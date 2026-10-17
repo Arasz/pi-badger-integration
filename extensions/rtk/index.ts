@@ -171,6 +171,11 @@ function setup(pi: ExtensionAPI, deps: RtkDeps) {
 		void refreshStatus(ctx as StatusContext);
 	});
 
+	// Unthrottled so a proxy that died since the last turn is routed around before this request goes out.
+	pi.on("before_agent_start", async (_event, ctx) => {
+		await refreshStatus(ctx as StatusContext);
+	});
+
 	pi.on("turn_end", (_event, ctx) => {
 		if (shouldRefresh(deps.now(), lastRefresh)) void refreshStatus(ctx as StatusContext);
 	});

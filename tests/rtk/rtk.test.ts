@@ -676,6 +676,31 @@ describe("rtk proxy routing", () => {
 		});
 	}
 
+	test("the proxy dies between turns: before_agent_start restores stock before the request, unthrottled, within the 2 s timeout", async () => {
+		let up = true;
+		const p = await proxySetup({ status: () => (up ? ok("running at 127.0.0.1:8080\n") : down()) });
+		await p.start();
+		expect(p.ctx.model.baseUrl).toBe(PROXY_URL);
+		const checksBefore = p.statusCalls().length;
+
+		up = false;
+		const results = await fire(p.fake as never, "before_agent_start", { type: "before_agent_start", prompt: "hi" }, p.ctx);
+		expect(results).toStrictEqual([undefined]);
+		expect(p.ctx.model.baseUrl).toBe(STOCK_URL);
+		expect(p.registered.at(-1)).toEqual(["anthropic", { baseUrl: STOCK_URL }]);
+		expect((await p.headers()).event.headers).toEqual({ "x-api-key": "k" });
+		const check = p.statusCalls()[checksBefore];
+		expect(check.options?.timeout).toBe(2_000);
+	});
+
+	test("before_agent_start with a throwing status check never throws", async () => {
+		let fail = false;
+		const p = await proxySetup({ status: () => (fail ? Promise.reject(new Error("spawn")) : ok("running at 127.0.0.1:8080\n")) });
+		await p.start();
+		fail = true;
+		await expect(fire(p.fake as never, "before_agent_start", { type: "before_agent_start", prompt: "hi" }, p.ctx)).resolves.toStrictEqual([undefined]);
+	});
+
 	describe("routing state across extension instances sharing one model runtime (/reload, /new)", () => {
 		const shutdown = (p: { fake: unknown; ctx: unknown }) =>
 			fire(p.fake as never, "session_shutdown", { type: "session_shutdown", reason: "reload" }, p.ctx);
