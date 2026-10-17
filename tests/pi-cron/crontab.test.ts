@@ -119,29 +119,29 @@ describe("readSystemCrontab", () => {
 
 describe("formatCronStatus matrix", () => {
   test("both pi and system jobs combine into the total form", () => {
-    expect(formatCronStatus(2, 2, 3, false, PATH)).toBe("Cron: 5 jobs (2 pi + 3 crontab)");
+    expect(formatCronStatus(2, 2, 3, false, PATH)).toBe("[cron jobs · pi 2/2 · system 3]");
   });
 
   test("pi-only keeps the legacy registered string byte-identical", () => {
-    expect(formatCronStatus(2, 3, 0, false, PATH)).toBe("Cron: 2/3 job(s) registered");
+    expect(formatCronStatus(2, 3, 0, false, PATH)).toBe("[cron jobs · pi 2/3]");
   });
 
   test("system-only uses the (s) literal form", () => {
-    expect(formatCronStatus(0, 0, 3, false, PATH)).toBe("Cron: 3 job(s) from system crontab");
+    expect(formatCronStatus(0, 0, 3, false, PATH)).toBe("[cron jobs · system 3]");
   });
 
   test("neither yields the legacy no-jobs string", () => {
-    expect(formatCronStatus(0, 0, 0, true, PATH)).toBe(`Cron: no jobs in ${PATH}`);
+    expect(formatCronStatus(0, 0, 0, true, PATH)).toBe(`[cron jobs · none in ${PATH}]`);
   });
 
   test("system 0 and available stays legacy byte-identical (no suffix)", () => {
-    expect(formatCronStatus(2, 3, 0, false, PATH)).toBe("Cron: 2/3 job(s) registered");
-    expect(formatCronStatus(0, 0, 0, false, PATH)).toBe(`Cron: no jobs in ${PATH}`);
+    expect(formatCronStatus(2, 3, 0, false, PATH)).toBe("[cron jobs · pi 2/3]");
+    expect(formatCronStatus(0, 0, 0, false, PATH)).toBe(`[cron jobs · none in ${PATH}]`);
   });
 
   test("characterization: unavailable system pins both legacy strings", () => {
-    expect(formatCronStatus(0, 0, 0, true, PATH)).toBe(`Cron: no jobs in ${PATH}`);
-    expect(formatCronStatus(1, 2, 0, true, PATH)).toBe("Cron: 1/2 job(s) registered");
+    expect(formatCronStatus(0, 0, 0, true, PATH)).toBe(`[cron jobs · none in ${PATH}]`);
+    expect(formatCronStatus(1, 2, 0, true, PATH)).toBe("[cron jobs · pi 1/2]");
   });
 });
 

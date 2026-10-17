@@ -197,7 +197,7 @@ describe("rtk extension wiring", () => {
 			const event = bashEvent("git status");
 			await fire(fake as never, "tool_call", event, { signal });
 
-			expect(statuses).toEqual([["rtk", "[RTK disabled: rtk binary not found in PATH]"]]);
+			expect(statuses).toEqual([["rtk", "[rtk disabled · rtk binary not found in PATH]"]]);
 			expect(rewriteCalls(calls)).toEqual([]);
 			expect(event.input.command).toBe("git status");
 		});
@@ -526,7 +526,7 @@ describe("rtk footer status", () => {
 				await flush();
 
 				const reason = kind === "missing" ? "rtk binary not found in PATH" : "rtk 0.22.0 is too old (need >= 0.23.0)";
-				expect(s.statuses).toEqual([["rtk", `[RTK disabled: ${reason}]`]]);
+				expect(s.statuses).toEqual([["rtk", `[rtk disabled · ${reason}]`]]);
 				expect(s.gainCalls()).toEqual([]);
 				expect(s.statusCalls()).toEqual([]);
 				expect(s.usageCalls).toEqual([]);

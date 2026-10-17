@@ -185,15 +185,18 @@ describe("progress", () => {
 		expect(result.status).toBe("pipeline");
 	});
 
-	test("formatProgress pins the four stage strings", () => {
-		expect(formatProgress({ stage: "planning" })).toBe("query-pipeline: planning queries…");
+	test("formatProgress pins every stage string", () => {
+		expect(formatProgress({ stage: "planning" })).toBe("[query-pipeline · planning queries]");
 		expect(formatProgress({ stage: "searching", index: 2, total: 5, query: "find the thing" })).toBe(
-			'query-pipeline: searching 2/5 — "find the thing"',
+			'[query-pipeline · searching 2/5 · "find the thing"]',
 		);
 		expect(formatProgress({ stage: "scoring", candidates: 24, batches: 2 })).toBe(
-			"query-pipeline: scoring 24 candidates (2 batches)…",
+			"[query-pipeline · scoring 24 candidates · 2 batches]",
 		);
-		expect(formatProgress({ stage: "merging", pool: 24 })).toBe("query-pipeline: merging 24 candidates…");
+		expect(formatProgress({ stage: "merging", pool: 24 })).toBe("[query-pipeline · merging 24 candidates]");
+		expect(formatProgress({ stage: "fallback", detail: "timeout" })).toBe("[query-pipeline · fallback · timeout]");
+		expect(formatProgress({ stage: "fallback" })).toBe("[query-pipeline · fallback]");
+		expect(formatProgress({ stage: "done" })).toBe("[query-pipeline · done]");
 	});
 });
 

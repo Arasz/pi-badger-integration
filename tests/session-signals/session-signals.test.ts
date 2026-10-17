@@ -122,9 +122,9 @@ describe("status rendering: footer text or an explicit clear", () => {
 
 	test("one delegation renders label + human elapsed", () => {
 		expect(renderStatus([{ toolCallId: "c1", label: "architect", startedAt: 0 }], 92_000))
-			.toBe("⏳ delegate architect — 1m32s");
+			.toBe("[delegate · architect 1m32s]");
 		expect(renderStatus([{ toolCallId: "c1", label: "qa", startedAt: 0 }], 7_000))
-			.toBe("⏳ delegate qa — 7s");
+			.toBe("[delegate · qa 7s]");
 	});
 
 	test("parallel delegations join; a negative elapsed clamps to zero", () => {
@@ -135,7 +135,7 @@ describe("status rendering: footer text or an explicit clear", () => {
 			],
 			61_000,
 		);
-		expect(text).toBe("⏳ delegate first — 1m01s · delegate second — 1m00s");
+		expect(text).toBe("[delegate · first 1m01s · second 1m00s]");
 	});
 });
 
@@ -297,8 +297,7 @@ describe("factory wiring: delegation status rides the delegate tool events", () 
 		await fireToolCall(ctx, "c2");
 		await fireToolResult(ctx, "c1");
 		const last = statuses[statuses.length - 1][1];
-		expect(last).toContain("delegate architect");
-		expect(last).not.toContain("c1");
+		expect(last).toMatch(/^\[delegate · architect \d+s\]$/);
 	});
 
 	test("without a UI nothing renders or aborts-noise is emitted, but abort still fires", async () => {

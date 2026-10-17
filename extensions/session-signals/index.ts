@@ -101,9 +101,9 @@ export function renderStatus(entries: DelegationEntry[], now: number): string | 
 		const minutes = Math.floor(seconds / 60);
 		const rest = seconds % 60;
 		const clock = minutes > 0 ? `${minutes}m${String(rest).padStart(2, "0")}s` : `${rest}s`;
-		return `delegate ${entry.label} — ${clock}`;
+		return `${entry.label} ${clock}`;
 	});
-	return `⏳ ${parts.join(" · ")}`;
+	return `[delegate · ${parts.join(" · ")}]`;
 }
 
 /** The delegation tool names to watch, from the env override or the default. `delegate` is

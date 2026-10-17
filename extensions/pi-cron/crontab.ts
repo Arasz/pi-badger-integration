@@ -133,7 +133,7 @@ export function truncateCommand(command: string, max: number = SYSTEM_COMMAND_PR
   return command.slice(0, max);
 }
 
-/** Footer status across pi-cron and the system crontab; zero/unknown system stays legacy. */
+/** Bracketed footer status: pi-registered/schedulable and system-crontab counts, each shown only when non-zero. */
 export function formatCronStatus(
   piRegistered: number,
   piSchedulable: number,
@@ -143,10 +143,9 @@ export function formatCronStatus(
 ): string {
   const hasPi = piRegistered > 0 || piSchedulable > 0;
   const hasSys = !sysUnavailable && sysCount > 0;
-  if (hasPi && hasSys) {
-    return `Cron: ${piRegistered + sysCount} jobs (${piRegistered} pi + ${sysCount} crontab)`;
-  }
-  if (hasSys) return `Cron: ${sysCount} job(s) from system crontab`;
-  if (!hasPi) return `Cron: no jobs in ${cronConfigPath}`;
-  return `Cron: ${piRegistered}/${piSchedulable} job(s) registered`;
+  if (!hasPi && !hasSys) return `[cron jobs · none in ${cronConfigPath}]`;
+  const parts = ["cron jobs"];
+  if (hasPi) parts.push(`pi ${piRegistered}/${piSchedulable}`);
+  if (hasSys) parts.push(`system ${sysCount}`);
+  return `[${parts.join(" · ")}]`;
 }

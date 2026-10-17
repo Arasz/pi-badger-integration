@@ -57,9 +57,9 @@ does it backfill with the next-best chunks of the already-included documents.
 The result is the bank's own `memory_search` envelope, so the injected block and
 its card are unchanged.
 
-While the pipeline runs, the footer shows `query-pipeline: planning queries…`,
-`searching i/n — "…"`, `scoring N candidates…`, `merging N candidates…` and
-clears when the block is injected (Esc does not cancel it — the hook is not
+While the pipeline runs, the footer shows `[query-pipeline · planning queries]`,
+`[query-pipeline · searching i/n · "…"]`, `[query-pipeline · scoring N candidates · B batches]`,
+`[query-pipeline · merging N candidates]` and clears when the block is injected (Esc does not cancel it — the hook is not
 cancellable, and the budget bounds it).
 
 Config (read per call): `PI_BADGER_QUERY_PIPELINE=0` disables,
@@ -474,7 +474,7 @@ delaying pi's startup, and exit 2 with a message blocks, as `rtk rewrite --help`
 means a Claude Code deny rule from `~/.claude` matched; pi has no native deny to defer to,
 so those commands run, as they do with the stock file. A command with leading whitespace
 before `rtk` is not sent for rewriting again. A missing or older-than-0.23.0 binary
-disables the extension and shows `[RTK disabled: <reason>]` in the footer.
+disables the extension and shows `[rtk disabled · <reason>]` in the footer.
 
 ### After a tool call: the rtk pipeline (`rtk hook claude`)
 
@@ -581,3 +581,16 @@ address and `RTK_PROXY_DB` an explicit usage database; otherwise the extension r
 Publish removes a loose `~/.pi/agent/extensions/rtk.ts` (what `rtk init --agent pi
 --global` installs), since both would register a handler. Re-running that `rtk init`
 puts the file back; `bun run check` then reports it.
+
+## Footer statuses
+
+pi prints every extension status on one footer row, joined by a single space. Each extension
+here writes its status as one bracketed segment, `[<name> <state> · <field> · <field>]`, so
+neighbours stay apart:
+
+| extension | example |
+|---|---|
+| pi-cron | `[cron jobs · pi 2/3 · system 1]` (each backend shown only when it has jobs) |
+| session-signals | `[delegate · architect 1m32s · qa 7s]` |
+| query-pipeline | `[query-pipeline · scoring 24 candidates · 2 batches]` |
+| rtk | `[rtk ⇄proxy · cmd 62% · proxy 18%]` |

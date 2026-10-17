@@ -83,17 +83,17 @@ function oneLine(text: string, cap: number): string {
 export function formatProgress(progress: PipelineProgress): string {
 	switch (progress.stage) {
 		case "planning":
-			return "query-pipeline: planning queries…";
+			return "[query-pipeline · planning queries]";
 		case "searching":
-			return `query-pipeline: searching ${progress.index ?? 1}/${progress.total ?? 1} — "${oneLine(progress.query ?? "", 48)}"`;
+			return `[query-pipeline · searching ${progress.index ?? 1}/${progress.total ?? 1} · "${oneLine(progress.query ?? "", 48)}"]`;
 		case "scoring":
-			return `query-pipeline: scoring ${progress.candidates ?? 0} candidates (${progress.batches ?? 0} batches)…`;
+			return `[query-pipeline · scoring ${progress.candidates ?? 0} candidates · ${progress.batches ?? 0} batches]`;
 		case "merging":
-			return `query-pipeline: merging ${progress.pool ?? 0} candidates…`;
+			return `[query-pipeline · merging ${progress.pool ?? 0} candidates]`;
 		case "fallback":
-			return `query-pipeline: fallback${progress.detail ? ` — ${oneLine(progress.detail, 48)}` : ""}…`;
+			return `[query-pipeline · fallback${progress.detail ? ` · ${oneLine(progress.detail, 48)}` : ""}]`;
 		case "done":
-			return "query-pipeline: done";
+			return "[query-pipeline · done]";
 	}
 }
 

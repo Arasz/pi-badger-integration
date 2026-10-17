@@ -100,7 +100,7 @@ function setup(pi: ExtensionAPI, deps: RtkDeps) {
 			lastRefresh = deps.now();
 			const problem = await unavailable;
 			if (problem) {
-				if (!disabledShown) setStatus(ctx, `[RTK disabled: ${problem}]`);
+				if (!disabledShown) setStatus(ctx, `[rtk disabled · ${problem}]`);
 				disabledShown = true;
 				return;
 			}
