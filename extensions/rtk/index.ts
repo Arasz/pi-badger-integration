@@ -1,5 +1,8 @@
 /**
- * rtk for pi: rewrites bash tool calls to their token-saving `rtk` equivalents.
+ * rtk for pi: rewrites bash tool calls to their token-saving `rtk` equivalents, passes large
+ * tool results through `rtk hook claude`, shows savings in the footer, and routes the stock
+ * anthropic provider through a running rtk-proxy. Routing adds rtk's directives and about 320
+ * uncached input tokens per request; set RTK_PI_PROXY=0 to keep pi direct.
  *
  * Adapted from rtk's stock pi extension (github.com/rtk-ai/rtk hooks/pi/rtk.ts at e542dca0,
  * Apache-2.0). Rewrite rules live in the `rtk rewrite` binary; this file only applies its
@@ -17,6 +20,8 @@ import {
 	parseProxyStatus,
 	proxyBind,
 	proxyDbPath,
+	proxyHeaders,
+	proxyUrl,
 	readProxyUsage,
 	shouldRefresh,
 	type ProxyState,
@@ -42,6 +47,14 @@ async function probe(pi: ExtensionAPI): Promise<string | undefined> {
 		return versionProblem(ver.stdout);
 	} catch {
 		return "rtk binary not found in PATH";
+	}
+}
+
+function isStockAnthropic(baseUrl: string | undefined): boolean {
+	try {
+		return baseUrl !== undefined && new URL(baseUrl).hostname === "api.anthropic.com";
+	} catch {
+		return false;
 	}
 }
 
@@ -71,6 +84,9 @@ function setup(pi: ExtensionAPI, deps: RtkDeps) {
 	const post = { sent: 0, compressed: 0 };
 	let disabledShown = false;
 	let lastRefresh: number | undefined;
+	// True while this instance has the anthropic provider pointed at rtk-proxy.
+	let routedByUs = false;
+	const routingAllowed = () => deps.env.RTK_PI_PROXY !== "0" && deps.env.RTK_DISABLED !== "1";
 
 	void unavailable.then((problem) => {
 		if (problem) console.warn(`[rtk] ${problem} — extension disabled`);
@@ -105,6 +121,7 @@ function setup(pi: ExtensionAPI, deps: RtkDeps) {
 				usage = undefined;
 			}
 			const up = status !== undefined && parseProxyStatus(status.stdout, status.code) === "up";
+			syncRouting(ctx, up);
 			const routed = isRouted(ctx.model?.baseUrl, proxyBind(deps.env));
 			const proxy: ProxyState = routed ? (up ? "routed" : "routed-down") : up ? "up" : "off";
 			const cmdPct = gain ? parseGain(gain.stdout)?.pct : undefined;
@@ -113,6 +130,31 @@ function setup(pi: ExtensionAPI, deps: RtkDeps) {
 			console.warn("[rtk] status refresh failed", error);
 		}
 	};
+
+	/** Points pi's stock anthropic provider at rtk-proxy while it is up; restores the built-in when it goes down. */
+	const syncRouting = (ctx: StatusContext, up: boolean) => {
+		try {
+			if (routedByUs && !up) {
+				routedByUs = false;
+				pi.unregisterProvider("anthropic");
+			} else if (!routedByUs && up && routingAllowed() && ctx.model?.provider === "anthropic" && isStockAnthropic(ctx.model.baseUrl)) {
+				pi.registerProvider("anthropic", { baseUrl: proxyUrl(deps.env) });
+				routedByUs = true;
+			}
+		} catch (error) {
+			console.warn("[rtk] could not change the anthropic provider route", error);
+		}
+	};
+
+	pi.on("before_provider_headers", (event, ctx) => {
+		try {
+			const c = ctx as StatusContext & ResultContext;
+			if (!routingAllowed() || c.model?.provider !== "anthropic" || !isRouted(c.model.baseUrl, proxyBind(deps.env))) return;
+			Object.assign(event.headers, proxyHeaders(c.cwd, c.sessionManager?.getSessionId?.()));
+		} catch (error) {
+			console.warn("[rtk] could not add proxy attribution headers", error);
+		}
+	});
 
 	pi.on("session_start", (_event, ctx) => {
 		void refreshStatus(ctx as StatusContext);
@@ -143,6 +185,7 @@ function setup(pi: ExtensionAPI, deps: RtkDeps) {
 		}
 		return undefined;
 	});
+
 	pi.on("tool_result", async (event, ctx) => {
 		try {
 			if (await unavailable) return undefined;

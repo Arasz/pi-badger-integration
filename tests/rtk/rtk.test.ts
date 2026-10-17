@@ -561,3 +561,145 @@ describe("rtk footer status", () => {
 		expect(s.gainCalls().length).toBe(2);
 	});
 });
+
+/** statusSetup plus provider stubs that act like pi: registering refreshes ctx.model.baseUrl, unregistering restores it. */
+async function proxySetup(opts: StatusOpts & { registerThrows?: boolean; model?: Record<string, any> } = {}) {
+	const s = await statusSetup(opts);
+	if (opts.model) s.ctx.model = { ...opts.model };
+	const registered: Array<[string, Record<string, unknown>]> = [];
+	const unregistered: string[] = [];
+	const original = s.ctx.model?.baseUrl;
+	Object.assign(s.fake as object, {
+		registerProvider: (name: string, config: Record<string, unknown>) => {
+			registered.push([name, config]);
+			if (opts.registerThrows) throw new Error("bad provider config");
+			if (s.ctx.model?.provider === name) s.ctx.model.baseUrl = config.baseUrl;
+		},
+		unregisterProvider: (name: string) => {
+			unregistered.push(name);
+			if (s.ctx.model?.provider === name) s.ctx.model.baseUrl = original;
+		},
+	});
+	const start = async () => {
+		await fire(s.fake as never, "session_start", { type: "session_start" }, s.ctx);
+		await flush();
+	};
+	const headers = async (initial: Record<string, string> = { "x-api-key": "k" }) => {
+		const event = { type: "before_provider_headers", headers: initial };
+		const results = await fire(s.fake as never, "before_provider_headers", event, s.ctx);
+		return { event, results };
+	};
+	return { ...s, registered, unregistered, start, headers };
+}
+
+const status0 = { post: { compressed: 0, sent: 0 }, cmdPct: 75, proxyPct: 40 };
+const down = () => ok("not running\n", 1);
+
+describe("rtk proxy routing", () => {
+	test("RTK_PI_PROXY=0 never registers and never touches headers", async () => {
+		const p = await proxySetup({ env: { RTK_PI_PROXY: "0" } });
+		await p.start();
+		expect(p.registered).toEqual([]);
+		p.ctx.model.baseUrl = PROXY_URL;
+		const { event } = await p.headers();
+		expect(event.headers).toEqual({ "x-api-key": "k" });
+	});
+
+	test("proxy up + stock anthropic registers exactly {baseUrl}, once, and the footer shows routed", async () => {
+		const p = await proxySetup();
+		await p.start();
+		expect(p.registered).toEqual([["anthropic", { baseUrl: PROXY_URL }]]);
+		expect(Object.keys(p.registered[0][1])).toEqual(["baseUrl"]);
+		expect(p.statuses).toEqual([["rtk", formatStatus({ proxy: "routed", ...status0 })]]);
+
+		await fire(p.fake as never, "model_select", { type: "model_select" }, p.ctx);
+		await flush();
+		expect(p.registered.length).toBe(1);
+	});
+
+	test("RTK_PROXY_BIND moves the registered baseUrl", async () => {
+		const p = await proxySetup({ env: { RTK_PROXY_BIND: "127.0.0.1:9999" }, status: () => ok("running at 127.0.0.1:9999\n") });
+		await p.start();
+		expect(p.registered).toEqual([["anthropic", { baseUrl: "http://127.0.0.1:9999" }]]);
+		expect(p.statuses.at(-1)?.[1]).toBe(formatStatus({ proxy: "routed", ...status0 }));
+	});
+
+	const never: Array<[string, Parameters<typeof proxySetup>[0]]> = [
+		["the proxy is down", { status: down }],
+		["the version probe throws", { version: () => Promise.reject(new Error("spawn")) }],
+		["RTK_DISABLED=1", { env: { RTK_DISABLED: "1" } }],
+		["the model is not anthropic", { model: { provider: "openai", id: "gpt", baseUrl: "https://api.openai.com/v1" } }],
+		["another provider uses api.anthropic.com", { model: { provider: "team-claude", id: "claude", baseUrl: STOCK_URL } }],
+		["the anthropic baseUrl is a custom gateway", { model: { provider: "anthropic", id: "claude", baseUrl: "https://gateway.corp.example/anthropic" } }],
+		["there is no model", { model: undefined }],
+	];
+	for (const [name, opts] of never) {
+		test(`no registration when ${name}`, async () => {
+			const p = await proxySetup(opts);
+			if (opts && "model" in opts && opts.model === undefined) p.ctx.model = undefined;
+			await p.start();
+			expect(p.registered).toEqual([]);
+		});
+	}
+
+	test("a fresh extension instance registers again", async () => {
+		const a = await proxySetup();
+		await a.start();
+		const b = await proxySetup();
+		await b.start();
+		expect(a.registered.length).toBe(1);
+		expect(b.registered.length).toBe(1);
+	});
+
+	test("a throwing registerProvider leaves the session working", async () => {
+		const p = await proxySetup({ registerThrows: true });
+		await p.start();
+		expect(p.registered.length).toBe(1);
+		expect(p.statuses).toEqual([["rtk", formatStatus({ proxy: "up", ...status0 })]]);
+		const call = bashEvent("git status");
+		await expect(fire(p.fake as never, "tool_call", call, { signal })).resolves.toEqual([undefined]);
+	});
+
+	test("headers are added in place only while the anthropic model points at the proxy", async () => {
+		const p = await proxySetup();
+		const direct = await p.headers();
+		expect(direct.event.headers).toEqual({ "x-api-key": "k" });
+
+		await p.start();
+		const initial: Record<string, string> = { "x-api-key": "k" };
+		const routed = await p.headers(initial);
+		expect(routed.results).toEqual([undefined]);
+		expect(routed.event.headers).toBe(initial);
+		expect(initial).toEqual({ "x-api-key": "k", "x-rtk-project": "/work/proj", "x-rtk-session": "sess-1" });
+
+		p.ctx.model = { provider: "openai", id: "gpt", baseUrl: PROXY_URL };
+		await fire(p.fake as never, "model_select", { type: "model_select" }, p.ctx);
+		await flush();
+		expect((await p.headers()).event.headers).toEqual({ "x-api-key": "k" });
+	});
+
+	test("a header handler with a broken ctx never throws", async () => {
+		const p = await proxySetup();
+		const event = { type: "before_provider_headers", headers: { a: "b" } };
+		const ctx = { cwd: "/w", model: { provider: "anthropic", baseUrl: PROXY_URL }, sessionManager: { getSessionId: () => { throw new Error("x"); } } };
+		await expect(fire(p.fake as never, "before_provider_headers", event, ctx)).resolves.toEqual([undefined]);
+	});
+
+	test("a refresh that finds the proxy down unregisters once and the footer shows proxy off", async () => {
+		let up = true;
+		const p = await proxySetup({ status: () => (up ? ok("running at 127.0.0.1:8080\n") : down()) });
+		await p.start();
+		expect(p.registered.length).toBe(1);
+
+		up = false;
+		p.clock.advance(10_001);
+		await fire(p.fake as never, "turn_end", { type: "turn_end" }, p.ctx);
+		await flush();
+		expect(p.unregistered).toEqual(["anthropic"]);
+		expect(p.statuses.at(-1)).toEqual(["rtk", formatStatus({ proxy: "off", ...status0 })]);
+
+		await fire(p.fake as never, "model_select", { type: "model_select" }, p.ctx);
+		await flush();
+		expect(p.unregistered).toEqual(["anthropic"]);
+	});
+});
