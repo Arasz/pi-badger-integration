@@ -701,6 +701,45 @@ describe("rtk proxy routing", () => {
 		await expect(fire(p.fake as never, "before_agent_start", { type: "before_agent_start", prompt: "hi" }, p.ctx)).resolves.toStrictEqual([undefined]);
 	});
 
+	describe("a stale refresh never routes or sets the footer", () => {
+		/** Status replies the test settles by hand, in call order. */
+		function manualStatus() {
+			const pending: Array<(r: ExecResult) => void> = [];
+			return { status: () => new Promise<ExecResult>((r) => pending.push(r)), pending };
+		}
+
+		test("an older refresh that sees up after a newer one saw down changes nothing", async () => {
+			const m = manualStatus();
+			const p = await proxySetup({ status: m.status });
+			await fire(p.fake as never, "session_start", { type: "session_start" }, p.ctx);
+			await fire(p.fake as never, "model_select", { type: "model_select" }, p.ctx);
+			await flush();
+			expect(m.pending.length).toBe(2);
+
+			m.pending[1](down());
+			await flush();
+			expect(p.statuses).toEqual([["rtk", "rtk proxy off · cmd 75% · proxy 40%"]]);
+
+			m.pending[0](ok("running at 127.0.0.1:8080\n"));
+			await flush();
+			expect(p.registered).toEqual([]);
+			expect(p.ctx.model.baseUrl).toBe(STOCK_URL);
+			expect(p.statuses).toEqual([["rtk", "rtk proxy off · cmd 75% · proxy 40%"]]);
+		});
+
+		test("a refresh still in flight at shutdown never routes afterwards", async () => {
+			const m = manualStatus();
+			const p = await proxySetup({ status: m.status });
+			await fire(p.fake as never, "session_start", { type: "session_start" }, p.ctx);
+			await flush();
+			await fire(p.fake as never, "session_shutdown", { type: "session_shutdown", reason: "reload" }, p.ctx);
+			m.pending[0](ok("running at 127.0.0.1:8080\n"));
+			await flush();
+			expect(p.registered).toEqual([]);
+			expect(p.statuses).toEqual([]);
+		});
+	});
+
 	describe("routing state across extension instances sharing one model runtime (/reload, /new)", () => {
 		const shutdown = (p: { fake: unknown; ctx: unknown }) =>
 			fire(p.fake as never, "session_shutdown", { type: "session_shutdown", reason: "reload" }, p.ctx);

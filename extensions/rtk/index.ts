@@ -75,6 +75,8 @@ function setup(pi: ExtensionAPI, deps: RtkDeps) {
 	const post = { sent: 0, compressed: 0 };
 	let disabledShown = false;
 	let lastRefresh: number | undefined;
+	// Bumped by each refresh and by shutdown; a refresh that is no longer the latest drops its result.
+	let generation = 0;
 	// The stock anthropic baseUrl this instance replaced with the proxy URL; set only while routed.
 	let stockBaseUrl: string | undefined;
 	const routingAllowed = () => deps.env.RTK_PI_PROXY !== "0" && deps.env.RTK_DISABLED !== "1";
@@ -94,6 +96,7 @@ function setup(pi: ExtensionAPI, deps: RtkDeps) {
 	/** Recomputes the footer; a disabled rtk shows only its reason, once. Never rejects. */
 	const refreshStatus = async (ctx: StatusContext) => {
 		try {
+			const mine = ++generation;
 			lastRefresh = deps.now();
 			const problem = await unavailable;
 			if (problem) {
@@ -111,6 +114,7 @@ function setup(pi: ExtensionAPI, deps: RtkDeps) {
 			} catch {
 				usage = undefined;
 			}
+			if (mine !== generation) return;
 			const up = status !== undefined && parseProxyStatus(status.stdout, status.code) === "up";
 			syncRouting(ctx, up);
 			const routed = isRouted(ctx.model?.baseUrl, proxyBind(deps.env));
@@ -146,6 +150,7 @@ function setup(pi: ExtensionAPI, deps: RtkDeps) {
 
 	// pi keeps the model runtime across /reload and /new, so routing must not outlive this instance.
 	pi.on("session_shutdown", () => {
+		generation++;
 		try {
 			if (stockBaseUrl !== undefined) restore(stockBaseUrl);
 		} catch (error) {
