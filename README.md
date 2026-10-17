@@ -44,6 +44,7 @@ bun run check
 | pi-cron | Cron scheduling inside pi |
 | session-signals | Marker importance aborts and delegation footer status |
 | console-capture | Extension `console.*` output captured to a rotating log instead of the TUI |
+| rtk | Bash tool calls rewritten through `rtk rewrite` for compact output (needs `rtk` >= 0.23.0 on PATH) |
 | shift-enter-newline | Shift+Enter newline for terminals that cannot report it |
 | ai-badger hooks adapter | PreToolUse gates and PostToolUse arms (vendored into ai-badger) |
 

@@ -484,9 +484,54 @@ describe("retired extension directories (pi-mcp-tools → pi's built-in MCP)", (
 	});
 
 	test("EXTENSION_DIRS no longer lists pi-mcp-tools", async () => {
-		const { EXTENSION_DIRS: dirs, RETIRED_EXTENSION_DIRS } = await import("../../publish.ts");
+		const { EXTENSION_DIRS: dirs, RETIRED_EXTENSIONS } = await import("../../publish.ts");
 		expect(dirs).not.toContain("pi-mcp-tools");
-		expect(RETIRED_EXTENSION_DIRS).toContain("pi-mcp-tools");
+		expect(Object.keys(RETIRED_EXTENSIONS)).toContain("pi-mcp-tools");
+	});
+});
+
+// The stock `rtk init --agent pi --global` file is a loose ~/.pi/agent/extensions/rtk.ts;
+// left next to the shipped rtk/ directory it would register a second tool_call handler.
+describe("retired loose extension file (rtk.ts → rtk/ directory)", () => {
+	test("EXTENSION_DIRS ships rtk and rtk.ts is retired", async () => {
+		const { EXTENSION_DIRS: dirs, RETIRED_EXTENSIONS } = await import("../../publish.ts");
+		expect(dirs).toContain("rtk");
+		expect(Object.keys(RETIRED_EXTENSIONS)).toContain("rtk.ts");
+	});
+
+	test("install removes a loose rtk.ts and announces it as a file", () => {
+		const { root, userDir } = fixture();
+		writeTree(extensionSource(root, "pi-cron"), { "index.ts": "A;" });
+		writeTree(userDir, { "rtk.ts": "stock rtk extension" });
+		const captured = captureConsole();
+		let code: number;
+		try {
+			code = main([], { targets: [directoryTarget("pi-cron", { root, userDir })], userExtensionsDir: userDir });
+		} finally {
+			captured.restore();
+		}
+
+		expect(code).toBe(0);
+		expect(existsSync(join(userDir, "rtk.ts"))).toBe(false);
+		expect(captured.lines.join("\n")).toContain(`removing retired extension file ${join(userDir, "rtk.ts")}`);
+	});
+
+	test("--check reports a loose rtk.ts as fatal and leaves it in place", () => {
+		const { root, userDir } = fixture();
+		writeTree(extensionSource(root, "pi-cron"), { "index.ts": "A;" });
+		writeTree(join(userDir, "pi-cron"), { "index.ts": "A;" });
+		writeTree(userDir, { "rtk.ts": "stock rtk extension" });
+		const captured = captureConsole();
+		let code: number;
+		try {
+			code = main(["--check"], { targets: [directoryTarget("pi-cron", { root, userDir })], userExtensionsDir: userDir });
+		} finally {
+			captured.restore();
+		}
+
+		expect(code).toBe(1);
+		expect(captured.lines.join("\n")).toContain(`retired extension file still installed: ${join(userDir, "rtk.ts")}`);
+		expect(readFileSync(join(userDir, "rtk.ts"), "utf8")).toBe("stock rtk extension");
 	});
 });
 

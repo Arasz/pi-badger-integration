@@ -44,7 +44,7 @@ bun run check
 rm -r ~/.pi/agent/extensions/<name>
 ```
 
-Publish manages only its own directories, with one retired-dir exception: `bun run publish` also removes directories it previously shipped and has since retired (pi-mcp-tools), announced on the console, and `bun run check` flags one that is present. Removing a still-shipped extension stays manual and safe. After removing the old flat-file leftovers once (listed in [Publish flow](../explanation/publish-flow.md#one-time-cleanup-after-the-switch-to-directory-installs-do-once-by-hand)), there is nothing else to clean.
+Publish manages only its own directories, with one retired-entry exception: `bun run publish` also removes entries it has since retired or replaced (the pi-mcp-tools directory, and the loose `rtk.ts` that `rtk init --agent pi --global` writes, superseded by the rtk directory), announced on the console, and `bun run check` flags one that is present. Removing a still-shipped extension stays manual and safe. After removing the old flat-file leftovers once (listed in [Publish flow](../explanation/publish-flow.md#one-time-cleanup-after-the-switch-to-directory-installs-do-once-by-hand)), there is nothing else to clean.
 
 ## Troubleshooting
 
