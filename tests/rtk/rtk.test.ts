@@ -562,34 +562,68 @@ describe("rtk footer status", () => {
 	});
 });
 
-/** statusSetup plus provider stubs that act like pi: registering refreshes ctx.model.baseUrl, unregistering restores it. */
-async function proxySetup(opts: StatusOpts & { registerThrows?: boolean; model?: Record<string, any> } = {}) {
+/**
+ * pi's model runtime as far as routing sees it: registerProvider merges into one stored extension
+ * registration per provider, unregisterProvider deletes it, and the session model's baseUrl is
+ * re-read from it (agent-session.js _refreshCurrentModelFromRegistry). Outlives extension instances.
+ */
+type Registry = {
+	ext: Map<string, Record<string, unknown>>;
+	ctx: Record<string, any>;
+	builtin: string | undefined;
+	refresh(): void;
+};
+
+function fakeRegistry(ctx: Record<string, any>, seed: Record<string, Record<string, unknown>> = {}): Registry {
+	const registry: Registry = {
+		ext: new Map(Object.entries(seed)),
+		ctx,
+		builtin: ctx.model?.baseUrl,
+		refresh() {
+			const model = registry.ctx.model;
+			if (!model) return;
+			const override = registry.ext.get(model.provider)?.baseUrl as string | undefined;
+			model.baseUrl = model.provider === "anthropic" ? (override ?? registry.builtin) : model.baseUrl;
+		},
+	};
+	return registry;
+}
+
+type ProxyOpts = StatusOpts & { registerThrows?: boolean; model?: Record<string, any>; registry?: Registry; seed?: Record<string, Record<string, unknown>> };
+
+/** statusSetup wired to a fake registry; pass `registry` to share one runtime across instances. */
+async function proxySetup(opts: ProxyOpts = {}) {
 	const s = await statusSetup(opts);
-	if (opts.model) s.ctx.model = { ...opts.model };
+	if (opts.registry) s.ctx = opts.registry.ctx;
+	else if ("model" in opts) s.ctx.model = opts.model ? { ...opts.model } : undefined;
+	const registry = opts.registry ?? fakeRegistry(s.ctx, opts.seed);
+	const ctx = registry.ctx;
+	ctx.ui = { setStatus: (key: string, text: string) => s.statuses.push([key, text]) };
 	const registered: Array<[string, Record<string, unknown>]> = [];
 	const unregistered: string[] = [];
-	const original = s.ctx.model?.baseUrl;
 	Object.assign(s.fake as object, {
 		registerProvider: (name: string, config: Record<string, unknown>) => {
 			registered.push([name, config]);
 			if (opts.registerThrows) throw new Error("bad provider config");
-			if (s.ctx.model?.provider === name) s.ctx.model.baseUrl = config.baseUrl;
+			registry.ext.set(name, { ...registry.ext.get(name), ...config });
+			registry.refresh();
 		},
 		unregisterProvider: (name: string) => {
 			unregistered.push(name);
-			if (s.ctx.model?.provider === name) s.ctx.model.baseUrl = original;
+			registry.ext.delete(name);
+			registry.refresh();
 		},
 	});
 	const start = async () => {
-		await fire(s.fake as never, "session_start", { type: "session_start" }, s.ctx);
+		await fire(s.fake as never, "session_start", { type: "session_start" }, ctx);
 		await flush();
 	};
 	const headers = async (initial: Record<string, string> = { "x-api-key": "k" }) => {
 		const event = { type: "before_provider_headers", headers: initial };
-		const results = await fire(s.fake as never, "before_provider_headers", event, s.ctx);
+		const results = await fire(s.fake as never, "before_provider_headers", event, ctx);
 		return { event, results };
 	};
-	return { ...s, registered, unregistered, start, headers };
+	return { ...s, ctx, registry, registered, unregistered, start, headers };
 }
 
 const status0 = { post: { compressed: 0, sent: 0 }, cmdPct: 75, proxyPct: 40 };
@@ -697,21 +731,47 @@ describe("rtk proxy routing", () => {
 		await expect(fire(p.fake as never, "before_provider_headers", event, ctx)).resolves.toEqual([undefined]);
 	});
 
-	test("a refresh that finds the proxy down unregisters once and the footer shows proxy off", async () => {
+	test("a refresh that finds the proxy down re-registers the saved stock baseUrl once, never unregisters, and the footer shows proxy off", async () => {
 		let up = true;
 		const p = await proxySetup({ status: () => (up ? ok("running at 127.0.0.1:8080\n") : down()) });
 		await p.start();
-		expect(p.registered.length).toBe(1);
+		expect(p.registered).toEqual([["anthropic", { baseUrl: PROXY_URL }]]);
 
 		up = false;
 		p.clock.advance(10_001);
 		await fire(p.fake as never, "turn_end", { type: "turn_end" }, p.ctx);
 		await flush();
-		expect(p.unregistered).toEqual(["anthropic"]);
+		expect(p.registered).toEqual([
+			["anthropic", { baseUrl: PROXY_URL }],
+			["anthropic", { baseUrl: STOCK_URL }],
+		]);
+		expect(p.unregistered).toEqual([]);
+		expect(p.ctx.model.baseUrl).toBe(STOCK_URL);
 		expect(p.statuses.at(-1)).toEqual(["rtk", formatStatus({ proxy: "off", ...status0 })]);
 
 		await fire(p.fake as never, "model_select", { type: "model_select" }, p.ctx);
 		await flush();
-		expect(p.unregistered).toEqual(["anthropic"]);
+		expect(p.registered.length).toBe(2);
 	});
+
+	test("restoring keeps another extension's anthropic settings and the exact stock URL it replaced", async () => {
+		let up = true;
+		const stock = "https://api.anthropic.com/v1";
+		const p = await proxySetup({
+			status: () => (up ? ok("running at 127.0.0.1:8080\n") : down()),
+			model: { provider: "anthropic", id: "claude", baseUrl: stock },
+			seed: { anthropic: { headers: { "x-team": "1" }, apiKey: "TEAM_KEY" } },
+		});
+		await p.start();
+		expect(p.ctx.model.baseUrl).toBe(PROXY_URL);
+
+		up = false;
+		p.clock.advance(10_001);
+		await fire(p.fake as never, "turn_end", { type: "turn_end" }, p.ctx);
+		await flush();
+		expect(p.registered.at(-1)).toEqual(["anthropic", { baseUrl: stock }]);
+		expect(p.registry.ext.get("anthropic")).toEqual({ headers: { "x-team": "1" }, apiKey: "TEAM_KEY", baseUrl: stock });
+		expect(p.ctx.model.baseUrl).toBe(stock);
+	});
+
 });

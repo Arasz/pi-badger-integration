@@ -73,8 +73,8 @@ function setup(pi: ExtensionAPI, deps: RtkDeps) {
 	const post = { sent: 0, compressed: 0 };
 	let disabledShown = false;
 	let lastRefresh: number | undefined;
-	// True while this instance has the anthropic provider pointed at rtk-proxy.
-	let routedByUs = false;
+	// The stock anthropic baseUrl this instance replaced with the proxy URL; set only while routed.
+	let stockBaseUrl: string | undefined;
 	const routingAllowed = () => deps.env.RTK_PI_PROXY !== "0" && deps.env.RTK_DISABLED !== "1";
 
 	void unavailable.then((problem) => {
@@ -120,15 +120,18 @@ function setup(pi: ExtensionAPI, deps: RtkDeps) {
 		}
 	};
 
-	/** Points pi's stock anthropic provider at rtk-proxy while it is up; restores the built-in when it goes down. */
+	/** Points pi's stock anthropic provider at rtk-proxy while it is up; re-registers the saved stock URL when it goes down. */
 	const syncRouting = (ctx: StatusContext, up: boolean) => {
 		try {
-			if (routedByUs && !up) {
-				routedByUs = false;
-				pi.unregisterProvider("anthropic");
-			} else if (!routedByUs && up && routingAllowed() && ctx.model?.provider === "anthropic" && isStockAnthropic(ctx.model.baseUrl)) {
+			if (stockBaseUrl !== undefined && !up) {
+				const stock = stockBaseUrl;
+				stockBaseUrl = undefined;
+				// Only baseUrl changes, so another extension's anthropic settings survive (unregister would drop them).
+				pi.registerProvider("anthropic", { baseUrl: stock });
+			} else if (stockBaseUrl === undefined && up && routingAllowed() && ctx.model?.provider === "anthropic" && isStockAnthropic(ctx.model.baseUrl)) {
+				const stock = ctx.model.baseUrl as string;
 				pi.registerProvider("anthropic", { baseUrl: proxyUrl(deps.env) });
-				routedByUs = true;
+				stockBaseUrl = stock;
 			}
 		} catch (error) {
 			console.warn("[rtk] could not change the anthropic provider route", error);
