@@ -186,7 +186,7 @@ describe("rtk extension wiring", () => {
 
 			if (order === "probe first") {
 				release({ stdout: "", stderr: "ENOENT", code: 1, killed: false });
-				await probe;
+				await new Promise((r) => setTimeout(r, 0)); // let the probe's .then record the reason first
 				await fire(fake as never, "session_start", { type: "session_start" }, ctx);
 			} else {
 				await fire(fake as never, "session_start", { type: "session_start" }, ctx);

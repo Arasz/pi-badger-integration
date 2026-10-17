@@ -465,7 +465,7 @@ command through: pi blocks a tool whose `tool_call` handler throws.
 
 Changes from the stock file: the `rtk --version` probe runs in the background instead of
 delaying pi's startup; exit 2 with a message blocks, as `rtk rewrite --help` documents (the
-stock file passes it through); a command with leading whitespace before `rtk` is not sent
+stock file passes it through). rtk's current source prints nothing on exit 2, which means a Claude Code deny rule from `~/.claude` matched; pi has no native deny to defer to, so those commands run, as they do with the stock file. A command with leading whitespace before `rtk` is not sent
 for rewriting again. A missing or older-than-0.23.0 binary disables the extension and shows
 `RTK disabled: <reason>` in the footer.
 
