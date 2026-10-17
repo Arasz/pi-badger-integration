@@ -5,6 +5,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { homedir } from "node:os";
 import { fromHookOutput, MIN_POSTHOOK_CHARS, RTK_COMMAND_MIN_CHARS, toHookPayload } from "../../extensions/rtk/rtk-posthook.ts";
 
 type Ev = Parameters<typeof toHookPayload>[0];
@@ -62,6 +63,27 @@ describe("toHookPayload: tool mapping (Claude shapes)", () => {
 			type: "text",
 			file: { filePath: "/work/proj/src/a.ts", content: body(2000) },
 		});
+	});
+
+	test("read strips a leading '@' like pi does, so rtk sees the real basename", () => {
+		const r = sent(ev({ toolName: "read", input: { path: "@package-lock.json" } }));
+		expect(r?.payload.tool_input).toEqual({ file_path: "/work/proj/package-lock.json" });
+	});
+
+	test("read expands a leading '~/' to the home directory", () => {
+		const r = sent(ev({ toolName: "read", input: { path: "~/x.lock" } }));
+		expect(r?.payload.tool_input).toEqual({ file_path: `${homedir()}/x.lock` });
+	});
+
+	test("read expands '~' after stripping '@', and leaves 'a~b' alone", () => {
+		expect(sent(ev({ toolName: "read", input: { path: "@~/x.lock" } }))?.payload.tool_input).toEqual({ file_path: `${homedir()}/x.lock` });
+		expect(sent(ev({ toolName: "read", input: { path: "~" } }))?.payload.tool_input).toEqual({ file_path: homedir() });
+		expect(sent(ev({ toolName: "read", input: { path: "a~b" } }))?.payload.tool_input).toEqual({ file_path: "/work/proj/a~b" });
+	});
+
+	test("read expands '~' against an explicit home", () => {
+		const r = toHookPayload(ev({ toolName: "read", input: { path: "~/a/b.lock" } }), CWD, {}, "/h");
+		expect(r?.payload.tool_input).toEqual({ file_path: "/h/a/b.lock" });
 	});
 
 	test("read keeps an absolute path as is", () => {

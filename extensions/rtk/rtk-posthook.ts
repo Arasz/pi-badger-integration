@@ -1,6 +1,7 @@
 /** Pure mapping between pi tool_result events and rtk's Claude-shaped PostToolUse payload. */
 
-import { resolve } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import type { ToolResultEvent, ToolResultEventResult } from "@earendil-works/pi-coding-agent";
 
 /** Bodies shorter than this pass untouched, matching rtk's `guards.min_size`. */
@@ -44,10 +45,18 @@ function textBlocks(event: ToolResultEvent): string[] | undefined {
 	return texts;
 }
 
+/** Resolves a read path the way pi's read tool does: strip a leading `@`, expand `~`, then resolve against cwd. */
+function resolveReadPath(path: string, cwd: string, home: string): string {
+	const p = path.startsWith("@") ? path.slice(1) : path;
+	if (p === "~") return home;
+	if (p.startsWith("~/")) return join(home, p.slice(2));
+	return resolve(cwd, p);
+}
+
 const isRecord = (v: unknown): v is Json => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /** Builds the PostToolUse payload for one tool result, or undefined when rtk should not see it. */
-export function toHookPayload(event: ToolResultEvent, cwd: string, env: Env): HookRequest | undefined {
+export function toHookPayload(event: ToolResultEvent, cwd: string, env: Env, home = homedir()): HookRequest | undefined {
 	if (env.RTK_DISABLED === "1" || event.parentToolCallId) return undefined;
 	const tool = event.toolName;
 	const input = isRecord(event.input) ? event.input : {};
@@ -73,7 +82,7 @@ export function toHookPayload(event: ToolResultEvent, cwd: string, env: Env): Ho
 		toolResponse = { stdout: body, stderr: "", interrupted: false };
 	} else if (tool === "read") {
 		if (typeof input.path !== "string") return undefined;
-		const filePath = resolve(cwd, input.path);
+		const filePath = resolveReadPath(input.path, cwd, home);
 		name = "Read";
 		toolInput = { file_path: filePath };
 		toolResponse = { type: "text", file: { filePath, content: body } };
