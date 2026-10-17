@@ -9,6 +9,7 @@ import { createFakePi } from "../helpers/fake-pi.ts";
 import { fire } from "../router-fallback/helpers.ts";
 import makeExtension, { createRtkExtension } from "../../extensions/rtk/index.ts";
 import { timeoutFor } from "../../extensions/rtk/rtk-hook-runner.ts";
+import { formatStatus } from "../../extensions/rtk/rtk-status.ts";
 import { decideRewrite, isRewriteCandidate, versionProblem } from "../../extensions/rtk/rtk-core.ts";
 
 type ExecResult = { stdout: string; stderr: string; code: number; killed: boolean };
@@ -268,7 +269,7 @@ describe("rtk after-tool pipeline wiring", () => {
 	) {
 		const { pi, fake, calls: execCalls } = piWithExec(opts.exec ?? healthy);
 		const hook = fakeRunHook(reply);
-		await createRtkExtension({ runHook: hook.runHook as never, env: opts.env ?? {} })(pi);
+		await createRtkExtension({ runHook: hook.runHook as never, env: opts.env ?? {}, now: () => 0, readProxyUsage: () => undefined, proxyDb: "" })(pi);
 		return { fake, execCalls, hook };
 	}
 
@@ -386,5 +387,177 @@ describe("rtk after-tool pipeline wiring", () => {
 		const { fake, hook } = await setup(() => hookReply({ mode: "content", content: "x" }));
 		await fire(fake as never, "tool_result", resultEvent("grep", { pattern: "foo" }, bigText(2_000)), { cwd: "/w", signal });
 		expect(hook.calls[0].payload.session_id).toBe("");
+	});
+});
+
+const PROXY_URL = "http://127.0.0.1:8080";
+const STOCK_URL = "https://api.anthropic.com";
+const gainJson = (input: number, saved: number) =>
+	JSON.stringify({ summary: { total_commands: 4, total_input: input, total_saved: saved, total_output: input - saved } });
+
+/** Lets fire-and-forget refreshes settle: fake execs resolve on microtasks. */
+const flush = async () => {
+	for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+};
+
+type StatusOpts = {
+	version?: () => ExecResult | Promise<ExecResult>;
+	gain?: () => ExecResult | Promise<ExecResult>;
+	status?: () => ExecResult | Promise<ExecResult>;
+	usage?: () => { pct: number | undefined } | undefined;
+	env?: Record<string, string | undefined>;
+	hook?: (call: HookCall) => HookReply | Promise<HookReply>;
+};
+
+async function statusSetup(opts: StatusOpts = {}) {
+	const { pi, fake, calls } = piWithExec((call) => {
+		if (call.args[0] === "--version") return opts.version ? opts.version() : ok("rtk 1.0.1\n");
+		if (call.args[0] === "gain") return opts.gain ? opts.gain() : ok(gainJson(1000, 750));
+		if (call.args[0] === "llm-proxy") return opts.status ? opts.status() : ok("running at 127.0.0.1:8080\n");
+		return ok("", 1);
+	});
+	const usageCalls: Array<[string, string]> = [];
+	const hook = fakeRunHook(opts.hook ?? (() => hookReply({ mode: "content", content: "3 matches" })));
+	const clock = (fake as unknown as { clock: { now: number; advance(ms: number): void } }).clock;
+	await createRtkExtension({
+		runHook: hook.runHook as never,
+		env: opts.env ?? {},
+		now: () => clock.now,
+		readProxyUsage: (db: string, project: string) => {
+			usageCalls.push([db, project]);
+			return opts.usage ? opts.usage() : { pct: 40 };
+		},
+		proxyDb: "/db/rtk-proxy.db",
+	})(pi);
+	const statuses: Array<[string, string]> = [];
+	const ctx: Record<string, any> = {
+		...sessionCtx(),
+		model: { provider: "anthropic", id: "claude", baseUrl: STOCK_URL },
+		ui: { setStatus: (key: string, text: string) => statuses.push([key, text]) },
+	};
+	const gainCalls = () => calls.filter((c) => c.args[0] === "gain");
+	const statusCalls = () => calls.filter((c) => c.args[0] === "llm-proxy");
+	return { fake, calls, ctx, statuses, usageCalls, clock, gainCalls, statusCalls, hook };
+}
+
+describe("rtk footer status", () => {
+	test("session_start sets one status from project gain, proxy state, proxy pct and the post counter", async () => {
+		const s = await statusSetup({ hook: (call) => (call.payload.tool_input.pattern === "a" ? hookReply({ mode: "content", content: "x" }) : { stdout: "", code: 1, killed: false }) });
+		s.ctx.model.baseUrl = PROXY_URL;
+		await fire(s.fake as never, "tool_result", resultEvent("grep", { pattern: "a" }, bigText(2_000)), s.ctx);
+		await fire(s.fake as never, "tool_result", resultEvent("grep", { pattern: "b" }, bigText(2_000)), s.ctx);
+		await fire(s.fake as never, "session_start", { type: "session_start" }, s.ctx);
+		await flush();
+
+		expect(s.statuses).toEqual([["rtk", formatStatus({ proxy: "routed", cmdPct: 75, proxyPct: 40, post: { compressed: 1, sent: 2 } })]]);
+		expect(s.statuses[0][1]).toBe("rtk ⇄proxy · cmd 75% · proxy 40% · post 1/2");
+		const [gain] = s.gainCalls();
+		expect(gain.args).toEqual(["gain", "-p", "-f", "json"]);
+		expect(gain.options?.cwd).toBe("/work/proj");
+		expect(gain.options?.timeout).toBe(2_000);
+		expect(s.statusCalls()[0].args).toEqual(["llm-proxy", "status"]);
+		expect(s.usageCalls).toEqual([["/db/rtk-proxy.db", "/work/proj"]]);
+	});
+
+	const states: Array<[string, string, boolean, "routed" | "routed-down" | "up" | "off"]> = [
+		["routed and up", PROXY_URL, true, "routed"],
+		["routed but down", PROXY_URL, false, "routed-down"],
+		["direct and up", "https://gateway.example.com", true, "up"],
+		["direct and down", STOCK_URL, false, "off"],
+	];
+	for (const [name, baseUrl, up, proxy] of states) {
+		test(`proxy state: ${name} -> ${proxy}`, async () => {
+			const s = await statusSetup({ status: () => (up ? ok("running at 127.0.0.1:8080\n") : ok("not running\n", 1)), env: { RTK_PI_PROXY: "0" } });
+			s.ctx.model.baseUrl = baseUrl;
+			await fire(s.fake as never, "session_start", { type: "session_start" }, s.ctx);
+			await flush();
+			expect(s.statuses).toEqual([["rtk", formatStatus({ proxy, cmdPct: 75, proxyPct: 40, post: { compressed: 0, sent: 0 } })]]);
+		});
+	}
+
+	test("turn_end refreshes at most once per 10 s; model_select refreshes at once with the new baseUrl", async () => {
+		const s = await statusSetup({ status: () => ok("running at 127.0.0.1:8080\n"), env: { RTK_PI_PROXY: "0" } });
+		await fire(s.fake as never, "turn_end", { type: "turn_end" }, s.ctx);
+		await fire(s.fake as never, "turn_end", { type: "turn_end" }, s.ctx);
+		await flush();
+		expect(s.gainCalls().length).toBe(1);
+
+		s.clock.advance(10_001);
+		await fire(s.fake as never, "turn_end", { type: "turn_end" }, s.ctx);
+		await flush();
+		expect(s.gainCalls().length).toBe(2);
+
+		s.ctx.model = { provider: "anthropic", id: "claude", baseUrl: PROXY_URL };
+		await fire(s.fake as never, "model_select", { type: "model_select", model: s.ctx.model, source: "set" }, s.ctx);
+		await flush();
+		expect(s.gainCalls().length).toBe(3);
+		expect(s.statuses.at(-1)).toEqual(["rtk", formatStatus({ proxy: "routed", cmdPct: 75, proxyPct: 40, post: { compressed: 0, sent: 0 } })]);
+	});
+
+	test("tool results never trigger a refresh", async () => {
+		const s = await statusSetup();
+		await fire(s.fake as never, "tool_result", resultEvent("grep", { pattern: "a" }, bigText(2_000)), s.ctx);
+		await flush();
+		expect(s.gainCalls()).toEqual([]);
+		expect(s.statuses).toEqual([]);
+	});
+
+	const broken: Array<[string, (version: string) => ExecResult]> = [
+		["missing", () => ({ stdout: "", stderr: "ENOENT", code: 1, killed: false })],
+		["too old", () => ok("rtk 0.22.0\n")],
+	];
+	for (const [kind, versionReply] of broken) {
+		for (const order of ["probe first", "session first"] as const) {
+			test(`a ${kind} rtk shows only the disabled reason and runs no gain/status (${order})`, async () => {
+				let release: (r: ExecResult) => void = () => {};
+				const probe = new Promise<ExecResult>((r) => (release = r));
+				const s = await statusSetup({ version: () => probe });
+				if (order === "probe first") {
+					release(versionReply(""));
+					await flush();
+					await fire(s.fake as never, "session_start", { type: "session_start" }, s.ctx);
+				} else {
+					await fire(s.fake as never, "session_start", { type: "session_start" }, s.ctx);
+					release(versionReply(""));
+				}
+				await flush();
+				await fire(s.fake as never, "turn_end", { type: "turn_end" }, s.ctx);
+				await fire(s.fake as never, "model_select", { type: "model_select", model: s.ctx.model, source: "set" }, s.ctx);
+				await flush();
+
+				const reason = kind === "missing" ? "rtk binary not found in PATH" : "rtk 0.22.0 is too old (need >= 0.23.0)";
+				expect(s.statuses).toEqual([["rtk", `RTK disabled: ${reason}`]]);
+				expect(s.gainCalls()).toEqual([]);
+				expect(s.statusCalls()).toEqual([]);
+				expect(s.usageCalls).toEqual([]);
+			});
+		}
+	}
+
+	const failing: Array<[string, StatusOpts, Parameters<typeof formatStatus>[0]]> = [
+		["gain throws", { gain: () => Promise.reject(new Error("x")) }, { proxy: "off", proxyPct: 40 }],
+		["gain prints garbage", { gain: () => ok("nope") }, { proxy: "off", proxyPct: 40 }],
+		["status throws", { status: () => Promise.reject(new Error("x")) }, { proxy: "off", cmdPct: 75, proxyPct: 40 }],
+		["the db read throws", { usage: () => { throw new Error("locked"); } }, { proxy: "off", cmdPct: 75 }],
+		["the db read is empty", { usage: () => undefined }, { proxy: "off", cmdPct: 75 }],
+	];
+	for (const [name, opts, expected] of failing) {
+		test(`when ${name} only that segment drops`, async () => {
+			const s = await statusSetup({ status: () => ok("not running\n", 1), ...opts, env: { RTK_PI_PROXY: "0" } });
+			await fire(s.fake as never, "session_start", { type: "session_start" }, s.ctx);
+			await flush();
+			expect(s.statuses).toEqual([["rtk", formatStatus({ ...expected, post: { compressed: 0, sent: 0 } })]]);
+		});
+	}
+
+	test("a missing ui, a missing model or a throwing setStatus never throws", async () => {
+		const s = await statusSetup();
+		const bare = { cwd: "/work/proj", signal };
+		await expect(fire(s.fake as never, "session_start", { type: "session_start" }, bare)).resolves.toBeDefined();
+		await expect(
+			fire(s.fake as never, "model_select", { type: "model_select" }, { ...bare, ui: { setStatus: () => { throw new Error("tui gone"); } } }),
+		).resolves.toBeDefined();
+		await flush();
+		expect(s.gainCalls().length).toBe(2);
 	});
 });
