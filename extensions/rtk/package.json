@@ -1,0 +1,11 @@
+{
+  "name": "rtk",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "rtk for pi: rewrites bash tool calls through `rtk rewrite` for token savings (adapted from rtk's stock hooks/pi/rtk.ts). pi discovers the entry as ~/.pi/agent/extensions/<name>/index.ts; this manifest records metadata only and does not register the entry.",
+  "main": "index.ts",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

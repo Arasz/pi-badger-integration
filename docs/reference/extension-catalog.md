@@ -449,3 +449,26 @@ nests with session-signals' vertex filter in either order.
 Kill switch: `PI_BADGER_CONSOLE_CAPTURE=0|false|off` leaves `console` untouched and
 registers no handlers. Caveat, by design: disabling the extension or the kill switch means
 the leak returns — nothing else reroutes those call sites.
+
+## The rtk extension: bash commands rewritten for compact output
+
+`rtk` hands every bash tool call to `rtk rewrite` and applies its verdict, so tools like
+`git status` run as `rtk git status` and return filtered output. It is adapted from rtk's
+stock pi extension (`hooks/pi/rtk.ts` in github.com/rtk-ai/rtk, pinned in the file header);
+the rewrite rules stay in the rtk binary.
+
+Exit codes of `rtk rewrite` decide the action: 0 or 3 with output rewrites the command in
+place, 1 passes it through, 2 with a message blocks the call with that message (2 without
+one passes through), and a timeout (2 s) or any other code passes through. Commands
+already in `rtk` form and `RTK_DISABLED=1` skip the call. Every error path passes the
+command through: pi blocks a tool whose `tool_call` handler throws.
+
+Changes from the stock file: the `rtk --version` probe runs in the background instead of
+delaying pi's startup; exit 2 with a message blocks, as `rtk rewrite --help` documents (the
+stock file passes it through). rtk's current source prints nothing on exit 2, which means a Claude Code deny rule from `~/.claude` matched; pi has no native deny to defer to, so those commands run, as they do with the stock file. A command with leading whitespace before `rtk` is not sent
+for rewriting again. A missing or older-than-0.23.0 binary disables the extension and shows
+`RTK disabled: <reason>` in the footer.
+
+Publish removes a loose `~/.pi/agent/extensions/rtk.ts` (what `rtk init --agent pi
+--global` installs), since both would register a handler. Re-running that `rtk init`
+puts the file back; `bun run check` then reports it.

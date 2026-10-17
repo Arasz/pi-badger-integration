@@ -46,7 +46,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,15 +66,18 @@ export const ADAPTER_FILES = [
 ] as const;
 
 const ADAPTER_SOURCE_DIR = "features/pi/adjustments/adapter";
-/** Directory names this repo no longer ships but may still be installed at user
- * scope. pi discovers EVERY subdirectory under ~/.pi/agent/extensions/, so a
- * leftover copy would keep loading next to its native replacement: install removes
- * exactly these names (never a generic sweep) and --check reports them as fatal
- * drift. */
-export const RETIRED_EXTENSION_DIRS = ["pi-mcp-tools"] as const;
+/** Entries (directories or loose files) this repo no longer ships but may still be
+ * installed at user scope, each with why. pi discovers EVERY entry under
+ * ~/.pi/agent/extensions/, so a leftover keeps loading next to its replacement:
+ * install removes exactly these names (never a generic sweep) and --check reports
+ * them as fatal drift. */
+export const RETIRED_EXTENSIONS: Readonly<Record<string, string>> = {
+	"pi-mcp-tools": "was replaced by pi's built-in MCP support",
+	"rtk.ts": "is the stock `rtk init --agent pi --global` file, replaced by the rtk/ extension this repo ships",
+};
 
 /** Directory names under extensions/, each installed as ~/.pi/agent/extensions/<name>/. */
-export const EXTENSION_DIRS = ["pi-cron", "session-signals", "shift-enter-newline", "subagent", "monitor", "router-fallback", "update-check", "message-bus", "mem-based-rag", "task-rename", "decision-router", "query-pipeline", "console-capture"] as const;
+export const EXTENSION_DIRS = ["pi-cron", "session-signals", "shift-enter-newline", "subagent", "monitor", "router-fallback", "update-check", "message-bus", "mem-based-rag", "task-rename", "decision-router", "query-pipeline", "console-capture", "rtk"] as const;
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const USER_EXTENSIONS_DIR = join(homedir(), ".pi", "agent", "extensions");
@@ -327,30 +330,32 @@ function installTarget(target: Target): void {
 	console.log(`installed ${target.pairs.length} file(s) → ${target.name}`);
 }
 
-/** Fatal --check problems for retired dirs still present at user scope. Names the dir
- * and the fix; --check never writes, so the fix is a publish run. */
+function retiredKind(path: string): "directory" | "file" {
+	return statSync(path).isDirectory() ? "directory" : "file";
+}
+
+/** Fatal --check problems for retired entries still present at user scope. Names the
+ * entry and the fix; --check never writes, so the fix is a publish run. */
 function retiredExtensionProblems(userExtensionsDir: string): string[] {
 	const problems: string[] = [];
-	for (const name of RETIRED_EXTENSION_DIRS) {
-		const dir = join(userExtensionsDir, name);
-		if (existsSync(dir)) {
-			problems.push(
-				`retired extension directory still installed: ${dir} — ${name} was replaced by pi's built-in MCP support; run bun publish.ts to remove it`,
-			);
+	for (const [name, why] of Object.entries(RETIRED_EXTENSIONS)) {
+		const path = join(userExtensionsDir, name);
+		if (existsSync(path)) {
+			problems.push(`retired extension ${retiredKind(path)} still installed: ${path} — ${name} ${why}; run bun publish.ts to remove it`);
 		}
 	}
 	return problems;
 }
 
-/** Install-path cleanup: remove every RETIRED_EXTENSION_DIRS entry that exists,
- * announced. Only those exact names are ever touched — a generic sweep would delete
- * user-scope neighbours publish does not own. */
+/** Install-path cleanup: remove every RETIRED_EXTENSIONS entry that exists, announced.
+ * Only those exact names are ever touched — a generic sweep would delete user-scope
+ * neighbours publish does not own. */
 function removeRetiredExtensions(userExtensionsDir: string): void {
-	for (const name of RETIRED_EXTENSION_DIRS) {
-		const dir = join(userExtensionsDir, name);
-		if (!existsSync(dir)) continue;
-		console.log(`removing retired extension directory ${dir} (${name} was replaced by pi's built-in MCP support)`);
-		rmSync(dir, { recursive: true, force: true });
+	for (const [name, why] of Object.entries(RETIRED_EXTENSIONS)) {
+		const path = join(userExtensionsDir, name);
+		if (!existsSync(path)) continue;
+		console.log(`removing retired extension ${retiredKind(path)} ${path} (${name} ${why})`);
+		rmSync(path, { recursive: true, force: true });
 	}
 }
 
@@ -434,7 +439,7 @@ export function main(
 	}
 
 	// Retired extensions are removed before anything ships: pi discovers every
-	// subdirectory under the user extensions dir, so a leftover copy would keep
+	// entry under the user extensions dir, so a leftover copy would keep
 	// loading next to its native replacement.
 	removeRetiredExtensions(userExtensionsDir);
 
