@@ -6,10 +6,13 @@
  * verdict. Needs rtk >= 0.23.0 on PATH; set RTK_DISABLED=1 to switch rewriting off.
  */
 
-import type { ExtensionAPI, ToolCallEvent, BashToolCallEvent } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolCallEvent, BashToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
+import { runHook, timeoutFor } from "./rtk-hook-runner.ts";
+import { fromHookOutput, toHookPayload } from "./rtk-posthook.ts";
 import { decideRewrite, isRewriteCandidate, REWRITE_TIMEOUT_MS, versionProblem } from "./rtk-core.ts";
 
 type StatusContext = { ui?: { setStatus?: (key: string, text: string) => void } };
+type ResultContext = { cwd: string; signal?: AbortSignal; sessionManager?: { getSessionId?: () => string } };
 
 // A local guard: the package's isToolCallEventType is a value export that loads the whole barrel.
 function isBash(event: ToolCallEvent): event is BashToolCallEvent {
@@ -26,11 +29,24 @@ async function probe(pi: ExtensionAPI): Promise<string | undefined> {
 	}
 }
 
+export type RtkDeps = { runHook: typeof runHook; env: Record<string, string | undefined> };
+
+/** Builds the extension with injected I/O; the default export wires the real ones. */
+export function createRtkExtension(deps: RtkDeps) {
+	return (pi: ExtensionAPI) => setup(pi, deps);
+}
+
 export default function (pi: ExtensionAPI) {
+	setup(pi, { runHook, env: process.env });
+}
+
+function setup(pi: ExtensionAPI, deps: RtkDeps) {
 	// Probe in the background so a slow binary never delays pi's startup; handlers await it.
 	const unavailable = probe(pi);
 	let sessionContext: StatusContext | undefined;
 	let reason: string | undefined;
+	// Results sent to `rtk hook claude` this session, and how many it shortened.
+	const post = { sent: 0, compressed: 0 };
 
 	const showStatus = () => {
 		if (!reason || !sessionContext) return;
@@ -57,7 +73,7 @@ export default function (pi: ExtensionAPI) {
 		try {
 			if (!isBash(event)) return;
 			const command = event.input.command;
-			if (!isRewriteCandidate(command, process.env)) return;
+			if (!isRewriteCandidate(command, deps.env)) return;
 			if (await unavailable) return;
 
 			const result = await pi.exec("rtk", ["rewrite", command], { timeout: REWRITE_TIMEOUT_MS, signal: ctx.signal });
@@ -69,5 +85,22 @@ export default function (pi: ExtensionAPI) {
 			console.warn("[rtk] rewrite failed; passing the command through", error);
 		}
 		return undefined;
+	});
+	pi.on("tool_result", async (event, ctx) => {
+		try {
+			if (await unavailable) return undefined;
+			const c = ctx as ResultContext;
+			const request = toHookPayload(event as ToolResultEvent, c.cwd, deps.env);
+			if (!request) return undefined;
+			const payload = { ...request.payload, session_id: c.sessionManager?.getSessionId?.() ?? "" };
+			post.sent++;
+			const r = await deps.runHook(payload, { cwd: c.cwd, timeoutMs: timeoutFor(request.bodyChars), signal: c.signal });
+			const patch = fromHookOutput(r.stdout, r.code, r.killed, event as ToolResultEvent, request.trailer);
+			if (patch) post.compressed++;
+			return patch;
+		} catch (error) {
+			console.warn("[rtk] after-tool pipeline failed; keeping the original result", error);
+			return undefined;
+		}
 	});
 }
