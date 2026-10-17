@@ -29,14 +29,14 @@ const sent = (e: Ev, env: Record<string, string | undefined> = {}) => toHookPayl
 
 describe("toHookPayload: tool mapping (Claude shapes)", () => {
 	test("bash maps to Bash with the rewritten command and a stdout-only response", () => {
-		const r = sent(ev({ input: { command: "rtk git log -5" } }), {});
+		const r = sent(ev({ input: { command: "git log -5" } }), {});
 		expect(r?.payload).toEqual({
 			hook_event_name: "PostToolUse",
 			session_id: "",
 			tool_use_id: "call-1",
 			cwd: CWD,
 			tool_name: "Bash",
-			tool_input: { command: "rtk git log -5" },
+			tool_input: { command: "git log -5" },
 			tool_response: { stdout: body(2000), stderr: "", interrupted: false },
 		});
 		expect(r?.trailer).toBe("");
