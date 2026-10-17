@@ -19,7 +19,7 @@ function ev(over: Record<string, unknown>): Ev {
 		type: "tool_result",
 		toolCallId: "call-1",
 		toolName: "bash",
-		input: { command: "rtk git log" },
+		input: { command: "git log" },
 		content: [text(body(2000))],
 		isError: false,
 		...over,
@@ -112,6 +112,9 @@ describe("toHookPayload: tool mapping (Claude shapes)", () => {
 });
 
 describe("toHookPayload: skips", () => {
+	test("the default event is a send, so a test that forgets to override input still exercises one", () => {
+		expect(sent(ev({}))?.bodyChars).toBe(2000);
+	});
 	test("nested calls (parentToolCallId) are skipped", () => {
 		expect(sent(ev({ parentToolCallId: "p1" }))).toBeUndefined();
 	});
