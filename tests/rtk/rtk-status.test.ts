@@ -38,33 +38,33 @@ describe("parseProxyStatus", () => {
 
 describe("formatStatus", () => {
 	test("routed", () => {
-		expect(formatStatus({ proxy: "routed", cmdPct: 62.2, proxyPct: 17.6, post: { compressed: 3, sent: 5 } })).toBe("rtk ⇄proxy · cmd 62% · proxy 18% · post 3/5");
+		expect(formatStatus({ proxy: "routed", cmdPct: 62.2, proxyPct: 17.6, post: { compressed: 3, sent: 5 } })).toBe("[rtk ⇄proxy · cmd 62% · proxy 18% · post 3/5]");
 	});
 	test("routed-down", () => {
-		expect(formatStatus({ proxy: "routed-down", cmdPct: 62 })).toBe("rtk proxy down! · cmd 62%");
+		expect(formatStatus({ proxy: "routed-down", cmdPct: 62 })).toBe("[rtk proxy down! · cmd 62%]");
 	});
 	test("up", () => {
-		expect(formatStatus({ proxy: "up", cmdPct: 62 })).toBe("rtk proxy up · pi direct · cmd 62%");
+		expect(formatStatus({ proxy: "up", cmdPct: 62 })).toBe("[rtk proxy up · pi direct · cmd 62%]");
 	});
 	test("off", () => {
-		expect(formatStatus({ proxy: "off", cmdPct: 62 })).toBe("rtk proxy off · cmd 62%");
+		expect(formatStatus({ proxy: "off", cmdPct: 62 })).toBe("[rtk proxy off · cmd 62%]");
 	});
 	test("routed with unknown proxy pct shows a dash; post omitted when sent is 0", () => {
-		expect(formatStatus({ proxy: "routed", cmdPct: 62, post: { compressed: 0, sent: 0 } })).toBe("rtk ⇄proxy · cmd 62% · proxy –");
+		expect(formatStatus({ proxy: "routed", cmdPct: 62, post: { compressed: 0, sent: 0 } })).toBe("[rtk ⇄proxy · cmd 62% · proxy –]");
 	});
 	test("the post counter shows in every proxy state, not only when routed", () => {
 		const post = { compressed: 2, sent: 4 };
-		expect(formatStatus({ proxy: "routed-down", cmdPct: 62, post })).toBe("rtk proxy down! · cmd 62% · post 2/4");
-		expect(formatStatus({ proxy: "up", cmdPct: 62, post })).toBe("rtk proxy up · pi direct · cmd 62% · post 2/4");
-		expect(formatStatus({ proxy: "off", cmdPct: 62, post })).toBe("rtk proxy off · cmd 62% · post 2/4");
+		expect(formatStatus({ proxy: "routed-down", cmdPct: 62, post })).toBe("[rtk proxy down! · cmd 62% · post 2/4]");
+		expect(formatStatus({ proxy: "up", cmdPct: 62, post })).toBe("[rtk proxy up · pi direct · cmd 62% · post 2/4]");
+		expect(formatStatus({ proxy: "off", cmdPct: 62, post })).toBe("[rtk proxy off · cmd 62% · post 2/4]");
 	});
 	test("a known project proxy pct shows when pi is not routed; unknown stays hidden", () => {
-		expect(formatStatus({ proxy: "up", cmdPct: 62, proxyPct: 4.4 })).toBe("rtk proxy up · pi direct · cmd 62% · proxy 4%");
-		expect(formatStatus({ proxy: "off", cmdPct: 62 })).toBe("rtk proxy off · cmd 62%");
+		expect(formatStatus({ proxy: "up", cmdPct: 62, proxyPct: 4.4 })).toBe("[rtk proxy up · pi direct · cmd 62% · proxy 4%]");
+		expect(formatStatus({ proxy: "off", cmdPct: 62 })).toBe("[rtk proxy off · cmd 62%]");
 	});
 	test("unknown cmdPct and NaN never leak", () => {
 		const s = formatStatus({ proxy: "off", cmdPct: Number.NaN });
-		expect(s).toBe("rtk proxy off · cmd –");
+		expect(s).toBe("[rtk proxy off · cmd –]");
 		for (const state of ["routed", "routed-down", "up", "off"] as const) {
 			const out = formatStatus({ proxy: state, proxyPct: Number.NaN, post: { compressed: 0, sent: 2 } });
 			expect(out).not.toMatch(/NaN|undefined/);

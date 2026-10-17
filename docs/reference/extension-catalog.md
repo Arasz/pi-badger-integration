@@ -474,7 +474,7 @@ delaying pi's startup, and exit 2 with a message blocks, as `rtk rewrite --help`
 means a Claude Code deny rule from `~/.claude` matched; pi has no native deny to defer to,
 so those commands run, as they do with the stock file. A command with leading whitespace
 before `rtk` is not sent for rewriting again. A missing or older-than-0.23.0 binary
-disables the extension and shows `RTK disabled: <reason>` in the footer.
+disables the extension and shows `[RTK disabled: <reason>]` in the footer.
 
 ### After a tool call: the rtk pipeline (`rtk hook claude`)
 
@@ -518,14 +518,14 @@ records two rows in rtk's history, so `rtk gain` counts it twice.
 
 ### The footer
 
-The extension writes one `rtk` status line:
+The extension writes one `rtk` status, in square brackets so it stays distinct from other extensions' statuses on the same footer row:
 
 | footer | meaning |
 |---|---|
-| `rtk ⇄proxy · cmd 62% · proxy 18% · post 3/5` | pi's anthropic traffic goes through rtk-proxy |
-| `rtk proxy up · pi direct · cmd 62%` | the proxy runs, pi does not use it |
-| `rtk proxy off · cmd 62%` | no proxy is running |
-| `rtk proxy down! · cmd 62%` | pi is pointed at the proxy, but it does not answer |
+| `[rtk ⇄proxy · cmd 62% · proxy 18% · post 3/5]` | pi's anthropic traffic goes through rtk-proxy |
+| `[rtk proxy up · pi direct · cmd 62%]` | the proxy runs, pi does not use it |
+| `[rtk proxy off · cmd 62%]` | no proxy is running |
+| `[rtk proxy down! · cmd 62%]` | pi is pointed at the proxy, but it does not answer |
 
 A project proxy figure that was measured earlier also shows while pi is direct, for example
 `rtk proxy up · pi direct · cmd 62% · proxy 4%`.

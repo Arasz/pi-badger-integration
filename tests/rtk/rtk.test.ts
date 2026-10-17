@@ -197,7 +197,7 @@ describe("rtk extension wiring", () => {
 			const event = bashEvent("git status");
 			await fire(fake as never, "tool_call", event, { signal });
 
-			expect(statuses).toEqual([["rtk", "RTK disabled: rtk binary not found in PATH"]]);
+			expect(statuses).toEqual([["rtk", "[RTK disabled: rtk binary not found in PATH]"]]);
 			expect(rewriteCalls(calls)).toEqual([]);
 			expect(event.input.command).toBe("git status");
 		});
@@ -450,7 +450,7 @@ describe("rtk footer status", () => {
 		await flush();
 
 		expect(s.statuses).toEqual([["rtk", formatStatus({ proxy: "routed", cmdPct: 75, proxyPct: 40, post: { compressed: 1, sent: 2 } })]]);
-		expect(s.statuses[0][1]).toBe("rtk ⇄proxy · cmd 75% · proxy 40% · post 1/2");
+		expect(s.statuses[0][1]).toBe("[rtk ⇄proxy · cmd 75% · proxy 40% · post 1/2]");
 		const [gain] = s.gainCalls();
 		expect(gain.args).toEqual(["gain", "-p", "-f", "json"]);
 		expect(gain.options?.cwd).toBe("/work/proj");
@@ -526,7 +526,7 @@ describe("rtk footer status", () => {
 				await flush();
 
 				const reason = kind === "missing" ? "rtk binary not found in PATH" : "rtk 0.22.0 is too old (need >= 0.23.0)";
-				expect(s.statuses).toEqual([["rtk", `RTK disabled: ${reason}`]]);
+				expect(s.statuses).toEqual([["rtk", `[RTK disabled: ${reason}]`]]);
 				expect(s.gainCalls()).toEqual([]);
 				expect(s.statusCalls()).toEqual([]);
 				expect(s.usageCalls).toEqual([]);
@@ -718,13 +718,13 @@ describe("rtk proxy routing", () => {
 
 			m.pending[1](down());
 			await flush();
-			expect(p.statuses).toEqual([["rtk", "rtk proxy off · cmd 75% · proxy 40%"]]);
+			expect(p.statuses).toEqual([["rtk", "[rtk proxy off · cmd 75% · proxy 40%]"]]);
 
 			m.pending[0](ok("running at 127.0.0.1:8080\n"));
 			await flush();
 			expect(p.registered).toEqual([]);
 			expect(p.ctx.model.baseUrl).toBe(STOCK_URL);
-			expect(p.statuses).toEqual([["rtk", "rtk proxy off · cmd 75% · proxy 40%"]]);
+			expect(p.statuses).toEqual([["rtk", "[rtk proxy off · cmd 75% · proxy 40%]"]]);
 		});
 
 		test("a refresh still in flight at shutdown never routes afterwards", async () => {
