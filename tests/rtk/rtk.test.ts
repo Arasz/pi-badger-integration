@@ -7,7 +7,9 @@
 import { describe, expect, test } from "bun:test";
 import { createFakePi } from "../helpers/fake-pi.ts";
 import { fire } from "../router-fallback/helpers.ts";
-import makeExtension from "../../extensions/rtk/index.ts";
+import makeExtension, { createRtkExtension } from "../../extensions/rtk/index.ts";
+import { timeoutFor } from "../../extensions/rtk/rtk-hook-runner.ts";
+import { formatStatus } from "../../extensions/rtk/rtk-status.ts";
 import { decideRewrite, isRewriteCandidate, versionProblem } from "../../extensions/rtk/rtk-core.ts";
 
 type ExecResult = { stdout: string; stderr: string; code: number; killed: boolean };
@@ -195,7 +197,7 @@ describe("rtk extension wiring", () => {
 			const event = bashEvent("git status");
 			await fire(fake as never, "tool_call", event, { signal });
 
-			expect(statuses).toEqual([["rtk", "RTK disabled: rtk binary not found in PATH"]]);
+			expect(statuses).toEqual([["rtk", "[rtk disabled · rtk binary not found in PATH]"]]);
 			expect(rewriteCalls(calls)).toEqual([]);
 			expect(event.input.command).toBe("git status");
 		});
@@ -209,4 +211,689 @@ describe("rtk extension wiring", () => {
 		expect(rewriteCalls(calls)).toEqual([]);
 		expect(event.input.command).toBe("git status");
 	});
+});
+
+type HookCall = { payload: Record<string, any>; opts: Record<string, any> };
+type HookReply = { stdout: string; code: number; killed: boolean };
+
+/** Fake `runHook` that records each call and answers with `reply` (a throw is honoured). */
+function fakeRunHook(reply: (call: HookCall) => HookReply | Promise<HookReply>) {
+	const calls: HookCall[] = [];
+	const runHook = async (payload: unknown, opts: unknown) => {
+		const call = { payload: payload as Record<string, any>, opts: opts as Record<string, any> };
+		calls.push(call);
+		return reply(call);
+	};
+	return { runHook, calls };
+}
+
+const hookReply = (updatedToolOutput: unknown): HookReply => ({
+	stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolUse", updatedToolOutput } }),
+	code: 0,
+	killed: false,
+});
+
+function resultEvent(toolName: string, input: Record<string, unknown>, text: string, extra: Record<string, unknown> = {}) {
+	return { type: "tool_result", toolCallId: "t1", toolName, input, content: [{ type: "text", text }], isError: false, details: undefined, ...extra };
+}
+
+/** pi's tool_result merge (extensions/runner.js emitToolResult): content without structuredContent drops it. */
+function applyPiMerge(event: Record<string, any>, result: Record<string, any> | undefined) {
+	const current = { ...event };
+	if (!result) return current;
+	if (result.content !== undefined) {
+		current.content = result.content;
+		if (result.structuredContent === undefined) delete current.structuredContent;
+	}
+	if (result.details !== undefined) current.details = result.details;
+	if (result.structuredContent !== undefined) current.structuredContent = result.structuredContent;
+	return current;
+}
+
+const sessionCtx = (extra: Record<string, unknown> = {}) => ({
+	cwd: "/work/proj",
+	signal,
+	sessionManager: { getSessionId: () => "sess-1" },
+	...extra,
+});
+
+const bigText = (n: number) => "line of output\n".repeat(Math.ceil(n / 15)).slice(0, n);
+
+describe("rtk after-tool pipeline wiring", () => {
+	const healthy = (call: ExecCall) =>
+		call.args[0] === "--version" ? ok("rtk 1.0.1\n") : call.args[1] === "git log" ? ok("rtk git log", 3) : ok("", 1);
+
+	async function setup(
+		reply: (call: HookCall) => HookReply | Promise<HookReply>,
+		opts: { env?: Record<string, string | undefined>; exec?: (call: ExecCall) => ExecResult | Promise<ExecResult> } = {},
+	) {
+		const { pi, fake, calls: execCalls } = piWithExec(opts.exec ?? healthy);
+		const hook = fakeRunHook(reply);
+		await createRtkExtension({ runHook: hook.runHook as never, env: opts.env ?? {}, now: () => 0, readProxyUsage: () => undefined, proxyDb: "" })(pi);
+		return { fake, execCalls, hook };
+	}
+
+	test("a large bash result is replaced; the runner sees the rewritten command, cwd, signal and session", async () => {
+		const { fake, hook } = await setup(() => hookReply({ stdout: "compressed log", stderr: "", interrupted: false }));
+		const call = bashEvent("git log");
+		await fire(fake as never, "tool_call", call, { signal });
+		expect(call.input.command).toBe("rtk git log");
+
+		const body = bigText(25_000);
+		const event = resultEvent("bash", call.input, `${body}\n\nCommand exited with code 1`);
+		const [result] = await fire(fake as never, "tool_result", event, sessionCtx());
+
+		expect(result).toMatchObject({ content: [{ type: "text", text: "compressed log\n\nCommand exited with code 1" }] });
+		const [h] = hook.calls;
+		expect(h.payload.tool_name).toBe("Bash");
+		expect(h.payload.tool_input).toEqual({ command: "rtk git log" });
+		expect(h.payload.session_id).toBe("sess-1");
+		expect(h.payload.cwd).toBe("/work/proj");
+		expect(h.opts.cwd).toBe("/work/proj");
+		expect(h.opts.signal).toBe(signal);
+		expect(h.opts.timeoutMs).toBe(timeoutFor(body.length));
+	});
+
+	test("a large grep result is replaced with the runner's output", async () => {
+		const { fake, hook } = await setup(() => hookReply({ mode: "content", content: "3 matches" }));
+		const event = resultEvent("grep", { pattern: "foo" }, bigText(2_000));
+		const [result] = await fire(fake as never, "tool_result", event, sessionCtx());
+		expect(result).toMatchObject({ content: [{ type: "text", text: "3 matches" }] });
+		expect(hook.calls[0].payload.tool_input).toEqual({ pattern: "foo", path: "." });
+		expect(hook.calls[0].opts.timeoutMs).toBe(timeoutFor(2_000));
+	});
+
+	const failures: Array<[string, (call: HookCall) => HookReply | Promise<HookReply>]> = [
+		["throws", () => Promise.reject(new Error("boom"))],
+		["is killed", () => ({ ...hookReply({ mode: "content", content: "x" }), killed: true })],
+		["exits non-zero", () => ({ ...hookReply({ mode: "content", content: "x" }), code: 1 })],
+		["prints garbage", () => ({ stdout: "not json{", code: 0, killed: false })],
+	];
+	for (const [name, reply] of failures) {
+		test(`a runner that ${name} leaves the result untouched and the event unmutated`, async () => {
+			const { fake, hook } = await setup(reply);
+			const event = resultEvent("grep", { pattern: "foo" }, bigText(2_000));
+			const before = structuredClone(event);
+			const results = await fire(fake as never, "tool_result", event, sessionCtx());
+			expect(hook.calls.length).toBe(1);
+			expect(results).toEqual([undefined]);
+			expect(event).toEqual(before);
+		});
+	}
+
+	test("a successful replacement does not mutate the event", async () => {
+		const { fake } = await setup(() => hookReply({ mode: "content", content: "3 matches" }));
+		const event = resultEvent("grep", { pattern: "foo" }, bigText(2_000));
+		const before = structuredClone(event);
+		await fire(fake as never, "tool_result", event, sessionCtx());
+		expect(event).toEqual(before);
+	});
+
+	test("structuredContent survives pi's merge of the replacement", async () => {
+		const { fake } = await setup(() => hookReply({ content: [{ type: "text", text: "short" }] }));
+		const structured = { rows: [1, 2, 3] };
+		const event = resultEvent("mcp__db__query", { q: "select" }, bigText(2_000), { structuredContent: structured });
+		const [result] = await fire(fake as never, "tool_result", event, sessionCtx());
+		const merged = applyPiMerge(event, result as Record<string, any>);
+		expect(merged.content).toEqual([{ type: "text", text: "short" }]);
+		expect(merged.structuredContent).toEqual(structured);
+	});
+
+	test("RTK_DISABLED=1 never reaches the runner", async () => {
+		const { fake, hook } = await setup(() => hookReply({ mode: "content", content: "x" }), { env: { RTK_DISABLED: "1" } });
+		const results = await fire(fake as never, "tool_result", resultEvent("grep", { pattern: "foo" }, bigText(2_000)), sessionCtx());
+		expect(results).toEqual([undefined]);
+		expect(hook.calls).toEqual([]);
+	});
+
+	for (const order of ["probe first", "result first"] as const) {
+		test(`a missing rtk binary never reaches the runner (${order})`, async () => {
+			let release: (r: ExecResult) => void = () => {};
+			const probe = new Promise<ExecResult>((r) => (release = r));
+			const { fake, hook } = await setup(() => hookReply({ mode: "content", content: "x" }), {
+				exec: (call) => (call.args[0] === "--version" ? probe : ok("", 1)),
+			});
+			const event = resultEvent("grep", { pattern: "foo" }, bigText(2_000));
+			let results: unknown[];
+			if (order === "probe first") {
+				release({ stdout: "", stderr: "ENOENT", code: 1, killed: false });
+				results = await fire(fake as never, "tool_result", event, sessionCtx());
+			} else {
+				const pending = fire(fake as never, "tool_result", event, sessionCtx());
+				release({ stdout: "", stderr: "ENOENT", code: 1, killed: false });
+				results = await pending;
+			}
+			expect(results).toEqual([undefined]);
+			expect(hook.calls).toEqual([]);
+		});
+	}
+
+	for (const toolName of ["find", "ls", "edit", "write"]) {
+		test(`${toolName} results never reach the runner`, async () => {
+			const { fake, hook } = await setup(() => hookReply({ content: "x" }));
+			await fire(fake as never, "tool_result", resultEvent(toolName, { path: "src", pattern: "*" }, bigText(2_000)), sessionCtx());
+			expect(hook.calls).toEqual([]);
+		});
+	}
+
+	test("nested calls (parentToolCallId) never reach the runner", async () => {
+		const { fake, hook } = await setup(() => hookReply({ mode: "content", content: "x" }));
+		const event = resultEvent("grep", { pattern: "foo" }, bigText(2_000), { parentToolCallId: "p1" });
+		await fire(fake as never, "tool_result", event, sessionCtx());
+		expect(hook.calls).toEqual([]);
+	});
+
+	test("a ctx without sessionManager still runs the hook with an empty session id", async () => {
+		const { fake, hook } = await setup(() => hookReply({ mode: "content", content: "x" }));
+		await fire(fake as never, "tool_result", resultEvent("grep", { pattern: "foo" }, bigText(2_000)), { cwd: "/w", signal });
+		expect(hook.calls[0].payload.session_id).toBe("");
+	});
+});
+
+const PROXY_URL = "http://127.0.0.1:8080";
+const STOCK_URL = "https://api.anthropic.com";
+const gainJson = (input: number, saved: number) =>
+	JSON.stringify({ summary: { total_commands: 4, total_input: input, total_saved: saved, total_output: input - saved } });
+
+/** Lets fire-and-forget refreshes settle: fake execs resolve on microtasks. */
+const flush = async () => {
+	for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+};
+
+type StatusOpts = {
+	version?: () => ExecResult | Promise<ExecResult>;
+	gain?: () => ExecResult | Promise<ExecResult>;
+	status?: () => ExecResult | Promise<ExecResult>;
+	usage?: () => { pct: number | undefined } | undefined;
+	env?: Record<string, string | undefined>;
+	hook?: (call: HookCall) => HookReply | Promise<HookReply>;
+};
+
+async function statusSetup(opts: StatusOpts = {}) {
+	const { pi, fake, calls } = piWithExec((call) => {
+		if (call.args[0] === "--version") return opts.version ? opts.version() : ok("rtk 1.0.1\n");
+		if (call.args[0] === "gain") return opts.gain ? opts.gain() : ok(gainJson(1000, 750));
+		if (call.args[0] === "llm-proxy") return opts.status ? opts.status() : ok("running at 127.0.0.1:8080\n");
+		return ok("", 1);
+	});
+	const usageCalls: Array<[string, string]> = [];
+	const hook = fakeRunHook(opts.hook ?? (() => hookReply({ mode: "content", content: "3 matches" })));
+	const clock = (fake as unknown as { clock: { now: number; advance(ms: number): void } }).clock;
+	await createRtkExtension({
+		runHook: hook.runHook as never,
+		env: opts.env ?? {},
+		now: () => clock.now,
+		readProxyUsage: (db: string, project: string) => {
+			usageCalls.push([db, project]);
+			return opts.usage ? opts.usage() : { pct: 40 };
+		},
+		proxyDb: "/db/rtk-proxy.db",
+	})(pi);
+	const statuses: Array<[string, string]> = [];
+	const ctx: Record<string, any> = {
+		...sessionCtx(),
+		model: { provider: "anthropic", id: "claude", baseUrl: STOCK_URL },
+		ui: { setStatus: (key: string, text: string) => statuses.push([key, text]) },
+	};
+	const gainCalls = () => calls.filter((c) => c.args[0] === "gain");
+	const statusCalls = () => calls.filter((c) => c.args[0] === "llm-proxy");
+	return { fake, calls, ctx, statuses, usageCalls, clock, gainCalls, statusCalls, hook };
+}
+
+describe("rtk footer status", () => {
+	test("session_start sets one status from project gain, proxy state, proxy pct and the post counter", async () => {
+		const s = await statusSetup({ hook: (call) => (call.payload.tool_input.pattern === "a" ? hookReply({ mode: "content", content: "x" }) : { stdout: "", code: 1, killed: false }) });
+		s.ctx.model.baseUrl = PROXY_URL;
+		await fire(s.fake as never, "tool_result", resultEvent("grep", { pattern: "a" }, bigText(2_000)), s.ctx);
+		await fire(s.fake as never, "tool_result", resultEvent("grep", { pattern: "b" }, bigText(2_000)), s.ctx);
+		await fire(s.fake as never, "session_start", { type: "session_start" }, s.ctx);
+		await flush();
+
+		expect(s.statuses).toEqual([["rtk", formatStatus({ proxy: "routed", cmdPct: 75, proxyPct: 40, post: { compressed: 1, sent: 2 } })]]);
+		expect(s.statuses[0][1]).toBe("[rtk ⇄proxy · cmd 75% · proxy 40% · post 1/2]");
+		const [gain] = s.gainCalls();
+		expect(gain.args).toEqual(["gain", "-p", "-f", "json"]);
+		expect(gain.options?.cwd).toBe("/work/proj");
+		expect(gain.options?.timeout).toBe(2_000);
+		expect(s.statusCalls()[0].args).toEqual(["llm-proxy", "status"]);
+		expect(s.usageCalls).toEqual([["/db/rtk-proxy.db", "/work/proj"]]);
+	});
+
+	const states: Array<[string, string, boolean, "routed" | "routed-down" | "up" | "off"]> = [
+		["routed and up", PROXY_URL, true, "routed"],
+		["routed but down", PROXY_URL, false, "routed-down"],
+		["direct and up", "https://gateway.example.com", true, "up"],
+		["direct and down", STOCK_URL, false, "off"],
+	];
+	for (const [name, baseUrl, up, proxy] of states) {
+		test(`proxy state: ${name} -> ${proxy}`, async () => {
+			const s = await statusSetup({ status: () => (up ? ok("running at 127.0.0.1:8080\n") : ok("not running\n", 1)), env: { RTK_PI_PROXY: "0" } });
+			s.ctx.model.baseUrl = baseUrl;
+			await fire(s.fake as never, "session_start", { type: "session_start" }, s.ctx);
+			await flush();
+			expect(s.statuses).toEqual([["rtk", formatStatus({ proxy, cmdPct: 75, proxyPct: 40, post: { compressed: 0, sent: 0 } })]]);
+		});
+	}
+
+	test("turn_end refreshes at most once per 10 s; model_select refreshes at once with the new baseUrl", async () => {
+		const s = await statusSetup({ status: () => ok("running at 127.0.0.1:8080\n"), env: { RTK_PI_PROXY: "0" } });
+		await fire(s.fake as never, "turn_end", { type: "turn_end" }, s.ctx);
+		await fire(s.fake as never, "turn_end", { type: "turn_end" }, s.ctx);
+		await flush();
+		expect(s.gainCalls().length).toBe(1);
+
+		s.clock.advance(10_001);
+		await fire(s.fake as never, "turn_end", { type: "turn_end" }, s.ctx);
+		await flush();
+		expect(s.gainCalls().length).toBe(2);
+
+		s.ctx.model = { provider: "anthropic", id: "claude", baseUrl: PROXY_URL };
+		await fire(s.fake as never, "model_select", { type: "model_select", model: s.ctx.model, source: "set" }, s.ctx);
+		await flush();
+		expect(s.gainCalls().length).toBe(3);
+		expect(s.statuses.at(-1)).toEqual(["rtk", formatStatus({ proxy: "routed", cmdPct: 75, proxyPct: 40, post: { compressed: 0, sent: 0 } })]);
+	});
+
+	test("tool results never trigger a refresh", async () => {
+		const s = await statusSetup();
+		await fire(s.fake as never, "tool_result", resultEvent("grep", { pattern: "a" }, bigText(2_000)), s.ctx);
+		await flush();
+		expect(s.gainCalls()).toEqual([]);
+		expect(s.statuses).toEqual([]);
+	});
+
+	const broken: Array<[string, (version: string) => ExecResult]> = [
+		["missing", () => ({ stdout: "", stderr: "ENOENT", code: 1, killed: false })],
+		["too old", () => ok("rtk 0.22.0\n")],
+	];
+	for (const [kind, versionReply] of broken) {
+		for (const order of ["probe first", "session first"] as const) {
+			test(`a ${kind} rtk shows only the disabled reason and runs no gain/status (${order})`, async () => {
+				let release: (r: ExecResult) => void = () => {};
+				const probe = new Promise<ExecResult>((r) => (release = r));
+				const s = await statusSetup({ version: () => probe });
+				if (order === "probe first") {
+					release(versionReply(""));
+					await flush();
+					await fire(s.fake as never, "session_start", { type: "session_start" }, s.ctx);
+				} else {
+					await fire(s.fake as never, "session_start", { type: "session_start" }, s.ctx);
+					release(versionReply(""));
+				}
+				await flush();
+				await fire(s.fake as never, "turn_end", { type: "turn_end" }, s.ctx);
+				await fire(s.fake as never, "model_select", { type: "model_select", model: s.ctx.model, source: "set" }, s.ctx);
+				await flush();
+
+				const reason = kind === "missing" ? "rtk binary not found in PATH" : "rtk 0.22.0 is too old (need >= 0.23.0)";
+				expect(s.statuses).toEqual([["rtk", `[rtk disabled · ${reason}]`]]);
+				expect(s.gainCalls()).toEqual([]);
+				expect(s.statusCalls()).toEqual([]);
+				expect(s.usageCalls).toEqual([]);
+			});
+		}
+	}
+
+	const failing: Array<[string, StatusOpts, Parameters<typeof formatStatus>[0]]> = [
+		["gain throws", { gain: () => Promise.reject(new Error("x")) }, { proxy: "off", proxyPct: 40 }],
+		["gain prints garbage", { gain: () => ok("nope") }, { proxy: "off", proxyPct: 40 }],
+		["status throws", { status: () => Promise.reject(new Error("x")) }, { proxy: "off", cmdPct: 75, proxyPct: 40 }],
+		["the db read throws", { usage: () => { throw new Error("locked"); } }, { proxy: "off", cmdPct: 75 }],
+		["the db read is empty", { usage: () => undefined }, { proxy: "off", cmdPct: 75 }],
+	];
+	for (const [name, opts, expected] of failing) {
+		test(`when ${name} only that segment drops`, async () => {
+			const s = await statusSetup({ status: () => ok("not running\n", 1), ...opts, env: { RTK_PI_PROXY: "0" } });
+			await fire(s.fake as never, "session_start", { type: "session_start" }, s.ctx);
+			await flush();
+			expect(s.statuses).toEqual([["rtk", formatStatus({ ...expected, post: { compressed: 0, sent: 0 } })]]);
+		});
+	}
+
+	test("a missing ui, a missing model or a throwing setStatus never throws", async () => {
+		const s = await statusSetup();
+		const bare = { cwd: "/work/proj", signal };
+		await expect(fire(s.fake as never, "session_start", { type: "session_start" }, bare)).resolves.toBeDefined();
+		await expect(
+			fire(s.fake as never, "model_select", { type: "model_select" }, { ...bare, ui: { setStatus: () => { throw new Error("tui gone"); } } }),
+		).resolves.toBeDefined();
+		await flush();
+		expect(s.gainCalls().length).toBe(2);
+	});
+});
+
+/**
+ * pi's model runtime as far as routing sees it: registerProvider merges into one stored extension
+ * registration per provider, unregisterProvider deletes it, and the session model's baseUrl is
+ * re-read from it (agent-session.js _refreshCurrentModelFromRegistry). Outlives extension instances.
+ */
+type Registry = {
+	ext: Map<string, Record<string, unknown>>;
+	ctx: Record<string, any>;
+	builtin: string | undefined;
+	refresh(): void;
+};
+
+function fakeRegistry(ctx: Record<string, any>, seed: Record<string, Record<string, unknown>> = {}): Registry {
+	const registry: Registry = {
+		ext: new Map(Object.entries(seed)),
+		ctx,
+		builtin: ctx.model?.baseUrl,
+		refresh() {
+			const model = registry.ctx.model;
+			if (!model) return;
+			const override = registry.ext.get(model.provider)?.baseUrl as string | undefined;
+			model.baseUrl = model.provider === "anthropic" ? (override ?? registry.builtin) : model.baseUrl;
+		},
+	};
+	return registry;
+}
+
+type ProxyOpts = StatusOpts & { registerThrows?: boolean; model?: Record<string, any>; registry?: Registry; seed?: Record<string, Record<string, unknown>> };
+
+/** statusSetup wired to a fake registry; pass `registry` to share one runtime across instances. */
+async function proxySetup(opts: ProxyOpts = {}) {
+	const s = await statusSetup(opts);
+	if (opts.registry) s.ctx = opts.registry.ctx;
+	else if ("model" in opts) s.ctx.model = opts.model ? { ...opts.model } : undefined;
+	const registry = opts.registry ?? fakeRegistry(s.ctx, opts.seed);
+	const ctx = registry.ctx;
+	ctx.ui = { setStatus: (key: string, text: string) => s.statuses.push([key, text]) };
+	const registered: Array<[string, Record<string, unknown>]> = [];
+	const unregistered: string[] = [];
+	Object.assign(s.fake as object, {
+		registerProvider: (name: string, config: Record<string, unknown>) => {
+			registered.push([name, config]);
+			if (opts.registerThrows) throw new Error("bad provider config");
+			registry.ext.set(name, { ...registry.ext.get(name), ...config });
+			registry.refresh();
+		},
+		unregisterProvider: (name: string) => {
+			unregistered.push(name);
+			registry.ext.delete(name);
+			registry.refresh();
+		},
+	});
+	const start = async () => {
+		await fire(s.fake as never, "session_start", { type: "session_start" }, ctx);
+		await flush();
+	};
+	const headers = async (initial: Record<string, string> = { "x-api-key": "k" }) => {
+		const event = { type: "before_provider_headers", headers: initial };
+		const results = await fire(s.fake as never, "before_provider_headers", event, ctx);
+		return { event, results };
+	};
+	return { ...s, ctx, registry, registered, unregistered, start, headers };
+}
+
+const status0 = { post: { compressed: 0, sent: 0 }, cmdPct: 75, proxyPct: 40 };
+const down = () => ok("not running\n", 1);
+
+describe("rtk proxy routing", () => {
+	test("RTK_PI_PROXY=0 never registers and never touches headers", async () => {
+		const p = await proxySetup({ env: { RTK_PI_PROXY: "0" } });
+		await p.start();
+		expect(p.registered).toEqual([]);
+		p.ctx.model.baseUrl = PROXY_URL;
+		const { event } = await p.headers();
+		expect(event.headers).toEqual({ "x-api-key": "k" });
+	});
+
+	test("proxy up + stock anthropic registers exactly {baseUrl}, once, and the footer shows routed", async () => {
+		const p = await proxySetup();
+		await p.start();
+		expect(p.registered).toEqual([["anthropic", { baseUrl: PROXY_URL }]]);
+		expect(Object.keys(p.registered[0][1])).toEqual(["baseUrl"]);
+		expect(p.statuses).toEqual([["rtk", formatStatus({ proxy: "routed", ...status0 })]]);
+
+		await fire(p.fake as never, "model_select", { type: "model_select" }, p.ctx);
+		await flush();
+		expect(p.registered.length).toBe(1);
+	});
+
+	test("RTK_PROXY_BIND moves the registered baseUrl", async () => {
+		const p = await proxySetup({ env: { RTK_PROXY_BIND: "127.0.0.1:9999" }, status: () => ok("running at 127.0.0.1:9999\n") });
+		await p.start();
+		expect(p.registered).toEqual([["anthropic", { baseUrl: "http://127.0.0.1:9999" }]]);
+		expect(p.statuses.at(-1)?.[1]).toBe(formatStatus({ proxy: "routed", ...status0 }));
+	});
+
+	const never: Array<[string, Parameters<typeof proxySetup>[0]]> = [
+		["the proxy is down", { status: down }],
+		["the version probe throws", { version: () => Promise.reject(new Error("spawn")) }],
+		["RTK_DISABLED=1", { env: { RTK_DISABLED: "1" } }],
+		["the model is not anthropic", { model: { provider: "openai", id: "gpt", baseUrl: "https://api.openai.com/v1" } }],
+		["another provider uses api.anthropic.com", { model: { provider: "team-claude", id: "claude", baseUrl: STOCK_URL } }],
+		["the anthropic baseUrl is a custom gateway", { model: { provider: "anthropic", id: "claude", baseUrl: "https://gateway.corp.example/anthropic" } }],
+		["there is no model", { model: undefined }],
+	];
+	for (const [name, opts] of never) {
+		test(`no registration when ${name}`, async () => {
+			const p = await proxySetup(opts);
+			if (opts && "model" in opts && opts.model === undefined) p.ctx.model = undefined;
+			await p.start();
+			expect(p.registered).toEqual([]);
+		});
+	}
+
+	test("the proxy dies between turns: before_agent_start restores stock before the request, unthrottled, within the 2 s timeout", async () => {
+		let up = true;
+		const p = await proxySetup({ status: () => (up ? ok("running at 127.0.0.1:8080\n") : down()) });
+		await p.start();
+		expect(p.ctx.model.baseUrl).toBe(PROXY_URL);
+		const checksBefore = p.statusCalls().length;
+
+		up = false;
+		const results = await fire(p.fake as never, "before_agent_start", { type: "before_agent_start", prompt: "hi" }, p.ctx);
+		expect(results).toStrictEqual([undefined]);
+		expect(p.ctx.model.baseUrl).toBe(STOCK_URL);
+		expect(p.registered.at(-1)).toEqual(["anthropic", { baseUrl: STOCK_URL }]);
+		expect((await p.headers()).event.headers).toEqual({ "x-api-key": "k" });
+		const check = p.statusCalls()[checksBefore];
+		expect(check.options?.timeout).toBe(2_000);
+	});
+
+	test("before_agent_start with a throwing status check never throws", async () => {
+		let fail = false;
+		const p = await proxySetup({ status: () => (fail ? Promise.reject(new Error("spawn")) : ok("running at 127.0.0.1:8080\n")) });
+		await p.start();
+		fail = true;
+		await expect(fire(p.fake as never, "before_agent_start", { type: "before_agent_start", prompt: "hi" }, p.ctx)).resolves.toStrictEqual([undefined]);
+	});
+
+	describe("a stale refresh never routes or sets the footer", () => {
+		/** Status replies the test settles by hand, in call order. */
+		function manualStatus() {
+			const pending: Array<(r: ExecResult) => void> = [];
+			return { status: () => new Promise<ExecResult>((r) => pending.push(r)), pending };
+		}
+
+		test("an older refresh that sees up after a newer one saw down changes nothing", async () => {
+			const m = manualStatus();
+			const p = await proxySetup({ status: m.status });
+			await fire(p.fake as never, "session_start", { type: "session_start" }, p.ctx);
+			await fire(p.fake as never, "model_select", { type: "model_select" }, p.ctx);
+			await flush();
+			expect(m.pending.length).toBe(2);
+
+			m.pending[1](down());
+			await flush();
+			expect(p.statuses).toEqual([["rtk", "[rtk proxy off · cmd 75% · proxy 40%]"]]);
+
+			m.pending[0](ok("running at 127.0.0.1:8080\n"));
+			await flush();
+			expect(p.registered).toEqual([]);
+			expect(p.ctx.model.baseUrl).toBe(STOCK_URL);
+			expect(p.statuses).toEqual([["rtk", "[rtk proxy off · cmd 75% · proxy 40%]"]]);
+		});
+
+		test("a refresh still in flight at shutdown never routes afterwards", async () => {
+			const m = manualStatus();
+			const p = await proxySetup({ status: m.status });
+			await fire(p.fake as never, "session_start", { type: "session_start" }, p.ctx);
+			await flush();
+			await fire(p.fake as never, "session_shutdown", { type: "session_shutdown", reason: "reload" }, p.ctx);
+			m.pending[0](ok("running at 127.0.0.1:8080\n"));
+			await flush();
+			expect(p.registered).toEqual([]);
+			expect(p.statuses).toEqual([]);
+		});
+	});
+
+	describe("routing state across extension instances sharing one model runtime (/reload, /new)", () => {
+		const shutdown = (p: { fake: unknown; ctx: unknown }) =>
+			fire(p.fake as never, "session_shutdown", { type: "session_shutdown", reason: "reload" }, p.ctx);
+
+		test("A routes, A shuts down -> the stock baseUrl is back; B then routes again", async () => {
+			const a = await proxySetup();
+			await a.start();
+			expect(a.ctx.model.baseUrl).toBe(PROXY_URL);
+
+			await expect(shutdown(a)).resolves.toStrictEqual([undefined]);
+			expect(a.registered.at(-1)).toEqual(["anthropic", { baseUrl: STOCK_URL }]);
+			expect(a.ctx.model.baseUrl).toBe(STOCK_URL);
+
+			const b = await proxySetup({ registry: a.registry });
+			await b.start();
+			expect(b.registered).toEqual([["anthropic", { baseUrl: PROXY_URL }]]);
+		});
+
+		test("shutdown of an instance that never routed changes nothing", async () => {
+			const a = await proxySetup({ status: down });
+			await a.start();
+			await shutdown(a);
+			expect(a.registered).toEqual([]);
+			expect(a.unregistered).toEqual([]);
+		});
+
+		test("a throwing registerProvider on shutdown never throws", async () => {
+			const a = await proxySetup();
+			await a.start();
+			Object.assign(a.fake as object, { registerProvider: () => { throw new Error("stale ctx"); } });
+			await expect(shutdown(a)).resolves.toStrictEqual([undefined]);
+		});
+
+		test("A routes and never shuts down; B sees the proxy down with the model on the proxy -> B restores stock", async () => {
+			const a = await proxySetup();
+			await a.start();
+			expect(a.ctx.model.baseUrl).toBe(PROXY_URL);
+
+			const b = await proxySetup({ registry: a.registry, status: down });
+			await b.start();
+			expect(b.registered).toEqual([["anthropic", { baseUrl: STOCK_URL }]]);
+			expect(b.ctx.model.baseUrl).toBe(STOCK_URL);
+			expect(b.statuses.at(-1)).toEqual(["rtk", formatStatus({ proxy: "off", ...status0 })]);
+		});
+
+		test.each([{ RTK_PI_PROXY: "0" }, { RTK_DISABLED: "1" }])("opted out (%o): an anthropic model left on the proxy URL is not restored", async (env) => {
+			const b = await proxySetup({ env, status: down, model: { provider: "anthropic", id: "claude", baseUrl: PROXY_URL } });
+			await b.start();
+			expect(b.registered).toEqual([]);
+			expect(b.unregistered).toEqual([]);
+			expect(b.ctx.model.baseUrl).toBe(PROXY_URL);
+		});
+
+		test("B leaves a non-anthropic provider on the proxy URL alone while the proxy is down", async () => {
+			const b = await proxySetup({ status: down, model: { provider: "my-proxy", id: "claude", baseUrl: PROXY_URL } });
+			await b.start();
+			expect(b.registered).toEqual([]);
+		});
+
+		test("B leaves an anthropic proxy URL alone while the proxy is up", async () => {
+			const b = await proxySetup({ model: { provider: "anthropic", id: "claude", baseUrl: PROXY_URL } });
+			await b.start();
+			expect(b.registered).toEqual([]);
+		});
+	});
+
+
+	test("a throwing registerProvider leaves the session working", async () => {
+		const p = await proxySetup({ registerThrows: true });
+		await p.start();
+		expect(p.registered.length).toBe(1);
+		expect(p.statuses).toEqual([["rtk", formatStatus({ proxy: "up", ...status0 })]]);
+		const call = bashEvent("git status");
+		await expect(fire(p.fake as never, "tool_call", call, { signal })).resolves.toEqual([undefined]);
+	});
+
+	test("headers are added in place only while the anthropic model points at the proxy", async () => {
+		const p = await proxySetup();
+		const direct = await p.headers();
+		expect(direct.event.headers).toEqual({ "x-api-key": "k" });
+
+		await p.start();
+		const initial: Record<string, string> = { "x-api-key": "k" };
+		const routed = await p.headers(initial);
+		expect(routed.results).toEqual([undefined]);
+		expect(routed.event.headers).toBe(initial);
+		expect(initial).toEqual({ "x-api-key": "k", "x-rtk-project": "/work/proj", "x-rtk-session": "sess-1" });
+
+		p.ctx.model = { provider: "openai", id: "gpt", baseUrl: PROXY_URL };
+		await fire(p.fake as never, "model_select", { type: "model_select" }, p.ctx);
+		await flush();
+		expect((await p.headers()).event.headers).toEqual({ "x-api-key": "k" });
+	});
+
+	for (const cwd of ["/tmp/łódź", "/Users/a/项目"]) {
+		test(`a routed request from a non-ASCII cwd (${cwd}) leaves the headers unchanged and sendable`, async () => {
+			const p = await proxySetup();
+			await p.start();
+			p.ctx.cwd = cwd;
+			delete p.ctx.sessionManager;
+			const { event } = await p.headers();
+			expect(event.headers).toEqual({ "x-api-key": "k" });
+			expect(() => new Headers(event.headers)).not.toThrow();
+		});
+	}
+
+	test("a header handler with a broken ctx never throws", async () => {
+		const p = await proxySetup();
+		const event = { type: "before_provider_headers", headers: { a: "b" } };
+		const ctx = { cwd: "/w", model: { provider: "anthropic", baseUrl: PROXY_URL }, sessionManager: { getSessionId: () => { throw new Error("x"); } } };
+		await expect(fire(p.fake as never, "before_provider_headers", event, ctx)).resolves.toEqual([undefined]);
+	});
+
+	test("a refresh that finds the proxy down re-registers the saved stock baseUrl once, never unregisters, and the footer shows proxy off", async () => {
+		let up = true;
+		const p = await proxySetup({ status: () => (up ? ok("running at 127.0.0.1:8080\n") : down()) });
+		await p.start();
+		expect(p.registered).toEqual([["anthropic", { baseUrl: PROXY_URL }]]);
+
+		up = false;
+		p.clock.advance(10_001);
+		await fire(p.fake as never, "turn_end", { type: "turn_end" }, p.ctx);
+		await flush();
+		expect(p.registered).toEqual([
+			["anthropic", { baseUrl: PROXY_URL }],
+			["anthropic", { baseUrl: STOCK_URL }],
+		]);
+		expect(p.unregistered).toEqual([]);
+		expect(p.ctx.model.baseUrl).toBe(STOCK_URL);
+		expect(p.statuses.at(-1)).toEqual(["rtk", formatStatus({ proxy: "off", ...status0 })]);
+
+		await fire(p.fake as never, "model_select", { type: "model_select" }, p.ctx);
+		await flush();
+		expect(p.registered.length).toBe(2);
+	});
+
+	test("restoring keeps another extension's anthropic settings and the exact stock URL it replaced", async () => {
+		let up = true;
+		const stock = "https://api.anthropic.com/v1";
+		const p = await proxySetup({
+			status: () => (up ? ok("running at 127.0.0.1:8080\n") : down()),
+			model: { provider: "anthropic", id: "claude", baseUrl: stock },
+			seed: { anthropic: { headers: { "x-team": "1" }, apiKey: "TEAM_KEY" } },
+		});
+		await p.start();
+		expect(p.ctx.model.baseUrl).toBe(PROXY_URL);
+
+		up = false;
+		p.clock.advance(10_001);
+		await fire(p.fake as never, "turn_end", { type: "turn_end" }, p.ctx);
+		await flush();
+		expect(p.registered.at(-1)).toEqual(["anthropic", { baseUrl: stock }]);
+		expect(p.registry.ext.get("anthropic")).toEqual({ headers: { "x-team": "1" }, apiKey: "TEAM_KEY", baseUrl: stock });
+		expect(p.ctx.model.baseUrl).toBe(stock);
+	});
+
 });

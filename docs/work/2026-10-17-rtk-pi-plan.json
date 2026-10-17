@@ -1,0 +1,360 @@
+{
+  "schema_version": 1,
+  "task_id": "pbi-rtk-pipeline-statusline-proxy-coverage",
+  "task_description_ref": "docs/work/2026-10-17-rtk-pi-pipeline-statusline-proxy-research.md",
+  "research_ref": "docs/work/2026-10-17-rtk-pi-pipeline-statusline-proxy-research.md",
+  "task_context": "pi-only rtk: (A) every eligible pi tool_result through `rtk hook claude`; (B) footer setStatus('rtk') proxy state + project cmd/proxy savings + session post counter; (C) default-on (opt-out RTK_PI_PROXY=0) anthropic routing through rtk-proxy for the stock URL, with x-rtk-project/session headers, unroute on proxy down. Claude config out of scope. Plan MoE d-57/58/59; review MoE d-60/61/62 folded (rev 1).",
+  "loop": "high",
+  "source_refs": [
+    "extensions/rtk/index.ts",
+    "extensions/rtk/rtk-core.ts",
+    "tests/rtk/rtk.test.ts"
+  ],
+  "workflow": {
+    "steps": {
+      "posthook-core": {
+        "id": "posthook-core",
+        "goal": "Pure mapping between pi tool_result events and rtk's Claude-shaped PostToolUse payload, both directions",
+        "instructions": "New pure module extensions/rtk/rtk-posthook.ts (types-only imports). TDD in tests/rtk/rtk-posthook.test.ts. toHookPayload(event, cwd, env) -> {payload, trailer, bodyChars} | undefined. Mapping: bash/powershell->Bash {tool_input:{command: event.input.command (the REWRITTEN command)}, tool_response:{stdout:<all text blocks joined, trailer stripped>, stderr:'', interrupted:false}}; read->Read {tool_input:{file_path: resolve(cwd,path)}, tool_response:{type:'text', file:{filePath, content}}}; grep->Grep {tool_input:{pattern, path: path??'.'}, tool_response:{mode:'content', content}}; mcp__* -> same name, {content:[{type:'text',text} per block]}. Envelope {hook_event_name:'PostToolUse', session_id, tool_use_id: toolCallId, cwd, tool_name, tool_input, tool_response}. Skip (undefined): event.parentToolCallId set (nested codemode calls: the script, not the model, consumes them); find/ls/edit/write/unknown; any image block; trailer-stripped body < 512 chars (MIN_POSTHOOK_CHARS, matches rtk guards.min_size); env.RTK_DISABLED==='1'; bash isError results WITHOUT structuredContent (aborted/timed out/no exit code); bash commands already starting with 'rtk ' unless body >= 20_000 chars (RTK_COMMAND_MIN_CHARS: below that only 0%-rows result since term-default skips rtk commands; above it the user's size-based route rules can act). Trailer table per tool, pi 1.3.0 strings (cite dist/core/tools/bash.js:241-294, read.js:139-159, grep.js:219-233): strip from the end the bash '\\n\\nCommand exited with code N' line, then ONE trailing bracketed notice ('[Showing lines …]', '[Showing last …]', '[… more lines in file …]', '[N matches limit reached …]', '[… limit reached …]', '[Some lines truncated …]', '[Line N is … exceeds …]'); re-append verbatim after. fromHookOutput(stdout, code, killed, event, trailer) -> ToolResultEventResult | undefined: undefined on killed, code!=0, empty/whitespace, non-JSON, missing hookSpecificOutput.updatedToolOutput or wrong-type field, identical text, or text longer than original; else {content:[{type:'text', text: body+trailer}], structuredContent: event.structuredContent (echoed UNCHANGED when present — pi deletes it otherwise, runner.js:910-914; scripts keep raw data, the model gets compressed content), details:{...event.details, rtk:{from,to}}}; never sets isError. Golden fixtures from real probes (research F3).",
+        "effort": "medium",
+        "persona": "api-engineer",
+        "depends_on": [],
+        "acceptance_criteria": [
+          {
+            "id": "pc-1",
+            "statement": "Each of bash/powershell/read/grep/mcp__x maps to the exact Claude shape (F3), multi-block text joined, read path absolute, Bash tool_input.command is the event's (rewritten) command",
+            "check": "bun test tests/rtk/rtk-posthook.test.ts",
+            "status": "unchecked",
+            "evidence": []
+          },
+          {
+            "id": "pc-2",
+            "statement": "Skips: parentToolCallId, find/ls/edit/write/unknown, image content, stripped body <512 (511 skip/512 send), RTK_DISABLED=1, bash isError without structuredContent, 'rtk …' bash under 20_000 chars (sent at/above)",
+            "check": "bun test tests/rtk/rtk-posthook.test.ts",
+            "status": "unchecked",
+            "evidence": []
+          },
+          {
+            "id": "pc-3",
+            "statement": "Per-tool trailer golden table: trailer NOT in the payload sent to rtk and re-appended verbatim after compression (bash exit-code + truncation notice, read/grep notices)",
+            "check": "bun test: assert payload.tool_response lacks 'Command exited with code'/'Full output:' and result ends with the exact trailer",
+            "status": "unchecked",
+            "evidence": []
+          },
+          {
+            "id": "pc-4",
+            "statement": "Killed/non-zero/empty/garbage/wrong-type/identical/grown replies pass (undefined, never throw); valid reply replaces content, keeps details, never sets isError",
+            "check": "bun test tests/rtk/rtk-posthook.test.ts",
+            "status": "unchecked",
+            "evidence": []
+          },
+          {
+            "id": "pc-5",
+            "statement": "structuredContent is echoed deep-equal (bash {output,exit_code:1,…}, read, mcp) whenever content is replaced",
+            "check": "bun test tests/rtk/rtk-posthook.test.ts",
+            "status": "unchecked",
+            "evidence": []
+          }
+        ],
+        "files": [
+          "extensions/rtk/rtk-posthook.ts",
+          "tests/rtk/rtk-posthook.test.ts"
+        ],
+        "resources": [],
+        "status": "pending"
+      },
+      "hook-runner": {
+        "id": "hook-runner",
+        "goal": "Fail-open spawn wrapper piping a payload into `rtk hook claude` with cwd, timeout, abort and output cap",
+        "instructions": "New extensions/rtk/rtk-hook-runner.ts, TDD in tests/rtk/rtk-hook-runner.test.ts. runHook(payload, {cwd, timeoutMs, signal, env?, graceMs=500, spawnFn = node:child_process spawn, command='rtk', args=['hook','claude']}) -> Promise<{stdout, code, killed}>, never rejects. spawn {cwd, env, shell:false, stdio:['pipe','pipe','ignore']} (stderr ignored so a chatty child never blocks); stdin.on('error',noop); stdin.end(JSON.stringify(payload)); join stdout chunks; cap stdout at max(64 KiB, 2x payload bytes) -> kill + killed:true; timeout/abort -> SIGTERM then SIGKILL after graceMs, killed:true; sync throw / 'error' event -> resolve {code:-1}. Export POSTHOOK_TIMEOUT_MS = 20_000 for bodies >= 20_000 chars (the user's haiku route, timeout_secs=15, can fire) and POSTHOOK_FAST_TIMEOUT_MS = 3_000 below that, plus timeoutFor(bodyChars). Follow extensions/monitor/bash-predicate.ts:202-260 kill pattern. Fixtures: real temp-dir scripts — `cat` (with timeoutMs 2000, assert killed:false: proves stdin is ended), `pwd`, `trap '' TERM; sleep 30` (proves SIGKILL escalation within timeout+grace), a missing binary.",
+        "effort": "low",
+        "persona": "api-engineer",
+        "depends_on": [],
+        "acceptance_criteria": [
+          {
+            "id": "hr-1",
+            "statement": "Payload arrives on stdin byte-for-byte; `cat` fixture finishes (stdin ended) with killed:false; chunked stdout is joined",
+            "check": "bun test tests/rtk/rtk-hook-runner.test.ts",
+            "status": "unchecked",
+            "evidence": []
+          },
+          {
+            "id": "hr-2",
+            "statement": "Child runs in the given cwd with the given env",
+            "check": "bun test: pwd == realpath(tmp); drop cwd -> red",
+            "status": "unchecked",
+            "evidence": []
+          },
+          {
+            "id": "hr-3",
+            "statement": "Timeout (incl. TERM-ignoring child -> SIGKILL), abort and output cap resolve killed:true; missing binary / spawn error / EPIPE resolve, never reject; timeoutFor picks 3 s vs 20 s at 20_000 chars",
+            "check": "bun test tests/rtk/rtk-hook-runner.test.ts",
+            "status": "unchecked",
+            "evidence": []
+          }
+        ],
+        "files": [
+          "extensions/rtk/rtk-hook-runner.ts",
+          "tests/rtk/rtk-hook-runner.test.ts"
+        ],
+        "resources": [],
+        "status": "pending"
+      },
+      "status-core": {
+        "id": "status-core",
+        "goal": "Pure status formatting + read-only readers for project-scoped savings (commands and proxy) and proxy routing detection",
+        "instructions": "New extensions/rtk/rtk-status.ts, TDD in tests/rtk/rtk-status.test.ts. parseGain(json) -> {pct, commands} | undefined with weighted total_saved/total_input (not avg_savings_pct); 0 commands/0 input -> pct undefined. proxyDbPath(env, home, platform) -> string: absolute RTK_PROXY_DB first; darwin ~/Library/Application Support/rtk/llm-proxy/rtk-proxy.db; else ($XDG_DATA_HOME || ~/.local/share)/rtk/llm-proxy/rtk-proxy.db. readProxyUsage(dbPath, project): lazy require('node:sqlite') DatabaseSync(path,{readOnly:true}) (works in pi's node and bun 1.4): pct = sum(tokens_saved)/sum(tokens_in) over rows WHERE project = ? OR project LIKE ? || '/%' (prefix scope, matching `rtk gain -p`; same formula rtk's own 'tokens saved … (0.6%)' uses: 1.63M/274.6M); 0 rows -> {pct: undefined}; missing file/locked/no column -> undefined, never creates the file, never throws. proxyBind(env) = RTK_PROXY_BIND || '127.0.0.1:8080'; proxyUrl(env) = 'http://'+bind. isRouted(baseUrl, bind) via host:port parse (8080 vs 80801 distinct, trailing path ok, undefined false). parseProxyStatus(stdout, code) -> 'up'|'down' (up fixture: 'running at 127.0.0.1:8080 (edition local, v1.0.1)' exit 0; capture the down output by reading rtk docs/`rtk llm-proxy status --help`; anything else 'down'). formatStatus({proxy:'routed'|'routed-down'|'up'|'off', cmdPct?, proxyPct?, post?:{compressed,sent}}) golden strings: 'rtk ⇄proxy · cmd 62% · proxy 18% · post 3/5' (routed), 'rtk proxy down! · cmd 62%' (routed-down), 'rtk proxy up · pi direct · cmd 62%' (up), 'rtk proxy off · cmd 62%' (off); proxy segment shows 'proxy –' when proxyPct undefined but routed; post segment only when sent>0; Math.round; never NaN/undefined. shouldRefresh(now, last, minMs=10_000). proxyHeaders(cwd, sessionId) omits session when absent.",
+        "effort": "medium",
+        "persona": "api-engineer",
+        "depends_on": [],
+        "acceptance_criteria": [
+          {
+            "id": "sc-1",
+            "statement": "parseGain/parseProxyStatus handle real fixtures and malformed input without throwing; weighted pct (saved 900/input 1000, avg 50 -> 90%)",
+            "check": "bun test tests/rtk/rtk-status.test.ts",
+            "status": "unchecked",
+            "evidence": []
+          },
+          {
+            "id": "sc-2",
+            "statement": "readProxyUsage sums rows whose project equals cwd or is under cwd/ (temp sqlite with other/NULL/sibling-prefix projects like cwd+'x'), read-only (non-existent path stays non-existent), undefined on failure",
+            "check": "bun test tests/rtk/rtk-status.test.ts",
+            "status": "unchecked",
+            "evidence": []
+          },
+          {
+            "id": "sc-3",
+            "statement": "isRouted host:port table, proxyDbPath order, the four formatStatus golden strings + 'proxy –' + post segment, never NaN/undefined, shouldRefresh throttle",
+            "check": "bun test tests/rtk/rtk-status.test.ts",
+            "status": "unchecked",
+            "evidence": []
+          }
+        ],
+        "files": [
+          "extensions/rtk/rtk-status.ts",
+          "tests/rtk/rtk-status.test.ts"
+        ],
+        "resources": [
+          "rtk-proxy.db (read-only)"
+        ],
+        "status": "pending"
+      },
+      "wire-posthook": {
+        "id": "wire-posthook",
+        "goal": "index.ts sends every eligible pi tool result through `rtk hook claude`, fail-open",
+        "instructions": "Refactor index.ts to export createRtkExtension(deps) with deps = {runHook, env} in this step (wire-status adds more), default export delegating with real deps; existing tests green unchanged. Add pi.on('tool_result'): await unavailable; toHookPayload(event, ctx.cwd, deps.env); deps.runHook(payload, {cwd: ctx.cwd, timeoutMs: timeoutFor(bodyChars), signal: ctx.signal}); r = fromHookOutput(...); count sent/compressed per extension instance (exposed for the footer). Whole handler try/catch -> undefined + console.warn. Never mutate event. Failing wiring tests first in tests/rtk/rtk.test.ts with injected fake runHook; one test applies pi's real merge semantics (if result.content && !result.structuredContent -> delete) to prove structuredContent survives.",
+        "effort": "medium",
+        "persona": "api-engineer",
+        "depends_on": [
+          "posthook-core",
+          "hook-runner"
+        ],
+        "acceptance_criteria": [
+          {
+            "id": "wp-1",
+            "statement": "A large grep/bash result is replaced with the runner's compressed output; runner gets cwd=ctx.cwd, ctx.signal and the Claude payload whose Bash command equals the post-tool_call (rewritten) command",
+            "check": "bun test tests/rtk/rtk.test.ts",
+            "status": "unchecked",
+            "evidence": []
+          },
+          {
+            "id": "wp-2",
+            "statement": "Runner throw/killed/non-zero/garbled, unavailable rtk (both probe orders), RTK_DISABLED=1 leave the result untouched; event not mutated; structuredContent survives pi's merge",
+            "check": "bun test tests/rtk/rtk.test.ts",
+            "status": "unchecked",
+            "evidence": []
+          },
+          {
+            "id": "wp-3",
+            "statement": "find/ls/edit/write and nested (parentToolCallId) calls never reach the runner; existing tool_call rewrite suite unchanged and green",
+            "check": "bun test tests/rtk/rtk.test.ts",
+            "status": "unchecked",
+            "evidence": []
+          }
+        ],
+        "files": [
+          "extensions/rtk/index.ts",
+          "tests/rtk/rtk.test.ts"
+        ],
+        "resources": [],
+        "status": "pending"
+      },
+      "wire-status": {
+        "id": "wire-status",
+        "goal": "Footer shows proxy state, project command and proxy savings; disabled reason still wins",
+        "instructions": "Extend deps with {now, readProxyUsage, proxyDb: string (resolved path)}. In index.ts add refreshStatus(ctx): await the probe first; if disabled keep exactly 'RTK disabled: <reason>' and run no gain/status exec; else in parallel pi.exec('rtk',['gain','-p','-f','json'],{cwd: ctx.cwd, timeout: REWRITE_TIMEOUT_MS}), pi.exec('rtk',['llm-proxy','status'],{timeout: REWRITE_TIMEOUT_MS}), deps.readProxyUsage(deps.proxyDb, ctx.cwd); proxy = isRouted(ctx.model?.baseUrl) ? (up ? 'routed':'routed-down') : (up ? 'up':'off'); post = session counters from the tool_result handler; ctx.ui?.setStatus?.('rtk', formatStatus(...)) in try/catch; each failing source drops only its segment. Triggers: session_start and model_select always; turn_end when shouldRefresh(deps.now(), last); never per tool_result. Tests first with fake exec + createFakePi().clock as now.",
+        "effort": "medium",
+        "persona": "api-engineer",
+        "depends_on": [
+          "wire-posthook",
+          "status-core"
+        ],
+        "acceptance_criteria": [
+          {
+            "id": "ws-1",
+            "statement": "session_start sets one 'rtk' status from rtk gain run with -p and cwd=ctx.cwd plus proxy state, proxy pct and post counter",
+            "check": "bun test tests/rtk/rtk.test.ts",
+            "status": "unchecked",
+            "evidence": []
+          },
+          {
+            "id": "ws-2",
+            "statement": "turn_end x2 at t0 -> 1 refresh; clock.advance(10_001) -> 2; model_select refreshes immediately and reflects a new baseUrl",
+            "check": "bun test tests/rtk/rtk.test.ts",
+            "status": "unchecked",
+            "evidence": []
+          },
+          {
+            "id": "ws-3",
+            "statement": "In both probe orders a missing/old rtk yields exactly one status 'RTK disabled: <reason>' and gain/llm-proxy status are never executed; failing gain/status/db or missing ui never throws",
+            "check": "bun test tests/rtk/rtk.test.ts",
+            "status": "unchecked",
+            "evidence": []
+          }
+        ],
+        "files": [
+          "extensions/rtk/index.ts",
+          "tests/rtk/rtk.test.ts"
+        ],
+        "resources": [],
+        "status": "pending"
+      },
+      "wire-proxy": {
+        "id": "wire-proxy",
+        "goal": "Route pi's stock anthropic provider through rtk-proxy when it is up (opt-out RTK_PI_PROXY=0), with project/session attribution headers; unroute when the proxy goes down",
+        "instructions": "User rule: route through the proxy when it does not already work the same; F9 measured it does not (directives + ~320 uncached tokens/request), so routing is ON by default, opt-out RTK_PI_PROXY=0 (document cost). Per extension instance (closure flag, not module-level). On session_start/refresh: if RTK_PI_PROXY!=='0', rtk available, RTK_DISABLED unset, proxy 'up', ctx.model?.provider==='anthropic' and ctx.model.baseUrl host is api.anthropic.com (never override a user's custom/gateway anthropic baseUrl): try { pi.registerProvider('anthropic', {baseUrl: proxyUrl(env)}) } catch {warn}; set registered=true (pi refreshes the current model immediately: agent-session.js:2819-2822). When registered and a refresh finds the proxy down: pi.unregisterProvider('anthropic') (restores the built-in, types.d.ts:1361-1368), registered=false. pi.on('before_provider_headers', (e, ctx)): only when ctx.model?.provider==='anthropic' && isRouted(ctx.model.baseUrl): mutate e.headers in place with proxyHeaders(ctx.cwd, ctx.sessionManager?.getSessionId?.()) (rtk docs: consumed by the proxy, never forwarded upstream); try/catch. Fake pi needs registerProvider/unregisterProvider/model/sessionManager stubs added per test.",
+        "effort": "medium",
+        "persona": "api-engineer",
+        "depends_on": [
+          "wire-status"
+        ],
+        "acceptance_criteria": [
+          {
+            "id": "wx-1",
+            "statement": "RTK_PI_PROXY=0: no registerProvider, headers untouched",
+            "check": "bun test tests/rtk/rtk.test.ts",
+            "status": "unchecked",
+            "evidence": []
+          },
+          {
+            "id": "wx-2",
+            "statement": "Default + proxy up + stock anthropic baseUrl: registerProvider('anthropic',{baseUrl}) with exactly that key set; proxy down, probe throw, non-anthropic model or custom anthropic baseUrl: never; a fresh instance registers again; registerProvider throwing does not break the session",
+            "check": "bun test tests/rtk/rtk.test.ts",
+            "status": "unchecked",
+            "evidence": []
+          },
+          {
+            "id": "wx-3",
+            "statement": "Headers added in place only when the active anthropic model's baseUrl is the proxy; direct leaves headers deep-equal; model_select away stops tagging",
+            "check": "bun test tests/rtk/rtk.test.ts",
+            "status": "unchecked",
+            "evidence": []
+          },
+          {
+            "id": "wx-4",
+            "statement": "Registered, then refresh finds proxy down -> unregisterProvider('anthropic') once and status shows proxy off",
+            "check": "bun test tests/rtk/rtk.test.ts",
+            "status": "unchecked",
+            "evidence": []
+          },
+          {
+            "id": "wx-5",
+            "statement": "Real pi updates ctx.model.baseUrl after registerProvider (cite dist line) — fake-only otherwise, confirmed by a manual pi smoke run showing 'rtk ⇄proxy'",
+            "check": "citation + recorded manual run",
+            "status": "unchecked",
+            "evidence": []
+          }
+        ],
+        "files": [
+          "extensions/rtk/index.ts",
+          "tests/rtk/rtk.test.ts"
+        ],
+        "resources": [],
+        "status": "pending"
+      },
+      "docs-release": {
+        "id": "docs-release",
+        "goal": "Document the after-tool pipeline, footer and opt-in routing; traceable release",
+        "instructions": "Read .ai-badger/instructions/documentation.instructions.md first. Rewrite the rtk section of docs/reference/extension-catalog.md (~line 453): after-tool pipeline mapping (bash/powershell/read/grep/mcp; find/ls have no rtk filter — Glob passes through; edit/write never), skip rules, fail-open, 3 s / 20 s timeouts and that large outputs may take a paid Haiku call per the user's pipeline, trailer preservation, structuredContent kept raw for scripts, double counting of rtk-rewritten commands; footer states and refresh triggers; that rtk gain's 'Excluded N oversized' counts raw size and keeps rising by design — the footer's post counter is the proof the pipeline runs; default routing through the proxy (opt-out RTK_PI_PROXY=0), its cost (F9), only for the stock anthropic URL, unroute on proxy down, attribution headers (never forwarded upstream); RTK_PROXY_DB / RTK_PROXY_BIND. Update README rtk row if it describes behaviour. Bump VERSION 1.2.6 -> 1.3.0 (auto-bump.yml stands down when the PR changes VERSION; precedent 168a4f4) and extensions/rtk/package.json 1.0.0 -> 1.1.0 + description.",
+        "effort": "low",
+        "persona": "api-engineer",
+        "depends_on": [
+          "wire-proxy"
+        ],
+        "acceptance_criteria": [
+          {
+            "id": "dr-1",
+            "statement": "Catalog rtk section covers the posthook mapping, footer, oversized semantics and proxy routing; every documented env var/command exists in extensions/rtk/*.ts",
+            "check": "grep each documented name in extensions/rtk/*.ts",
+            "status": "unchecked",
+            "evidence": []
+          },
+          {
+            "id": "dr-2",
+            "statement": "VERSION is 1.3.0 and extensions/rtk/package.json is 1.1.0",
+            "check": "git diff origin/main -- VERSION extensions/rtk/package.json",
+            "status": "unchecked",
+            "evidence": []
+          }
+        ],
+        "files": [
+          "docs/reference/extension-catalog.md",
+          "README.md",
+          "extensions/rtk/package.json",
+          "VERSION"
+        ],
+        "resources": [],
+        "status": "pending"
+      },
+      "join-verify": {
+        "id": "join-verify",
+        "goal": "Integration gate plus live end-to-end proof that a pi tool result reaches rtk's posthook attributed to the project",
+        "instructions": "Add tests/rtk/rtk-live.test.ts, local-only (CI has no rtk): skip unless Bun.spawnSync(['rtk','pipeline','show','rtk:posthook']) exits 0 at load. Hermetic: mkdtemp <tmp>; write <tmp>/cfg/pipeline.toml (schema_version=1, [pipeline] name='pi-live-test', extends=['rtk:posthook'], plus a marker rule [[hook.after_tool.shell]] name='size-marker' when={tokens_gt=5000} use=['term']; NO upstream/route); pass env ONLY via runHook's env option {...process.env, RTK_CONFIG_DIR:<tmp>/cfg, RTK_DB_PATH:<tmp>/h.db, RTK_RECALL_DB:<tmp>/r.db, RTK_TELEMETRY_DISABLED:'1'}; never mutate process.env; only run `rtk hook claude` / `rtk pipeline show` (never log/config/init/promote). Build the extension with the REAL runHook (env-injected) and ctx.cwd=<tmp>. jv-2: ~3 KB grep result (40 'path:line: text' lines) -> content replaced starting '40 matches in'; <tmp>/h.db row rtk_cmd LIKE 'rtk posthook grep%' with project_path = realpathSync(<tmp>). jv-3 (the user's complaint): bash event, input.command 'rtk npm run build', one ~26 KB text block + '\\n\\nCommand exited with code 1', isError true with structuredContent {exit_code:1,...} -> shorter content ending with the exact trailer, h.db row 'rtk posthook bash%' with input_tokens>5000 and output_tokens<input_tokens; control: same shape at ~6.6 KB unchanged (rtk command under 20_000 chars is not sent). Prove red once each: drop cwd from runHook (jv-2 project_path red); cap the stdout sent at 4000 chars (jv-3 red); revert. Optional: record latency of one real >5000-token pi bash via the user's pipeline in a manual smoke run. Then bun run test, bun run typecheck, bun run check (record output).",
+        "effort": "medium",
+        "persona": "test-engineer",
+        "depends_on": [
+          "posthook-core",
+          "hook-runner",
+          "status-core",
+          "wire-posthook",
+          "wire-status",
+          "wire-proxy",
+          "docs-release"
+        ],
+        "acceptance_criteria": [
+          {
+            "id": "jv-1",
+            "statement": "bun run test, bun run typecheck and bun run check pass (outputs recorded)",
+            "check": "exit codes + output recorded",
+            "status": "unchecked",
+            "evidence": []
+          },
+          {
+            "id": "jv-2",
+            "statement": "Hermetic live grep round trip writes an isolated 'rtk posthook grep …' row with project_path=<tmp realpath> and replaces content; global history.db/recall.db get 0 rows for <tmp>",
+            "check": "RTK live run + recorded red run",
+            "status": "unchecked",
+            "evidence": []
+          },
+          {
+            "id": "jv-3",
+            "statement": "An oversized (>5000-token) pi bash result from a rewritten rtk command reaches the size rule and is compressed with its exit-code trailer intact; the under-threshold control is untouched",
+            "check": "RTK live run + recorded red run",
+            "status": "unchecked",
+            "evidence": []
+          }
+        ],
+        "files": [
+          "tests/rtk/rtk-live.test.ts"
+        ],
+        "resources": [
+          "rtk binary"
+        ],
+        "status": "pending"
+      }
+    }
+  },
+  "revision": 1,
+  "created_at": "2026-10-17T16:45:45Z",
+  "updated_at": "2026-10-17T16:52:07.795936+00:00"
+}
