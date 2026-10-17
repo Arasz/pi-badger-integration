@@ -13,19 +13,8 @@ import type { ExtensionAPI, ToolCallEvent, BashToolCallEvent, ToolResultEvent } 
 import { homedir } from "node:os";
 import { runHook, timeoutFor } from "./rtk-hook-runner.ts";
 import { fromHookOutput, toHookPayload } from "./rtk-posthook.ts";
-import {
-	formatStatus,
-	isRouted,
-	parseGain,
-	parseProxyStatus,
-	proxyBind,
-	proxyDbPath,
-	proxyHeaders,
-	proxyUrl,
-	readProxyUsage,
-	shouldRefresh,
-	type ProxyState,
-} from "./rtk-status.ts";
+import { formatStatus, parseGain, parseProxyStatus, shouldRefresh, type ProxyState } from "./rtk-status.ts";
+import { isRouted, proxyBind, proxyDbPath, proxyHeaders, proxyUrl, readProxyUsage } from "./rtk-proxy.ts";
 import { decideRewrite, isRewriteCandidate, REWRITE_TIMEOUT_MS, versionProblem } from "./rtk-core.ts";
 
 type StatusContext = {
@@ -49,6 +38,8 @@ async function probe(pi: ExtensionAPI): Promise<string | undefined> {
 		return "rtk binary not found in PATH";
 	}
 }
+
+const ANTHROPIC_URL = "https://api.anthropic.com";
 
 function isStockAnthropic(baseUrl: string | undefined): boolean {
 	try {
@@ -84,8 +75,10 @@ function setup(pi: ExtensionAPI, deps: RtkDeps) {
 	const post = { sent: 0, compressed: 0 };
 	let disabledShown = false;
 	let lastRefresh: number | undefined;
-	// True while this instance has the anthropic provider pointed at rtk-proxy.
-	let routedByUs = false;
+	// Bumped by each refresh and by shutdown; a refresh that is no longer the latest drops its result.
+	let generation = 0;
+	// The stock anthropic baseUrl this instance replaced with the proxy URL; set only while routed.
+	let stockBaseUrl: string | undefined;
 	const routingAllowed = () => deps.env.RTK_PI_PROXY !== "0" && deps.env.RTK_DISABLED !== "1";
 
 	void unavailable.then((problem) => {
@@ -103,6 +96,7 @@ function setup(pi: ExtensionAPI, deps: RtkDeps) {
 	/** Recomputes the footer; a disabled rtk shows only its reason, once. Never rejects. */
 	const refreshStatus = async (ctx: StatusContext) => {
 		try {
+			const mine = ++generation;
 			lastRefresh = deps.now();
 			const problem = await unavailable;
 			if (problem) {
@@ -120,6 +114,7 @@ function setup(pi: ExtensionAPI, deps: RtkDeps) {
 			} catch {
 				usage = undefined;
 			}
+			if (mine !== generation) return;
 			const up = status !== undefined && parseProxyStatus(status.stdout, status.code) === "up";
 			syncRouting(ctx, up);
 			const routed = isRouted(ctx.model?.baseUrl, proxyBind(deps.env));
@@ -131,20 +126,37 @@ function setup(pi: ExtensionAPI, deps: RtkDeps) {
 		}
 	};
 
-	/** Points pi's stock anthropic provider at rtk-proxy while it is up; restores the built-in when it goes down. */
+	/** Re-registers only baseUrl, so another extension's anthropic settings survive (unregister would drop them). */
+	const restore = (stock: string) => {
+		stockBaseUrl = undefined;
+		pi.registerProvider("anthropic", { baseUrl: stock });
+	};
+
+	/** Points stock anthropic at rtk-proxy while it is up; restores stock when it is down, also after an earlier instance. */
 	const syncRouting = (ctx: StatusContext, up: boolean) => {
 		try {
-			if (routedByUs && !up) {
-				routedByUs = false;
-				pi.unregisterProvider("anthropic");
-			} else if (!routedByUs && up && routingAllowed() && ctx.model?.provider === "anthropic" && isStockAnthropic(ctx.model.baseUrl)) {
+			const anthropic = ctx.model?.provider === "anthropic";
+			if (!up && stockBaseUrl !== undefined) restore(stockBaseUrl);
+			else if (!up && anthropic && routingAllowed() && isRouted(ctx.model?.baseUrl, proxyBind(deps.env))) restore(ANTHROPIC_URL);
+			else if (up && stockBaseUrl === undefined && anthropic && routingAllowed() && isStockAnthropic(ctx.model?.baseUrl)) {
+				const stock = ctx.model?.baseUrl as string;
 				pi.registerProvider("anthropic", { baseUrl: proxyUrl(deps.env) });
-				routedByUs = true;
+				stockBaseUrl = stock;
 			}
 		} catch (error) {
 			console.warn("[rtk] could not change the anthropic provider route", error);
 		}
 	};
+
+	// pi keeps the model runtime across /reload and /new, so routing must not outlive this instance.
+	pi.on("session_shutdown", () => {
+		generation++;
+		try {
+			if (stockBaseUrl !== undefined) restore(stockBaseUrl);
+		} catch (error) {
+			console.warn("[rtk] could not restore the anthropic provider on shutdown", error);
+		}
+	});
 
 	pi.on("before_provider_headers", (event, ctx) => {
 		try {
@@ -162,6 +174,11 @@ function setup(pi: ExtensionAPI, deps: RtkDeps) {
 
 	pi.on("model_select", (_event, ctx) => {
 		void refreshStatus(ctx as StatusContext);
+	});
+
+	// Unthrottled so a proxy that died since the last turn is routed around before this request goes out.
+	pi.on("before_agent_start", async (_event, ctx) => {
+		await refreshStatus(ctx as StatusContext);
 	});
 
 	pi.on("turn_end", (_event, ctx) => {

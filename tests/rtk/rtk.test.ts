@@ -562,34 +562,68 @@ describe("rtk footer status", () => {
 	});
 });
 
-/** statusSetup plus provider stubs that act like pi: registering refreshes ctx.model.baseUrl, unregistering restores it. */
-async function proxySetup(opts: StatusOpts & { registerThrows?: boolean; model?: Record<string, any> } = {}) {
+/**
+ * pi's model runtime as far as routing sees it: registerProvider merges into one stored extension
+ * registration per provider, unregisterProvider deletes it, and the session model's baseUrl is
+ * re-read from it (agent-session.js _refreshCurrentModelFromRegistry). Outlives extension instances.
+ */
+type Registry = {
+	ext: Map<string, Record<string, unknown>>;
+	ctx: Record<string, any>;
+	builtin: string | undefined;
+	refresh(): void;
+};
+
+function fakeRegistry(ctx: Record<string, any>, seed: Record<string, Record<string, unknown>> = {}): Registry {
+	const registry: Registry = {
+		ext: new Map(Object.entries(seed)),
+		ctx,
+		builtin: ctx.model?.baseUrl,
+		refresh() {
+			const model = registry.ctx.model;
+			if (!model) return;
+			const override = registry.ext.get(model.provider)?.baseUrl as string | undefined;
+			model.baseUrl = model.provider === "anthropic" ? (override ?? registry.builtin) : model.baseUrl;
+		},
+	};
+	return registry;
+}
+
+type ProxyOpts = StatusOpts & { registerThrows?: boolean; model?: Record<string, any>; registry?: Registry; seed?: Record<string, Record<string, unknown>> };
+
+/** statusSetup wired to a fake registry; pass `registry` to share one runtime across instances. */
+async function proxySetup(opts: ProxyOpts = {}) {
 	const s = await statusSetup(opts);
-	if (opts.model) s.ctx.model = { ...opts.model };
+	if (opts.registry) s.ctx = opts.registry.ctx;
+	else if ("model" in opts) s.ctx.model = opts.model ? { ...opts.model } : undefined;
+	const registry = opts.registry ?? fakeRegistry(s.ctx, opts.seed);
+	const ctx = registry.ctx;
+	ctx.ui = { setStatus: (key: string, text: string) => s.statuses.push([key, text]) };
 	const registered: Array<[string, Record<string, unknown>]> = [];
 	const unregistered: string[] = [];
-	const original = s.ctx.model?.baseUrl;
 	Object.assign(s.fake as object, {
 		registerProvider: (name: string, config: Record<string, unknown>) => {
 			registered.push([name, config]);
 			if (opts.registerThrows) throw new Error("bad provider config");
-			if (s.ctx.model?.provider === name) s.ctx.model.baseUrl = config.baseUrl;
+			registry.ext.set(name, { ...registry.ext.get(name), ...config });
+			registry.refresh();
 		},
 		unregisterProvider: (name: string) => {
 			unregistered.push(name);
-			if (s.ctx.model?.provider === name) s.ctx.model.baseUrl = original;
+			registry.ext.delete(name);
+			registry.refresh();
 		},
 	});
 	const start = async () => {
-		await fire(s.fake as never, "session_start", { type: "session_start" }, s.ctx);
+		await fire(s.fake as never, "session_start", { type: "session_start" }, ctx);
 		await flush();
 	};
 	const headers = async (initial: Record<string, string> = { "x-api-key": "k" }) => {
 		const event = { type: "before_provider_headers", headers: initial };
-		const results = await fire(s.fake as never, "before_provider_headers", event, s.ctx);
+		const results = await fire(s.fake as never, "before_provider_headers", event, ctx);
 		return { event, results };
 	};
-	return { ...s, registered, unregistered, start, headers };
+	return { ...s, ctx, registry, registered, unregistered, start, headers };
 }
 
 const status0 = { post: { compressed: 0, sent: 0 }, cmdPct: 75, proxyPct: 40 };
@@ -642,14 +676,128 @@ describe("rtk proxy routing", () => {
 		});
 	}
 
-	test("a fresh extension instance registers again", async () => {
-		const a = await proxySetup();
-		await a.start();
-		const b = await proxySetup();
-		await b.start();
-		expect(a.registered.length).toBe(1);
-		expect(b.registered.length).toBe(1);
+	test("the proxy dies between turns: before_agent_start restores stock before the request, unthrottled, within the 2 s timeout", async () => {
+		let up = true;
+		const p = await proxySetup({ status: () => (up ? ok("running at 127.0.0.1:8080\n") : down()) });
+		await p.start();
+		expect(p.ctx.model.baseUrl).toBe(PROXY_URL);
+		const checksBefore = p.statusCalls().length;
+
+		up = false;
+		const results = await fire(p.fake as never, "before_agent_start", { type: "before_agent_start", prompt: "hi" }, p.ctx);
+		expect(results).toStrictEqual([undefined]);
+		expect(p.ctx.model.baseUrl).toBe(STOCK_URL);
+		expect(p.registered.at(-1)).toEqual(["anthropic", { baseUrl: STOCK_URL }]);
+		expect((await p.headers()).event.headers).toEqual({ "x-api-key": "k" });
+		const check = p.statusCalls()[checksBefore];
+		expect(check.options?.timeout).toBe(2_000);
 	});
+
+	test("before_agent_start with a throwing status check never throws", async () => {
+		let fail = false;
+		const p = await proxySetup({ status: () => (fail ? Promise.reject(new Error("spawn")) : ok("running at 127.0.0.1:8080\n")) });
+		await p.start();
+		fail = true;
+		await expect(fire(p.fake as never, "before_agent_start", { type: "before_agent_start", prompt: "hi" }, p.ctx)).resolves.toStrictEqual([undefined]);
+	});
+
+	describe("a stale refresh never routes or sets the footer", () => {
+		/** Status replies the test settles by hand, in call order. */
+		function manualStatus() {
+			const pending: Array<(r: ExecResult) => void> = [];
+			return { status: () => new Promise<ExecResult>((r) => pending.push(r)), pending };
+		}
+
+		test("an older refresh that sees up after a newer one saw down changes nothing", async () => {
+			const m = manualStatus();
+			const p = await proxySetup({ status: m.status });
+			await fire(p.fake as never, "session_start", { type: "session_start" }, p.ctx);
+			await fire(p.fake as never, "model_select", { type: "model_select" }, p.ctx);
+			await flush();
+			expect(m.pending.length).toBe(2);
+
+			m.pending[1](down());
+			await flush();
+			expect(p.statuses).toEqual([["rtk", "rtk proxy off · cmd 75% · proxy 40%"]]);
+
+			m.pending[0](ok("running at 127.0.0.1:8080\n"));
+			await flush();
+			expect(p.registered).toEqual([]);
+			expect(p.ctx.model.baseUrl).toBe(STOCK_URL);
+			expect(p.statuses).toEqual([["rtk", "rtk proxy off · cmd 75% · proxy 40%"]]);
+		});
+
+		test("a refresh still in flight at shutdown never routes afterwards", async () => {
+			const m = manualStatus();
+			const p = await proxySetup({ status: m.status });
+			await fire(p.fake as never, "session_start", { type: "session_start" }, p.ctx);
+			await flush();
+			await fire(p.fake as never, "session_shutdown", { type: "session_shutdown", reason: "reload" }, p.ctx);
+			m.pending[0](ok("running at 127.0.0.1:8080\n"));
+			await flush();
+			expect(p.registered).toEqual([]);
+			expect(p.statuses).toEqual([]);
+		});
+	});
+
+	describe("routing state across extension instances sharing one model runtime (/reload, /new)", () => {
+		const shutdown = (p: { fake: unknown; ctx: unknown }) =>
+			fire(p.fake as never, "session_shutdown", { type: "session_shutdown", reason: "reload" }, p.ctx);
+
+		test("A routes, A shuts down -> the stock baseUrl is back; B then routes again", async () => {
+			const a = await proxySetup();
+			await a.start();
+			expect(a.ctx.model.baseUrl).toBe(PROXY_URL);
+
+			await expect(shutdown(a)).resolves.toStrictEqual([undefined]);
+			expect(a.registered.at(-1)).toEqual(["anthropic", { baseUrl: STOCK_URL }]);
+			expect(a.ctx.model.baseUrl).toBe(STOCK_URL);
+
+			const b = await proxySetup({ registry: a.registry });
+			await b.start();
+			expect(b.registered).toEqual([["anthropic", { baseUrl: PROXY_URL }]]);
+		});
+
+		test("shutdown of an instance that never routed changes nothing", async () => {
+			const a = await proxySetup({ status: down });
+			await a.start();
+			await shutdown(a);
+			expect(a.registered).toEqual([]);
+			expect(a.unregistered).toEqual([]);
+		});
+
+		test("a throwing registerProvider on shutdown never throws", async () => {
+			const a = await proxySetup();
+			await a.start();
+			Object.assign(a.fake as object, { registerProvider: () => { throw new Error("stale ctx"); } });
+			await expect(shutdown(a)).resolves.toStrictEqual([undefined]);
+		});
+
+		test("A routes and never shuts down; B sees the proxy down with the model on the proxy -> B restores stock", async () => {
+			const a = await proxySetup();
+			await a.start();
+			expect(a.ctx.model.baseUrl).toBe(PROXY_URL);
+
+			const b = await proxySetup({ registry: a.registry, status: down });
+			await b.start();
+			expect(b.registered).toEqual([["anthropic", { baseUrl: STOCK_URL }]]);
+			expect(b.ctx.model.baseUrl).toBe(STOCK_URL);
+			expect(b.statuses.at(-1)).toEqual(["rtk", formatStatus({ proxy: "off", ...status0 })]);
+		});
+
+		test("B leaves a non-anthropic provider on the proxy URL alone while the proxy is down", async () => {
+			const b = await proxySetup({ status: down, model: { provider: "my-proxy", id: "claude", baseUrl: PROXY_URL } });
+			await b.start();
+			expect(b.registered).toEqual([]);
+		});
+
+		test("B leaves an anthropic proxy URL alone while the proxy is up", async () => {
+			const b = await proxySetup({ model: { provider: "anthropic", id: "claude", baseUrl: PROXY_URL } });
+			await b.start();
+			expect(b.registered).toEqual([]);
+		});
+	});
+
 
 	test("a throwing registerProvider leaves the session working", async () => {
 		const p = await proxySetup({ registerThrows: true });
@@ -678,6 +826,18 @@ describe("rtk proxy routing", () => {
 		expect((await p.headers()).event.headers).toEqual({ "x-api-key": "k" });
 	});
 
+	for (const cwd of ["/tmp/łódź", "/Users/a/项目"]) {
+		test(`a routed request from a non-ASCII cwd (${cwd}) leaves the headers unchanged and sendable`, async () => {
+			const p = await proxySetup();
+			await p.start();
+			p.ctx.cwd = cwd;
+			delete p.ctx.sessionManager;
+			const { event } = await p.headers();
+			expect(event.headers).toEqual({ "x-api-key": "k" });
+			expect(() => new Headers(event.headers)).not.toThrow();
+		});
+	}
+
 	test("a header handler with a broken ctx never throws", async () => {
 		const p = await proxySetup();
 		const event = { type: "before_provider_headers", headers: { a: "b" } };
@@ -685,21 +845,47 @@ describe("rtk proxy routing", () => {
 		await expect(fire(p.fake as never, "before_provider_headers", event, ctx)).resolves.toEqual([undefined]);
 	});
 
-	test("a refresh that finds the proxy down unregisters once and the footer shows proxy off", async () => {
+	test("a refresh that finds the proxy down re-registers the saved stock baseUrl once, never unregisters, and the footer shows proxy off", async () => {
 		let up = true;
 		const p = await proxySetup({ status: () => (up ? ok("running at 127.0.0.1:8080\n") : down()) });
 		await p.start();
-		expect(p.registered.length).toBe(1);
+		expect(p.registered).toEqual([["anthropic", { baseUrl: PROXY_URL }]]);
 
 		up = false;
 		p.clock.advance(10_001);
 		await fire(p.fake as never, "turn_end", { type: "turn_end" }, p.ctx);
 		await flush();
-		expect(p.unregistered).toEqual(["anthropic"]);
+		expect(p.registered).toEqual([
+			["anthropic", { baseUrl: PROXY_URL }],
+			["anthropic", { baseUrl: STOCK_URL }],
+		]);
+		expect(p.unregistered).toEqual([]);
+		expect(p.ctx.model.baseUrl).toBe(STOCK_URL);
 		expect(p.statuses.at(-1)).toEqual(["rtk", formatStatus({ proxy: "off", ...status0 })]);
 
 		await fire(p.fake as never, "model_select", { type: "model_select" }, p.ctx);
 		await flush();
-		expect(p.unregistered).toEqual(["anthropic"]);
+		expect(p.registered.length).toBe(2);
 	});
+
+	test("restoring keeps another extension's anthropic settings and the exact stock URL it replaced", async () => {
+		let up = true;
+		const stock = "https://api.anthropic.com/v1";
+		const p = await proxySetup({
+			status: () => (up ? ok("running at 127.0.0.1:8080\n") : down()),
+			model: { provider: "anthropic", id: "claude", baseUrl: stock },
+			seed: { anthropic: { headers: { "x-team": "1" }, apiKey: "TEAM_KEY" } },
+		});
+		await p.start();
+		expect(p.ctx.model.baseUrl).toBe(PROXY_URL);
+
+		up = false;
+		p.clock.advance(10_001);
+		await fire(p.fake as never, "turn_end", { type: "turn_end" }, p.ctx);
+		await flush();
+		expect(p.registered.at(-1)).toEqual(["anthropic", { baseUrl: stock }]);
+		expect(p.registry.ext.get("anthropic")).toEqual({ headers: { "x-team": "1" }, apiKey: "TEAM_KEY", baseUrl: stock });
+		expect(p.ctx.model.baseUrl).toBe(stock);
+	});
+
 });
