@@ -79,7 +79,7 @@ export function toHookPayload(event: ToolResultEvent, cwd: string, env: Env, hom
 	if (isShell) {
 		const command = input.command;
 		if (typeof command !== "string") return undefined;
-		if (RTK_COMMAND.test(command.trimStart()) && body.length < RTK_COMMAND_MIN_CHARS) return undefined;
+		if (RTK_COMMAND.test(command) && body.length < RTK_COMMAND_MIN_CHARS) return undefined;
 		name = "Bash";
 		toolInput = { command };
 		toolResponse = { stdout: body, stderr: "", interrupted: false };

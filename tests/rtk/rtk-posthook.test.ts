@@ -166,7 +166,7 @@ describe("toHookPayload: skips", () => {
 		expect(sent(ev({ input: { command }, content: [text(body(19_999))] }))).toBeUndefined();
 		expect(sent(ev({ input: { command }, content: [text(body(20_000))] }))?.bodyChars).toBe(20_000);
 	});
-	test.each(["echo rtk", "echo rtk is great", "grep rtk src", "myrtk git diff", "cd /tmp && echo rtk x"])(
+	test.each(["echo rtk", "echo rtk is great", "grep rtk src", "myrtk git diff", "rtkctl status", "cd /tmp && echo rtk x"])(
 		"'%s' merely contains 'rtk' and is not exempt",
 		(command) => {
 			expect(sent(ev({ input: { command } }))?.bodyChars).toBe(2000);
