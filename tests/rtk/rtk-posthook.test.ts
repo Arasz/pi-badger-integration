@@ -5,6 +5,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { homedir } from "node:os";
 import { fromHookOutput, MIN_POSTHOOK_CHARS, RTK_COMMAND_MIN_CHARS, toHookPayload } from "../../extensions/rtk/rtk-posthook.ts";
 
 type Ev = Parameters<typeof toHookPayload>[0];
@@ -18,7 +19,7 @@ function ev(over: Record<string, unknown>): Ev {
 		type: "tool_result",
 		toolCallId: "call-1",
 		toolName: "bash",
-		input: { command: "rtk git log" },
+		input: { command: "git log" },
 		content: [text(body(2000))],
 		isError: false,
 		...over,
@@ -64,6 +65,27 @@ describe("toHookPayload: tool mapping (Claude shapes)", () => {
 		});
 	});
 
+	test("read strips a leading '@' like pi does, so rtk sees the real basename", () => {
+		const r = sent(ev({ toolName: "read", input: { path: "@package-lock.json" } }));
+		expect(r?.payload.tool_input).toEqual({ file_path: "/work/proj/package-lock.json" });
+	});
+
+	test("read expands a leading '~/' to the home directory", () => {
+		const r = sent(ev({ toolName: "read", input: { path: "~/x.lock" } }));
+		expect(r?.payload.tool_input).toEqual({ file_path: `${homedir()}/x.lock` });
+	});
+
+	test("read expands '~' after stripping '@', and leaves 'a~b' alone", () => {
+		expect(sent(ev({ toolName: "read", input: { path: "@~/x.lock" } }))?.payload.tool_input).toEqual({ file_path: `${homedir()}/x.lock` });
+		expect(sent(ev({ toolName: "read", input: { path: "~" } }))?.payload.tool_input).toEqual({ file_path: homedir() });
+		expect(sent(ev({ toolName: "read", input: { path: "a~b" } }))?.payload.tool_input).toEqual({ file_path: "/work/proj/a~b" });
+	});
+
+	test("read expands '~' against an explicit home", () => {
+		const r = toHookPayload(ev({ toolName: "read", input: { path: "~/a/b.lock" } }), CWD, {}, "/h");
+		expect(r?.payload.tool_input).toEqual({ file_path: "/h/a/b.lock" });
+	});
+
 	test("read keeps an absolute path as is", () => {
 		const r = sent(ev({ toolName: "read", input: { path: "/etc/hosts" } }));
 		expect(r?.payload.tool_input).toEqual({ file_path: "/etc/hosts" });
@@ -90,6 +112,9 @@ describe("toHookPayload: tool mapping (Claude shapes)", () => {
 });
 
 describe("toHookPayload: skips", () => {
+	test("the default event is a send, so a test that forgets to override input still exercises one", () => {
+		expect(sent(ev({}))?.bodyChars).toBe(2000);
+	});
 	test("nested calls (parentToolCallId) are skipped", () => {
 		expect(sent(ev({ parentToolCallId: "p1" }))).toBeUndefined();
 	});
@@ -130,9 +155,23 @@ describe("toHookPayload: skips", () => {
 		expect(sent(ev({ input: { command: "rtk git log" }, content: [text(body(19_999))] }))).toBeUndefined();
 		expect(sent(ev({ input: { command: "rtk git log" }, content: [text(body(20_000))] }))?.bodyChars).toBe(20_000);
 	});
-	test("non-rtk commands that merely contain 'rtk' are not exempt", () => {
-		expect(sent(ev({ input: { command: "echo rtk" } }))).toBeDefined();
+	test.each([
+		"cd /tmp && rtk git diff",
+		"FOO=1 rtk git diff",
+		"a | rtk grep x",
+		"false || rtk git diff",
+		"true; rtk git diff",
+		"  rtk git diff",
+	])("rewritten compound command '%s' follows the 20_000-char rule", (command) => {
+		expect(sent(ev({ input: { command }, content: [text(body(19_999))] }))).toBeUndefined();
+		expect(sent(ev({ input: { command }, content: [text(body(20_000))] }))?.bodyChars).toBe(20_000);
 	});
+	test.each(["echo rtk", "echo rtk is great", "grep rtk src", "myrtk git diff", "rtkctl status", "cd /tmp && echo rtk x"])(
+		"'%s' merely contains 'rtk' and is not exempt",
+		(command) => {
+			expect(sent(ev({ input: { command } }))?.bodyChars).toBe(2000);
+		},
+	);
 	test("a missing command skips a bash result", () => {
 		expect(sent(ev({ input: {} }))).toBeUndefined();
 	});
@@ -224,6 +263,16 @@ describe("fromHookOutput", () => {
 		["empty replaced text", () => fromHookOutput(reply("bash", ""), 0, false, e, "")],
 	])("%s passes (undefined)", (_name, run) => {
 		expect(run()).toBeUndefined();
+	});
+
+	test("a reply exactly 1 char longer than the original is rejected as growth", () => {
+		expect(fromHookOutput(reply("bash", body(2001, "z")), 0, false, e, "")).toBeUndefined();
+	});
+
+	test("an equal-length reply with different text is accepted as a replacement", () => {
+		const out = fromHookOutput(reply("bash", body(2000, "z")), 0, false, e, "");
+		expect(out?.content).toEqual([{ type: "text", text: body(2000, "z") }]);
+		expect(out?.details).toEqual({ truncation: { x: 1 }, rtk: { from: 2000, to: 2000 } });
 	});
 
 	test("the trailer counts toward the grown check", () => {
