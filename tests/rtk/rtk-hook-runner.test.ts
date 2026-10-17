@@ -131,10 +131,20 @@ describe("runHook: kill paths", () => {
 		await expectAllDead(t);
 	});
 
-	test("stdout past the cap kills the child", async () => {
-		const r = await runHook({}, { ...base, command: script("flood.sh", "yes") });
+	test("stdout past the 64 KiB floor cap kills the child; only the cap can end it", async () => {
+		const r = await runHook({}, { ...base, timeoutMs: 60_000, command: script("flood.sh", "head -c 50000000 /dev/zero") });
 		expect(r.killed).toBe(true);
-		expect(r.stdout.length).toBeGreaterThan(0);
+		expect(Buffer.byteLength(r.stdout)).toBeGreaterThan(64 * 1024);
+		expect(Buffer.byteLength(r.stdout)).toBeLessThan(1024 * 1024);
+	});
+
+	test("a large payload raises the cap to twice its size", async () => {
+		const payload = { body: "z".repeat(300_000) };
+		const cap = 2 * Buffer.byteLength(JSON.stringify(payload));
+		const r = await runHook(payload, { ...base, timeoutMs: 60_000, command: script("drain-flood.sh", "cat >/dev/null\nhead -c 50000000 /dev/zero") });
+		expect(r.killed).toBe(true);
+		expect(Buffer.byteLength(r.stdout)).toBeGreaterThan(cap);
+		expect(Buffer.byteLength(r.stdout)).toBeLessThan(1024 * 1024);
 	});
 });
 
