@@ -1,6 +1,7 @@
 /**
  * Fail-open wrapper around `rtk hook claude`: pipes a JSON payload to stdin and returns stdout.
  * Never rejects; timeout, abort and an oversized reply kill the child (SIGTERM, then SIGKILL).
+ * Children still running when this process exits are SIGKILLed.
  */
 
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
@@ -28,6 +29,32 @@ export type HookOptions = {
 	args?: string[];
 };
 
+const live = new Set<ChildProcess>();
+
+/** Sends `sig` to the child's process group (it leads its own on POSIX), falling back to the child alone. */
+function signalGroup(child: ChildProcess, sig: NodeJS.Signals): void {
+	try {
+		if (process.platform !== "win32" && child.pid) process.kill(-child.pid, sig);
+		else child.kill(sig);
+	} catch {
+		try {
+			child.kill(sig);
+		} catch {}
+	}
+}
+
+/** Number of hook children spawned and not yet settled. */
+export function liveCount(): number {
+	return live.size;
+}
+
+/** SIGKILLs every live hook child group; runs on process exit. */
+export function killAllForExit(): void {
+	for (const child of live) signalGroup(child, "SIGKILL");
+}
+
+process.once("exit", killAllForExit);
+
 /** Timeout to use for a tool result body of the given length. */
 export function timeoutFor(bodyChars: number): number {
 	return bodyChars >= LARGE_BODY_CHARS ? POSTHOOK_TIMEOUT_MS : POSTHOOK_FAST_TIMEOUT_MS;
@@ -53,29 +80,18 @@ export function runHook(payload: unknown, opts: HookOptions): Promise<HookResult
 			clearTimeout(termTimer);
 			clearTimeout(killTimer);
 			signal?.removeEventListener("abort", kill);
+			if (child) live.delete(child);
 			resolve({ stdout: Buffer.concat(chunks).toString("utf8"), code, killed });
 		};
 
 		function kill(): void {
 			if (killed || settled || !child) return;
 			killed = true;
-			signalGroup("SIGTERM");
+			signalGroup(child, "SIGTERM");
 			killTimer = setTimeout(() => {
-				signalGroup("SIGKILL");
+				if (child) signalGroup(child, "SIGKILL");
 				setTimeout(() => settle(-1), POST_KILL_SETTLE_MS).unref();
 			}, graceMs);
-		}
-
-		/** Signals the whole process group (the child leads its own on POSIX) so grandchildren release the pipe. */
-		function signalGroup(sig: NodeJS.Signals): void {
-			try {
-				if (process.platform !== "win32" && child?.pid) process.kill(-child.pid, sig);
-				else child?.kill(sig);
-			} catch {
-				try {
-					child?.kill(sig);
-				} catch {}
-			}
 		}
 
 		try {
@@ -85,6 +101,7 @@ export function runHook(payload: unknown, opts: HookOptions): Promise<HookResult
 			return;
 		}
 		const proc = child;
+		live.add(proc);
 		proc.on("error", () => settle(-1));
 		proc.on("close", (code) => settle(code ?? -1));
 		proc.stdout?.on("data", (chunk: Buffer) => {
