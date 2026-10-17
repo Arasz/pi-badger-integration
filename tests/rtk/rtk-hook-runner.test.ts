@@ -8,6 +8,8 @@ import { join } from "node:path";
 import {
 	POSTHOOK_FAST_TIMEOUT_MS,
 	POSTHOOK_TIMEOUT_MS,
+	killAllForExit,
+	liveCount,
 	runHook,
 	type SpawnFn,
 	timeoutFor,
@@ -145,6 +147,28 @@ describe("runHook: kill paths", () => {
 		expect(r.killed).toBe(true);
 		expect(Buffer.byteLength(r.stdout)).toBeGreaterThan(cap);
 		expect(Buffer.byteLength(r.stdout)).toBeLessThan(1024 * 1024);
+	});
+});
+
+describe("runHook: children do not outlive the process", () => {
+	test("live children are tracked until they settle", async () => {
+		const before = liveCount();
+		const r = runHook({}, { ...base, command: script("echo.sh", "echo hi") });
+		expect(liveCount()).toBe(before + 1);
+		expect(process.listeners("exit").filter((l) => l === killAllForExit)).toHaveLength(1);
+		await r;
+		expect(liveCount()).toBe(before);
+	});
+
+	test("the exit cleanup SIGKILLs every live child group", async () => {
+		const t = tracked();
+		const pending = runHook({}, { ...base, ...t, timeoutMs: 60_000, command: script("stubborn.sh", `trap '' TERM\n${SLEEPER}`) });
+		expect(liveCount()).toBe(1);
+		killAllForExit();
+		await expectAllDead(t);
+		const r = await pending;
+		expect(r.code).toBe(-1);
+		expect(liveCount()).toBe(0);
 	});
 });
 
