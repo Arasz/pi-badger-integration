@@ -262,6 +262,16 @@ describe("fromHookOutput", () => {
 		expect(run()).toBeUndefined();
 	});
 
+	test("a reply exactly 1 char longer than the original is rejected as growth", () => {
+		expect(fromHookOutput(reply("bash", body(2001, "z")), 0, false, e, "")).toBeUndefined();
+	});
+
+	test("an equal-length reply with different text is accepted as a replacement", () => {
+		const out = fromHookOutput(reply("bash", body(2000, "z")), 0, false, e, "");
+		expect(out?.content).toEqual([{ type: "text", text: body(2000, "z") }]);
+		expect(out?.details).toEqual({ truncation: { x: 1 }, rtk: { from: 2000, to: 2000 } });
+	});
+
 	test("the trailer counts toward the grown check", () => {
 		const trailer = body(100, "t");
 		const withTrailer = ev({ input: { command: "git log" }, content: [text(original + trailer)] });
