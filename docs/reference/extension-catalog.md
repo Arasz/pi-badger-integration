@@ -450,24 +450,120 @@ Kill switch: `PI_BADGER_CONSOLE_CAPTURE=0|false|off` leaves `console` untouched 
 registers no handlers. Caveat, by design: disabling the extension or the kill switch means
 the leak returns — nothing else reroutes those call sites.
 
-## The rtk extension: bash commands rewritten for compact output
+## The rtk extension: rewritten commands, compressed tool output, savings in the footer
 
-`rtk` hands every bash tool call to `rtk rewrite` and applies its verdict, so tools like
-`git status` run as `rtk git status` and return filtered output. It is adapted from rtk's
-stock pi extension (`hooks/pi/rtk.ts` in github.com/rtk-ai/rtk, pinned in the file header);
-the rewrite rules stay in the rtk binary.
+`rtk` connects pi to the [rtk](https://www.rtk-ai.app) binary in three ways. It rewrites
+bash commands before they run. It sends tool output through the user's rtk pipeline after
+the tool finishes. And it puts the proxy state and the project's savings in the footer. It
+started as rtk's stock pi extension (`hooks/pi/rtk.ts` in github.com/rtk-ai/rtk, pinned in
+the file header); every rule still lives in the rtk binary and in `~/.config/rtk`. The
+extension only carries verdicts across. It never edits Claude Code's settings.
 
-Exit codes of `rtk rewrite` decide the action: 0 or 3 with output rewrites the command in
+### Before a bash call: `rtk rewrite`
+
+Every bash tool call goes to `rtk rewrite`, so `git status` runs as `rtk git status` and
+returns filtered output. The exit code decides: 0 or 3 with output rewrites the command in
 place, 1 passes it through, 2 with a message blocks the call with that message (2 without
 one passes through), and a timeout (2 s) or any other code passes through. Commands
 already in `rtk` form and `RTK_DISABLED=1` skip the call. Every error path passes the
-command through: pi blocks a tool whose `tool_call` handler throws.
+command through, because pi blocks a tool whose `tool_call` handler throws.
 
 Changes from the stock file: the `rtk --version` probe runs in the background instead of
-delaying pi's startup; exit 2 with a message blocks, as `rtk rewrite --help` documents (the
-stock file passes it through). rtk's current source prints nothing on exit 2, which means a Claude Code deny rule from `~/.claude` matched; pi has no native deny to defer to, so those commands run, as they do with the stock file. A command with leading whitespace before `rtk` is not sent
-for rewriting again. A missing or older-than-0.23.0 binary disables the extension and shows
-`RTK disabled: <reason>` in the footer.
+delaying pi's startup, and exit 2 with a message blocks, as `rtk rewrite --help` documents
+(the stock file passes it through). rtk's current source prints nothing on exit 2, which
+means a Claude Code deny rule from `~/.claude` matched; pi has no native deny to defer to,
+so those commands run, as they do with the stock file. A command with leading whitespace
+before `rtk` is not sent for rewriting again. A missing or older-than-0.23.0 binary
+disables the extension and shows `RTK disabled: <reason>` in the footer.
+
+### After a tool call: the rtk pipeline (`rtk hook claude`)
+
+Before this, pi only ever asked rtk before a command ran. The after-tool half of the
+user's pipeline (`hook.after_tool.*` rules in `~/.config/rtk/pipeline.toml`, such as a
+Haiku digest for shell output over 5,000 tokens) never saw pi's output. Now a
+`tool_result` handler hands each eligible result to `rtk hook claude` as a Claude-shaped
+`PostToolUse` payload and swaps in the `updatedToolOutput` rtk sends back.
+
+| pi tool | sent to rtk as | what comes back |
+|---|---|---|
+| `bash`, `powershell` | `Bash` (`stdout`, with the rewritten command) | compressed `stdout` |
+| `read` | `Read` (`file.content`) | compressed content (by default only lockfiles) |
+| `grep` | `Grep` (`mode: "content"`) | matches grouped by file |
+| `mcp__*` | the same name, text blocks | compressed text |
+| `find`, `ls` | not sent: rtk has no filter for file lists (`Glob` passes through) | |
+| `edit`, `write` | not sent: rtk never processes them | |
+
+A result is skipped when it holds an image, when its text is under 512 characters (rtk's
+own `min_size`), when a codemode script made the call (`parentToolCallId`; the script
+reads the raw data), when a bash call was aborted or timed out, and when `RTK_DISABLED=1`
+is set. A bash command that `rtk rewrite` already turned into `rtk …` is sent only when its
+output is 20,000 characters or more: below that rtk's terminal filter skips rtk commands
+and the run would only add a 0% row, while above it the size rules (the Haiku digest) can
+still act. That oversized case is the one the old setup missed.
+
+pi's own trailers (`Command exited with code N`, `[Showing lines …]` and the read and grep
+limit notices) are cut off before the text goes to rtk and put back afterwards, so the model
+still sees the exit code and the continuation hint. `structuredContent` is passed through
+untouched, so codemode scripts keep the raw output and `exit_code`. `details.rtk` records
+the character counts before and after.
+
+rtk runs in the session's cwd, which is where `rtk gain -p` looks for the project. The call
+times out after 3 s, or after 20 s when the text is 20,000 characters or more, since the
+pipeline may make a paid model call there. A timeout, a non-zero exit, empty or unparseable
+output, or a reply longer than the original all keep pi's result unchanged; the handler
+never throws. Expect the same latency and cost the pipeline already adds for Claude Code.
+
+One side effect: a pi bash call that ran as `rtk grep` and then goes through the pipeline
+records two rows in rtk's history, so `rtk gain` counts it twice.
+
+### The footer
+
+The extension writes one `rtk` status line:
+
+| footer | meaning |
+|---|---|
+| `rtk ⇄proxy · cmd 62% · proxy 18% · post 3/5` | pi's anthropic traffic goes through rtk-proxy |
+| `rtk proxy up · pi direct · cmd 62%` | the proxy runs, pi does not use it |
+| `rtk proxy off · cmd 62%` | no proxy is running |
+| `rtk proxy down! · cmd 62%` | pi is pointed at the proxy, but it does not answer |
+
+`cmd` is the project's command savings from `rtk gain -p -f json`, as total saved over
+total input. `proxy` is the project's proxy savings, read-only from the proxy's
+`usage_records` (rows tagged with this project or a directory under it). It shows `–` when
+pi is routed but nothing has been measured yet. `post` counts this session's tool results
+sent to the pipeline (`compressed/sent`), which is the direct sign the after-tool pipeline
+is working. The line refreshes on `session_start` and `model_select`, and on `turn_end` at
+most every 10 s.
+
+`rtk gain` lists "Excluded: N oversized outputs" for commands whose raw input passed about
+30,000 characters. It counts raw size, not failures, so it keeps rising even when rtk cuts
+those outputs by 99%. Use `post` and `rtk gain --by-pipeline` to see whether compression
+happens.
+
+### Routing pi through rtk-proxy
+
+When `rtk llm-proxy status` reports the proxy running and the active model is pi's built-in
+`anthropic` provider on its stock `https://api.anthropic.com` URL, the extension points
+that provider at the proxy (`pi.registerProvider("anthropic", { baseUrl })`, in memory only,
+for this pi process). `RTK_PI_PROXY=0` turns this off. A custom or gateway anthropic URL is
+never replaced. If a later refresh finds the proxy down, the override is removed and pi
+talks to Anthropic directly again.
+
+Through the proxy, pi's requests are not byte-identical to direct ones. Measured with pi's
+request shape (streaming, thinking, `cache_control`), everything worked and prompt caching
+held. But the proxy merges the pipeline's directives (`rtk-awareness`, and `terse-output`
+in the reference setup), about 320 uncached input tokens per request, and compresses large
+tool results already in the conversation (CCR). This is what Claude Code gets when it runs
+through the same proxy.
+
+Routed requests carry `x-rtk-project: <cwd>` and `x-rtk-session: <pi session id>`. The
+proxy consumes both and never forwards them upstream; they are what makes the footer's
+`proxy` figure project-scoped. `RTK_PROXY_BIND` (default `127.0.0.1:8080`) names the proxy
+address and `RTK_PROXY_DB` an explicit usage database; otherwise the extension reads
+`~/Library/Application Support/rtk/llm-proxy/rtk-proxy.db` on macOS and
+`$XDG_DATA_HOME/rtk/llm-proxy/rtk-proxy.db` (default `~/.local/share`) elsewhere.
+
+### Publishing
 
 Publish removes a loose `~/.pi/agent/extensions/rtk.ts` (what `rtk init --agent pi
 --global` installs), since both would register a handler. Re-running that `rtk init`
