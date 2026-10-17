@@ -96,21 +96,20 @@ export function isRouted(baseUrl: string | undefined, bind: string): boolean {
 	return a !== undefined && a === b;
 }
 
+const HEAD: Record<ProxyState, string> = {
+	routed: "rtk ⇄proxy",
+	"routed-down": "rtk proxy down!",
+	up: "rtk proxy up · pi direct",
+	off: "rtk proxy off",
+};
+
+/** One footer line: proxy state, project cmd %, proxy % (a dash when routed but unmeasured), session post counter. */
 export function formatStatus(input: StatusInput): string {
-	const cmd = `cmd ${pctText(input.cmdPct)}`;
-	switch (input.proxy) {
-		case "routed": {
-			const parts = ["rtk ⇄proxy", cmd, `proxy ${pctText(input.proxyPct)}`];
-			if (input.post && input.post.sent > 0) parts.push(`post ${input.post.compressed}/${input.post.sent}`);
-			return parts.join(" · ");
-		}
-		case "routed-down":
-			return `rtk proxy down! · ${cmd}`;
-		case "up":
-			return `rtk proxy up · pi direct · ${cmd}`;
-		case "off":
-			return `rtk proxy off · ${cmd}`;
-	}
+	const parts = [HEAD[input.proxy], `cmd ${pctText(input.cmdPct)}`];
+	const known = input.proxyPct !== undefined && Number.isFinite(input.proxyPct);
+	if (input.proxy === "routed" || known) parts.push(`proxy ${pctText(input.proxyPct)}`);
+	if (input.post && input.post.sent > 0) parts.push(`post ${input.post.compressed}/${input.post.sent}`);
+	return parts.join(" · ");
 }
 
 export function shouldRefresh(now: number, last: number | undefined, minMs = 10_000): boolean {
