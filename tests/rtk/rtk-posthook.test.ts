@@ -152,9 +152,23 @@ describe("toHookPayload: skips", () => {
 		expect(sent(ev({ input: { command: "rtk git log" }, content: [text(body(19_999))] }))).toBeUndefined();
 		expect(sent(ev({ input: { command: "rtk git log" }, content: [text(body(20_000))] }))?.bodyChars).toBe(20_000);
 	});
-	test("non-rtk commands that merely contain 'rtk' are not exempt", () => {
-		expect(sent(ev({ input: { command: "echo rtk" } }))).toBeDefined();
+	test.each([
+		"cd /tmp && rtk git diff",
+		"FOO=1 rtk git diff",
+		"a | rtk grep x",
+		"false || rtk git diff",
+		"true; rtk git diff",
+		"  rtk git diff",
+	])("rewritten compound command '%s' follows the 20_000-char rule", (command) => {
+		expect(sent(ev({ input: { command }, content: [text(body(19_999))] }))).toBeUndefined();
+		expect(sent(ev({ input: { command }, content: [text(body(20_000))] }))?.bodyChars).toBe(20_000);
 	});
+	test.each(["echo rtk", "echo rtk is great", "grep rtk src", "myrtk git diff", "cd /tmp && echo rtk x"])(
+		"'%s' merely contains 'rtk' and is not exempt",
+		(command) => {
+			expect(sent(ev({ input: { command } }))?.bodyChars).toBe(2000);
+		},
+	);
 	test("a missing command skips a bash result", () => {
 		expect(sent(ev({ input: {} }))).toBeUndefined();
 	});

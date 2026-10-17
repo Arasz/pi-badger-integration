@@ -53,6 +53,9 @@ function resolveReadPath(path: string, cwd: string, home: string): string {
 	return resolve(cwd, p);
 }
 
+/** True when any command in a (possibly compound, env-prefixed) shell line is an `rtk …` invocation. */
+const RTK_COMMAND = /(^|&&|;|\|\|?)\s*(\w+=\S+\s+)*rtk\s/;
+
 const isRecord = (v: unknown): v is Json => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /** Builds the PostToolUse payload for one tool result, or undefined when rtk should not see it. */
@@ -76,7 +79,7 @@ export function toHookPayload(event: ToolResultEvent, cwd: string, env: Env, hom
 	if (isShell) {
 		const command = input.command;
 		if (typeof command !== "string") return undefined;
-		if (command.startsWith("rtk ") && body.length < RTK_COMMAND_MIN_CHARS) return undefined;
+		if (RTK_COMMAND.test(command.trimStart()) && body.length < RTK_COMMAND_MIN_CHARS) return undefined;
 		name = "Bash";
 		toolInput = { command };
 		toolResponse = { stdout: body, stderr: "", interrupted: false };
