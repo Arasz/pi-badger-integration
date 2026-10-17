@@ -75,7 +75,7 @@ The handler has to spawn `rtk hook claude` with `node:child_process` and write t
 Evidence:
 - `rtk gain -p -f json` returns `{summary:{total_commands,total_input,total_output,total_saved,avg_savings_pct,…,oversized_excluded}}` in about 6 ms.
 - The proxy's `rtk-proxy.db` `usage_records` table has `project`, `session` and `client` columns; 0 of 1029 rows set `project`.
-- The proxy docs (`/docs/proxy/configuration/`) list the attribution headers `x-rtk-project` and `x-rtk-session`.
+- The proxy docs (`/docs/proxy/configuration/`, "Attribution headers") list `x-rtk-project` and `x-rtk-session` as "both optional, both consumed by the proxy and never forwarded upstream".
 - `rtk llm-proxy stats` prints global text only.
 
 ### F8 — pi can redirect its built-in anthropic provider and add request headers from an extension [READ]

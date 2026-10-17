@@ -527,6 +527,9 @@ The extension writes one `rtk` status line:
 | `rtk proxy off · cmd 62%` | no proxy is running |
 | `rtk proxy down! · cmd 62%` | pi is pointed at the proxy, but it does not answer |
 
+A project proxy figure that was measured earlier also shows while pi is direct, for example
+`rtk proxy up · pi direct · cmd 62% · proxy 4%`.
+
 `cmd` is the project's command savings from `rtk gain -p -f json`, as total saved over
 total input. `proxy` is the project's proxy savings, read-only from the proxy's
 `usage_records` (rows tagged with this project or a directory under it). It shows `–` when
@@ -546,8 +549,15 @@ When `rtk llm-proxy status` reports the proxy running and the active model is pi
 `anthropic` provider on its stock `https://api.anthropic.com` URL, the extension points
 that provider at the proxy (`pi.registerProvider("anthropic", { baseUrl })`, in memory only,
 for this pi process). `RTK_PI_PROXY=0` turns this off. A custom or gateway anthropic URL is
-never replaced. If a later refresh finds the proxy down, the override is removed and pi
-talks to Anthropic directly again.
+never replaced. The proxy is checked again before every agent turn: when it no longer
+answers, the extension puts the stock URL back (it re-registers that URL rather than
+unregistering, so another extension's anthropic settings survive) and pi talks to Anthropic
+directly. The same restore runs on `session_shutdown`, so a `/reload` or `/new` never leaves
+pi pointed at a proxy nobody watches.
+
+Only API-key authentication (`x-api-key`) was measured through the proxy. A Claude
+subscription login (OAuth bearer token) has not been tried; set `RTK_PI_PROXY=0` if it
+misbehaves.
 
 Through the proxy, pi's requests are not byte-identical to direct ones. Measured with pi's
 request shape (streaming, thinking, `cache_control`), everything worked and prompt caching
@@ -556,9 +566,12 @@ in the reference setup), about 320 uncached input tokens per request, and compre
 tool results already in the conversation (CCR). This is what Claude Code gets when it runs
 through the same proxy.
 
-Routed requests carry `x-rtk-project: <cwd>` and `x-rtk-session: <pi session id>`. The
-proxy consumes both and never forwards them upstream; they are what makes the footer's
-`proxy` figure project-scoped. `RTK_PROXY_BIND` (default `127.0.0.1:8080`) names the proxy
+Routed requests carry `x-rtk-project: <cwd>` and `x-rtk-session: <pi session id>`. rtk's
+proxy configuration docs (www.rtk-ai.app/docs/proxy/configuration, "Attribution headers")
+say both are consumed by the proxy and never forwarded upstream; they are what makes the
+footer's `proxy` figure project-scoped. HTTP header values must be plain ASCII, so a project
+path with other characters (`/Users/łukasz/…`) is sent without the project header: those
+requests still work, but their savings are not attributed to the project. `RTK_PROXY_BIND` (default `127.0.0.1:8080`) names the proxy
 address and `RTK_PROXY_DB` an explicit usage database; otherwise the extension reads
 `~/Library/Application Support/rtk/llm-proxy/rtk-proxy.db` on macOS and
 `$XDG_DATA_HOME/rtk/llm-proxy/rtk-proxy.db` (default `~/.local/share`) elsewhere.
