@@ -1,13 +1,15 @@
 /** rtk-hook-runner tests: real child-process fixtures for stdin, cwd/env, kill escalation and fail-open paths. */
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	POSTHOOK_FAST_TIMEOUT_MS,
 	POSTHOOK_TIMEOUT_MS,
 	runHook,
+	type SpawnFn,
 	timeoutFor,
 } from "../../extensions/rtk/rtk-hook-runner.ts";
 
@@ -20,6 +22,50 @@ function script(name: string, body: string): string {
 	chmodSync(path, 0o755);
 	return path;
 }
+
+/** Polls `process.kill(target, 0)` until ESRCH; false if the target is still alive after ~2 s. */
+async function gone(target: number): Promise<boolean> {
+	for (let i = 0; i < 100; i++) {
+		try {
+			process.kill(target, 0);
+		} catch (e) {
+			if ((e as NodeJS.ErrnoException).code === "ESRCH") return true;
+		}
+		await Bun.sleep(20);
+	}
+	return false;
+}
+
+let pidSeq = 0;
+
+/**
+ * A spawn wrapper recording the child pid and blocking until the fixture has written `$$ $!` to PIDFILE,
+ * so every kill path runs against a live grandchild.
+ */
+function tracked() {
+	const pidfile = join(dir, `pids-${++pidSeq}`);
+	const leaders: number[] = [];
+	const spawnFn: SpawnFn = (c, a, o) => {
+		const child = spawn(c, a, o);
+		if (child.pid) leaders.push(child.pid);
+		const tick = new Int32Array(new SharedArrayBuffer(4));
+		for (let i = 0; i < 500 && !(existsSync(pidfile) && readFileSync(pidfile, "utf8").includes("\n")); i++) Atomics.wait(tick, 0, 0, 10);
+		return child;
+	};
+	const recorded = (): number[] => (existsSync(pidfile) ? readFileSync(pidfile, "utf8").trim().split(/\s+/).map(Number) : []);
+	return { pidfile, leaders, spawnFn, recorded, env: { ...process.env, PIDFILE: pidfile } };
+}
+
+/** Asserts the child's process group and every pid the fixture recorded are dead. */
+async function expectAllDead(t: ReturnType<typeof tracked>): Promise<void> {
+	expect(t.leaders).toHaveLength(1);
+	const pids = t.recorded();
+	expect(pids).toHaveLength(2);
+	for (const pid of pids) expect({ pid, dead: await gone(pid) }).toEqual({ pid, dead: true });
+	expect({ group: t.leaders[0], dead: await gone(-t.leaders[0]) }).toEqual({ group: t.leaders[0], dead: true });
+}
+
+const SLEEPER = 'sleep 30 &\necho "$$ $!" > "$PIDFILE"\nwait';
 
 const base = { cwd: dir, timeoutMs: 2000, signal: new AbortController().signal, args: [] as string[] };
 
@@ -53,30 +99,36 @@ describe("runHook: cwd and env", () => {
 });
 
 describe("runHook: kill paths", () => {
-	test("timeout kills a sleeping child", async () => {
-		const r = await runHook({}, { ...base, timeoutMs: 150, command: script("sleep.sh", "sleep 30") });
+	test("timeout kills the child and its grandchildren", async () => {
+		const t = tracked();
+		const r = await runHook({}, { ...base, ...t, timeoutMs: 150, command: script("sleep.sh", SLEEPER) });
 		expect(r.killed).toBe(true);
+		await expectAllDead(t);
 	});
 
-	test("a TERM-ignoring child is SIGKILLed within timeout + grace", async () => {
-		const t0 = Date.now();
-		const r = await runHook({}, { ...base, timeoutMs: 150, graceMs: 200, command: script("stubborn.sh", "trap '' TERM\nsleep 30") });
+	test("a TERM-ignoring child and grandchild are SIGKILLed", async () => {
+		const t = tracked();
+		const r = await runHook({}, { ...base, ...t, timeoutMs: 150, graceMs: 200, command: script("stubborn.sh", `trap '' TERM\n${SLEEPER}`) });
 		expect(r.killed).toBe(true);
-		expect(Date.now() - t0).toBeLessThan(3000);
+		await expectAllDead(t);
 	});
 
-	test("abort kills the child", async () => {
+	test("abort kills the child and its grandchildren", async () => {
+		const t = tracked();
 		const ac = new AbortController();
 		setTimeout(() => ac.abort(), 100);
-		const r = await runHook({}, { ...base, signal: ac.signal, timeoutMs: 10_000, command: script("sleep.sh", "sleep 30") });
+		const r = await runHook({}, { ...base, ...t, signal: ac.signal, timeoutMs: 10_000, command: script("sleep.sh", SLEEPER) });
 		expect(r.killed).toBe(true);
+		await expectAllDead(t);
 	});
 
 	test("an already-aborted signal kills immediately", async () => {
+		const t = tracked();
 		const ac = new AbortController();
 		ac.abort();
-		const r = await runHook({}, { ...base, signal: ac.signal, timeoutMs: 10_000, command: script("sleep.sh", "sleep 30") });
+		const r = await runHook({}, { ...base, ...t, signal: ac.signal, timeoutMs: 10_000, command: script("sleep.sh", SLEEPER) });
 		expect(r.killed).toBe(true);
+		await expectAllDead(t);
 	});
 
 	test("stdout past the cap kills the child", async () => {
