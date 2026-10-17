@@ -1,7 +1,13 @@
 {
-  "lastUpdated": "2026-10-06T21:41:44Z",
+  "lastUpdated": "2026-10-17T14:37:21.797461+00:00",
   "next": null,
   "completedTasks": [
+    {
+      "id": "pbi-vendor-rtk-rewrite-pi-extension",
+      "title": "Ship rtk bash-rewrite extension (adapted from rtk-ai/rtk hooks/pi/rtk.ts)",
+      "pr": "https://github.com/Arasz/pi-badger-integration/pull/54",
+      "finished": "2026-10-17"
+    },
     {
       "taskId": "pbi-merge-delegate-delegations-tools",
       "title": "Merge delegate and delegations into one unified tool",
