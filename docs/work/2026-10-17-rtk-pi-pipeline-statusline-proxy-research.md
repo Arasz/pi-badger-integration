@@ -97,7 +97,7 @@ What differs:
 - `rtk pipeline show` lists the merged directives `rtk-awareness` and `terse-output`. These change how the agent writes, so behaviour is not identical.
 - The proxy recorded `usage_records.project` = the `x-rtk-project` header verbatim (the full cwd path), plus `session` and `pipeline=haiku-compaction`. Project-scoped proxy savings therefore need routed pi traffic carrying that header.
 
-Conclusion: routing pi through the proxy is opt-in, not the default. It changes the agent's prompt and costs about 320 uncached tokens per request, recovered only on large tool results (ccr above 1,500 tokens).
+Conclusion: the request shape works, but the result is not identical: the agent's prompt changes and each request costs about 320 more uncached tokens, recovered only on large tool results (ccr above 1,500 tokens). The user's rule was "show it if it works the same, also route if it does not", so the extension routes by default when the proxy is up and pi uses the stock anthropic URL, with `RTK_PI_PROXY=0` as the opt-out (plan review MUST-3). This is the same proxy setup Claude Code already uses.
 
 ## Still open
 - How long and in what shape the Haiku route takes on a real >5,000-token pi output (a paid call, run once).
