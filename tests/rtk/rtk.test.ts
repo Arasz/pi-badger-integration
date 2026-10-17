@@ -785,6 +785,14 @@ describe("rtk proxy routing", () => {
 			expect(b.statuses.at(-1)).toEqual(["rtk", formatStatus({ proxy: "off", ...status0 })]);
 		});
 
+		test.each([{ RTK_PI_PROXY: "0" }, { RTK_DISABLED: "1" }])("opted out (%o): an anthropic model left on the proxy URL is not restored", async (env) => {
+			const b = await proxySetup({ env, status: down, model: { provider: "anthropic", id: "claude", baseUrl: PROXY_URL } });
+			await b.start();
+			expect(b.registered).toEqual([]);
+			expect(b.unregistered).toEqual([]);
+			expect(b.ctx.model.baseUrl).toBe(PROXY_URL);
+		});
+
 		test("B leaves a non-anthropic provider on the proxy URL alone while the proxy is down", async () => {
 			const b = await proxySetup({ status: down, model: { provider: "my-proxy", id: "claude", baseUrl: PROXY_URL } });
 			await b.start();

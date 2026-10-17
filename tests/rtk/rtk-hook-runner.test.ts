@@ -162,8 +162,9 @@ describe("runHook: children do not outlive the process", () => {
 
 	test("the exit cleanup SIGKILLs every live child group", async () => {
 		const t = tracked();
+		const before = liveCount();
 		const pending = runHook({}, { ...base, ...t, timeoutMs: 60_000, command: script("stubborn.sh", `trap '' TERM\n${SLEEPER}`) });
-		expect(liveCount()).toBe(1);
+		expect(liveCount()).toBe(before + 1);
 		killAllForExit();
 		await expectAllDead(t);
 		const r = await pending;
