@@ -1250,6 +1250,7 @@ export default function (pi: ExtensionAPI, deps: SubagentDeps = {}) {
       });
       if (resolution.levelWarning) toolCtx.ui.notify(`ai-badger: ${resolution.levelWarning}`, "warning");
       if (resolution.modelWarning) toolCtx.ui.notify(`ai-badger: ${resolution.modelWarning}`, "warning");
+      if (resolution.providerAffinity) toolCtx.ui.notify(`ai-badger: ${resolution.providerAffinity}`, "info");
       const args = delegationArgs(persona, task, model, loaded.registry);
       const invocation = piInvocation(args);
       const fallbackArgs = fallbackArgsFor(invocation.args, persona, model, loaded.registry);

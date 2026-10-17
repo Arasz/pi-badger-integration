@@ -1160,6 +1160,8 @@ export interface ResolvedLevelPin {
   readonly overriddenLevel?: ModelLevel;
   /** The explicit model that won (verbatim), when one did. */
   readonly overridingModel?: string;
+  /** Set when a level-resolved id was swapped to stay on the session's provider. */
+  readonly providerAffinity?: string;
 }
 
 /** Non-empty trimmed string, or undefined — blank ≡ absent at every rank (T-EMPTY). */
@@ -1313,9 +1315,34 @@ export function resolveDelegationModel(registry: LevelRegistry, sources: Delegat
   const warnings = [...refusals, ...(resolved.modelWarning !== undefined ? [resolved.modelWarning] : [])];
   const modelWarning = warnings.length > 0 ? warnings.join(" ") : undefined;
   const withWarning = modelWarning !== undefined ? { modelWarning } : {};
-  if (resolved.model !== undefined) return { ...resolved, ...withWarning };
   const session = nonBlank(sources.sessionModel);
+  if (resolved.model !== undefined) return { ...withProviderAffinity(registry, resolved, session), ...withWarning };
   return { ...withWarning, ...(session !== undefined ? { model: session } : {}) };
+}
+
+function providerOf(model: string): string {
+  return model.split("/", 1)[0] ?? model;
+}
+
+/**
+ * A level picks a tier, not a provider: when the level-resolved id sits on another provider
+ * than the session, use the group's first same-provider member, else inherit the session model.
+ * Explicit pins (tool/frontmatter) are untouched "unless specified otherwise".
+ */
+function withProviderAffinity(registry: LevelRegistry, resolved: ResolvedLevelPin, session: string | undefined): ResolvedLevelPin {
+  const level = resolved.resolvedLevel;
+  if (level === undefined || resolved.model === undefined || session === undefined) return resolved;
+  const provider = providerOf(session);
+  if (providerOf(resolved.model) === provider) return resolved;
+  const sameProvider = registry.groups[level].find(
+    (member) => typeof member.id === "string" && providerOf(member.id) === provider && MODEL_ID_PATTERN.test(member.id),
+  )?.id;
+  const model = sameProvider ?? session;
+  return {
+    ...resolved,
+    model,
+    providerAffinity: `level "${level}" resolved to "${resolved.model}" off the session provider "${provider}" — using "${model}"`,
+  };
 }
 
 /**

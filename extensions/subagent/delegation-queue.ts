@@ -354,6 +354,7 @@ export function registerDelegationQueue(
 			}),
 		);
 		for (const invocation of invocations) {
+			if (invocation.resolution.providerAffinity) toolCtx.ui.notify(`ai-badger: ${invocation.resolution.providerAffinity}`, "info");
 			// S5 file-pin half: an invalid persona level overridden by an explicit model warns
 			// (group-level invalids threw above as usage errors); deciding invalids throw here.
 			if (invocation.resolution.levelWarning) {
