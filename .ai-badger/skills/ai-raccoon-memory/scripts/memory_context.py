@@ -379,6 +379,13 @@ def child_env(env: Mapping[str, str]) -> Dict[str, str]:
             if name != "OPENROUTER_API_KEY" and not name.startswith(KILL_SWITCH + "_")}
 
 
+def search_params(project_id: str, session_id: str, query: str) -> Dict[str, Any]:
+    """The `tools/call` params of one project-scope `memory_search`."""
+    return {"name": "memory_search", "arguments": {
+        "projectId": project_id, "sessionId": session_id,
+        "query": query, "limit": SEARCH_LIMIT, "scope": "project"}}
+
+
 class RaccoonSession:
     """One `ai-raccoon` proxy child speaking MCP over stdio; single-threaded, deadline-bound.
 
@@ -436,9 +443,8 @@ class RaccoonSession:
     def search(self, query: str, budget: Budget) -> Optional[SearchResult]:
         """One `memory_search` (project scope, limit 5), or None; never raises."""
         try:
-            reply = self.request("tools/call", {"name": "memory_search", "arguments": {
-                "projectId": self.project_id, "sessionId": self.session_id,
-                "query": query, "limit": SEARCH_LIMIT, "scope": "project"}}, budget)
+            reply = self.request("tools/call",
+                                 search_params(self.project_id, self.session_id, query), budget)
             return None if reply is None else parse_search_reply(reply)
         except Exception:  # pylint: disable=broad-exception-caught
             self.poisoned = True
@@ -540,6 +546,63 @@ class RaccoonSession:
             self.process.stdout.close()
         except OSError:
             pass
+
+
+# --------------------------------------------------------------- session broker
+
+BROKER = "memory_broker"
+
+
+def load_broker() -> Optional[Any]:
+    """The sibling `memory_broker` (a per-session proxy shared by the session's hooks), or
+    None when this layout does not ship it."""
+    return _load_sibling(BROKER)
+
+
+class BrokerSession:
+    """Searches over the session's broker instead of a proxy of its own.
+
+    `search` returns None when the broker could not answer; `unavailable` says no broker
+    answers for the session at all, so the caller should fall back to a per-call proxy.
+    """
+
+    def __init__(self, module: Any, project_id: str, session_id: str, home: Optional[str]):
+        self.module = module
+        self.project_id = project_id
+        self.session_id = session_id
+        self.home = home
+        self.unavailable = False
+
+    @classmethod
+    def connect(cls, project_id: str, session_id: str,
+                env: Mapping[str, str]) -> Optional["BrokerSession"]:
+        """A session on the live broker for *session_id*, or None; never raises."""
+        try:
+            if sys.platform == "win32" or not js_trim(session_id or ""):
+                return None
+            module = load_broker()
+            home = env.get("HOME")
+            if module is None or not module.is_live(session_id, home):
+                return None
+            return cls(module, project_id, session_id, home)
+        except Exception:  # pylint: disable=broad-exception-caught
+            return None
+
+    def search(self, query: str, budget: Budget) -> Optional[SearchResult]:
+        """One `memory_search` through the broker within *budget*, or None; never raises."""
+        try:
+            reply = self.module.call(self.session_id, "tools/call",
+                                     search_params(self.project_id, self.session_id, query),
+                                     budget.remaining(), self.home)
+        except self.module.Unavailable:
+            self.unavailable = True
+            return None
+        except Exception:  # pylint: disable=broad-exception-caught
+            return None
+        return None if reply is None else parse_search_reply(reply)
+
+    def close(self, budget: Budget) -> None:
+        """Nothing to close: the broker owns the proxy."""
 
 
 # -------------------------------------------------------------- orchestration
@@ -759,6 +822,53 @@ def _report(where: str, on_error: Optional[Callable[[str], None]]) -> None:
         pass
 
 
+def search_block(query: str, project_id: str, session_id: Optional[str], budget: Budget, *,
+                 env: Optional[Mapping[str, str]] = None,
+                 home: Optional[str] = None) -> Optional[str]:
+    """One `memory_search` for *query*: the rendered block, `""` when it answered with no hits,
+    None when it could not run (no executable, a failed open or search); never raises.
+
+    Neither the prompt gate nor the session-id check applies; *budget* covers open, search
+    and close.
+    """
+    try:
+        env = os.environ if env is None else env
+        exe = find_executable(env, home if home is not None else env.get("HOME"))
+        if exe is None or not project_id:
+            return None
+        return _single_search(exe, query, project_id, session_id or "", budget, env)
+    except Exception:  # pylint: disable=broad-exception-caught
+        return None
+
+
+def _single_search(exe: str, query: str, project_id: str, session_id: str, budget: Budget,
+                   env: Mapping[str, str]) -> Optional[str]:
+    """One search: over the session's broker when one answers, else one session opened and
+    closed here. The block, `""` for no hits, None when it failed."""
+    module = load_broker() if sys.platform != "win32" and js_trim(session_id) else None
+    if module is not None:
+        found = BrokerSession(module, project_id, session_id, env.get("HOME")).search(query,
+                                                                                      budget)
+        if found is not None or budget.expired():
+            return _render(query, found)
+    session = RaccoonSession.open(exe, project_id, session_id, budget, env)
+    if session is None:
+        return None
+    try:
+        found = session.search(query, budget)
+    finally:
+        session.close(budget)
+    return _render(query, found)
+
+
+def _render(query: str, found: Optional[SearchResult]) -> Optional[str]:
+    """The block for *found*, `""` for no hits, None for no answer."""
+    if found is None:
+        return None
+    mem, code = prune_hits(found[0])[:MAX_HITS], prune_hits(found[1])[:MAX_HITS]
+    return format_block(query, mem, code) if mem or code else ""
+
+
 def build(prompt: str, cwd: str, session_id: Optional[str], *,
           env: Optional[Mapping[str, str]] = None, home: Optional[str] = None,
           budget: Optional[Budget] = None, limits: Any = None,
@@ -784,21 +894,19 @@ def build(prompt: str, cwd: str, session_id: Optional[str], *,
         if exe is None:
             return None
         pipeline = pipeline_for(env, cwd, limits, on_error=on_error)
-        if budget is not None:
-            run_budget = budget
-        else:
-            run_budget = Budget(pipeline.limits.total if pipeline else SINGLE_BUDGET_SECONDS)
-        open_budget = run_budget.child(pipeline.limits.search) if pipeline else run_budget
-        session = RaccoonSession.open(exe, project_id, session_id, open_budget, env)
+        if pipeline is None:
+            block = _single_search(exe, decision.query, project_id, session_id,
+                                   budget if budget is not None else Budget(SINGLE_BUDGET_SECONDS),
+                                   env)
+            return block or None
+        run_budget = budget if budget is not None else Budget(pipeline.limits.total)
+        session = BrokerSession.connect(project_id, session_id, env) or RaccoonSession.open(
+            exe, project_id, session_id, run_budget.child(pipeline.limits.search), env)
         if session is None:
             return None
         try:
-            if pipeline:
-                mem, code = pipeline.run(decision.query, session, run_budget)
-                _report_proxy_faults(env, on_error)
-            else:
-                found = session.search(decision.query, run_budget)
-                mem, code = found if found else ([], [])
+            mem, code = pipeline.run(decision.query, session, run_budget)
+            _report_proxy_faults(env, on_error)
         finally:
             session.close(run_budget)
         mem, code = prune_hits(mem)[:MAX_HITS], prune_hits(code)[:MAX_HITS]

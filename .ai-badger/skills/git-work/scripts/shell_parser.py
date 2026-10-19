@@ -48,7 +48,12 @@ WRAPPERS: Dict[str, Wrapper] = {
     "stdbuf": Wrapper("ioe", ("--input", "--output", "--error")),
     "xargs": Wrapper("adEILnPs", ("--arg-file", "--delimiter", "--max-lines", "--max-args",
                                   "--max-procs", "--max-chars")),
+    "rtk": Wrapper(),
 }
+# rtk subcommands that run the command after them; with a shell-string option they run that
+# string through a shell instead (`rtk run -c TEXT`, `rtk err --shell bash TEXT`).
+RTK_RUNNERS = frozenset(("err", "test", "summary", "run", "bypass", "proxy"))
+RTK_SCRIPT_OPTIONS = ("-c", "--command", "--shell")
 
 
 class ShellSyntaxError(ValueError):
@@ -110,6 +115,41 @@ def _wrapper_end(name: str, wrapper: Wrapper, words: Sequence[str], index: int) 
     return index + wrapper.operands
 
 
+def _rtk_runner_end(words: Sequence[str], index: int) -> int:
+    """Index just past the rtk runner subcommand at *index* and its options; the runner itself
+    when it runs a shell string; *index* unchanged when no runner is there."""
+    if index >= len(words) or words[index] not in RTK_RUNNERS:
+        return index
+    runner = index
+    index += 1
+    while index < len(words) and words[index].startswith("-"):
+        arg = words[index]
+        index += 1
+        if arg == "--":
+            break
+        if arg.split("=", 1)[0] in RTK_SCRIPT_OPTIONS or arg.startswith("-c"):
+            return runner
+    return index
+
+
+def _rtk_script(args: Sequence[str]) -> Optional[str]:
+    """The shell text an rtk runner's *args* hand a shell: the `-c`/`--command` value, else
+    the first operand after `--shell SHELL`."""
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg in ("-c", "--command"):
+            return args[index + 1] if index + 1 < len(args) else None
+        if arg.startswith("--command="):
+            return arg.split("=", 1)[1]
+        if arg.startswith("-c") and not arg.startswith("--"):
+            return arg[2:]
+        index += 2 if arg == "--shell" else 1
+        if not arg.startswith("-"):
+            return " ".join(args[index - 1:])
+    return None
+
+
 def program_index(words: Sequence[str]) -> int:
     """Index of the word that runs, past assignments, reserved words and wrappers with their
     options and option values; len(words) when nothing runs."""
@@ -124,17 +164,21 @@ def program_index(words: Sequence[str]) -> int:
         if wrapper is None:
             return index
         index = _wrapper_end(name, wrapper, words, index + 1)
+        if name == "rtk":
+            index = _rtk_runner_end(words, index)
     return len(words)
 
 
 class Command(NamedTuple):
     """One simple command: its words with redirections removed, the index of the word that
-    runs, its redirections as (operator, target), and the subshell scope it runs in — a
-    child scope is its parent's tuple plus one id."""
+    runs, its redirections as (operator, target), the subshell scope it runs in — a child
+    scope is its parent's tuple plus one id — and the command whose output a `|` or `|&`
+    feeds it, None when its stdin is not a pipe from a simple command in the same list."""
     words: Tuple[str, ...]
     start: int
     redirects: Tuple[Tuple[str, str], ...]
     scope: Tuple[int, ...]
+    upstream: Optional["Command"] = None
 
     @property
     def program(self) -> str:
@@ -162,6 +206,9 @@ def _script(command: Command) -> Optional[str]:
     args = command.args
     if command.program == "eval":
         return " ".join(args) or None
+    if command.program in RTK_RUNNERS and "rtk" in (
+            word.rsplit("/", 1)[-1] for word in command.words[:command.start]):
+        return _rtk_script(args)
     if command.program in SHELLS:
         index = dash_c_index(args)
         if index is not None and index + 1 < len(args):
@@ -240,6 +287,7 @@ class _Parser:
         words: List[str] = []
         redirects: List[Tuple[str, str]] = []
         heredocs: List[Tuple[str, bool, bool]] = []
+        upstream: Optional[Command] = None  # what the next command's stdin is piped from
         while True:
             self.skip_blanks()
             char = self.peek()
@@ -247,12 +295,12 @@ class _Parser:
             if char == "":
                 if stop is not None:
                     raise ShellSyntaxError("unterminated substitution")
-                self.finish(words, redirects, scope)
+                self.finish(words, redirects, scope, upstream)
                 self.commit(top)
                 return
             if char == ")" and stop == ")":
                 self.pos += 1
-                self.finish(words, redirects, scope)
+                self.finish(words, redirects, scope, upstream)
                 return
             if char == "#":
                 end = self.text.find("\n", self.pos)
@@ -260,22 +308,28 @@ class _Parser:
                 continue
             if char == "\n":
                 self.pos += 1
-                self.finish(words, redirects, scope)
+                if self.finish(words, redirects, scope, upstream):
+                    upstream = None
                 self.read_heredocs(heredocs, scope)
             elif self.redirect_op():
                 self.redirect(redirects, heredocs, scope)
                 ended = False
             elif char in ";&|":
-                self.pos += 2 if self.text[self.pos:self.pos + 2] in (
-                    ";;", "&&", "||", "|&") else 1
-                self.finish(words, redirects, scope)
+                op = self.text[self.pos:self.pos + 2]
+                op = op if op in (";;", "&&", "||", "|&") else char
+                self.pos += len(op)
+                finished = self.finish(words, redirects, scope, upstream)
+                if finished or op not in ("|", "|&"):
+                    upstream = finished if op in ("|", "|&") else None
             elif char == "(":
                 self.pos += 1
-                self.finish(words, redirects, scope)
+                self.finish(words, redirects, scope, upstream)
                 self.parse_list(self.child(scope), ")")
+                upstream = None
             elif char == ")":  # unmatched: bash refuses it; read it as a separator
                 self.pos += 1
-                self.finish(words, redirects, scope)
+                self.finish(words, redirects, scope, upstream)
+                upstream = None
             else:
                 ended = False
                 start = self.pos
@@ -296,15 +350,17 @@ class _Parser:
             self.command_start = self.pos
 
     def finish(self, words: List[str], redirects: List[Tuple[str, str]],
-               scope: Tuple[int, ...]) -> None:
-        """Record one simple command, then the script it hands a shell or `eval`, if any."""
+               scope: Tuple[int, ...], upstream: Optional[Command] = None) -> Optional[Command]:
+        """Record one simple command, then the script it hands a shell or `eval`, if any;
+        the command recorded, None when there was none."""
         if not words and not redirects:
-            return
-        command = Command(tuple(words), program_index(words), tuple(redirects), scope)
+            return None
+        command = Command(tuple(words), program_index(words), tuple(redirects), scope, upstream)
         self.out.append(command)
         script = _script(command)
         if script is not None:
             self.nested(script, scope)
+        return command
 
     def skip_blanks(self) -> None:
         """Skip spaces, tabs and backslash-newline continuations."""

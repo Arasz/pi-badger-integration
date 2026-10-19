@@ -156,6 +156,36 @@ hook reads: the nearest `.ai-badger/project-id`, with `AI_BADGER_PROJECT_ID` fir
 raccoon-side override is retired (see ADR-0036 in the ai-badger repository), so the denial and
 the search it demands cannot point at two different projects.
 
+**Repo text search: memory first.** The gate keys on the search pattern. A grep/egrep/fgrep/
+rg/find anywhere in a shell command (every segment of `a; b | c` counts, a piped search
+included), or a Grep/Glob/search_files call, passes only when every pattern was already
+memory-searched for this project. This includes `rg` and `rtk rg`.
+
+On a pattern's first sighting, the call is denied and the hook runs one `memory_search`; the
+agent receives a JSON object with `searchResult.mem_search_result_output` and a
+`rawGrepInput` array of exact `{pattern, hash}` pairs. The same compact object is appended as
+one JSONL line to `~/.ai-badger/memory-first-search/searches.jsonl` (a private rolling log
+bounded to 1 MiB), and the pattern is recorded.
+For shell grep-family commands, the hook also starts the original command asynchronously and
+saves its raw output in the ai-badger audit database for about two minutes. When raw output is
+needed, use the `get-raw-grep-result` skill or run its script with `--pattern-hash <hash>`;
+a known pattern can also be fetched with `--pattern <pattern>`. The result is JSON and may be
+`pending` if capture has not finished yet. After reading the memory hits, re-issue the search
+only if it is still needed. When the hook could not search (no
+`ai-raccoon`, timeout), it records nothing and asks you to run `memory_search` with that
+pattern as the query; your search's query is recorded, and a pattern that is a whole-word run
+of it counts as searched (comparison ignores case, `^ $ \b`, grouping parentheses and regex
+escapes such as `\.`). Searched patterns persist per project and are never reset.
+
+**Excluded list.** A grep/egrep/fgrep/rg reading a pipe from git, gh, ps, ls, env, printenv,
+history, docker, kubectl, pip, npm, lsof, brew, dotnet is not repo search:
+`git log | grep fix` is excluded from repo search, including through `rtk`/`sudo` wrappers.
+Only the program immediately before the grep counts (`git log | head -50 | grep fix` is gated:
+`head` is not listed). A grep with a file operand, `-r`/`-R`/`-d recurse`, `rg --files`, an
+input redirect, or run by `xargs` stays gated, as does any file grep elsewhere in the command.
+Exception: a listed program that prints repo files is not exempt — `git ls-files`, `git ls-tree`, `git grep` (subcommand found past `-C`/`-c`/`--git-dir`/`--work-tree`) and `ls -R`/`--recursive`; a grep over their output stays gated.
+A `memory_search` credits its query only when the call succeeded (not Claude's `PostToolUseFailure`, a Copilot `resultType` other than `success`, or a Hermes status other than ok) and its `projectId` equals the project the gate resolved; a search of another project, or one with no `projectId`, unlocks nothing. A `grep -f`/`rg -f`/`--file` search takes its patterns from a file the gate cannot read, so it is keyed on its own words.
+
 **Search log.** Each enriched prompt, and each planned query, is a real `memory_search` and
 lands in ai-raccoon's search log like any other search.
 
