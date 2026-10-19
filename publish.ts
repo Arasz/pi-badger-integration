@@ -59,6 +59,7 @@ import { fileURLToPath } from "node:url";
 export const ADAPTER_FILES = [
 	"index.ts",
 	"hook-bridge.ts",
+	"read-gate.ts",
 	"bus-prefilter.ts",
 	"bus-store.ts",
 	"package.json",

@@ -582,6 +582,44 @@ Publish removes a loose `~/.pi/agent/extensions/rtk.ts` (what `rtk init --agent 
 --global` installs), since both would register a handler. Re-running that `rtk init`
 puts the file back; `bun run check` then reports it.
 
+## The ai-badger hooks adapter: the project's gates, in pi
+
+The adapter — canonical at `features/pi/adjustments/adapter/`, vendored into
+ai-badger and installed to `~/.pi/agent/extensions/ai-badger/` — runs the
+project's own Claude-shaped hooks inside a pi session. Every `PreToolUse` entry
+in `.ai-badger/hooks/hooks.json` runs before the tool call and may block it;
+every `PostToolUse` entry runs after the result and may add context to it. pi's
+tool names are translated to Claude's (`bash` → `Bash`, `read` → `Read`,
+`grep` → `Grep`, `find` → `Glob`), and the decision comes back as pi's
+`{ block, reason }`.
+
+### Memory first: greps and file reads
+
+The memory-first gate (ai-badger's `memory_first_gate_hook.py`) denies a repo
+text search until every pattern it searches for was memory-searched for the
+project. On the first sighting the gate runs the search itself and answers
+with JSON: `searchResult.mem_search_result_output` plus a `rawGrepInput` array
+of `{pattern, hash}` pairs. The same object is appended as one line to
+`~/.ai-badger/memory-first-search/searches.jsonl` (a private rolling log,
+bounded to 1 MiB). For a shell grep the gate also starts the original command
+in the background and keeps its raw output for about two minutes: the
+`get-raw-grep-result` skill fetches it with `--pattern-hash <hash>` (or
+`--pattern <pattern>`), so the model can read the raw output without running
+the search twice.
+
+pi's `read` tool is redirected the same way: the adapter asks the very same
+gate about the file path before the file is read, so a read shares the grep
+gate's searched-pattern store, its project id and its JSONL log — a path a grep
+already searched is not searched again. The rules:
+
+- a bank answer stops the read: the model gets the memory result and re-issues
+  the read when it wants the raw file;
+- nothing to offer (no hits, a bank that could not search, a project without
+  the gate script, a gate that failed) lets the read through — the gate never
+  stands between the model and a file;
+- `PI_BADGER_READ_GATE=0` turns the read gate off (the grep gate is the
+  framework's own switch).
+
 ## Footer statuses
 
 pi prints every extension status on one footer row, joined by a single space. Each extension

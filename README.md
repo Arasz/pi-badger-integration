@@ -46,7 +46,7 @@ bun run check
 | console-capture | Extension `console.*` output captured to a rotating log instead of the TUI |
 | rtk | Bash calls rewritten through `rtk rewrite`, tool output sent through the rtk pipeline (`rtk hook claude`), pi routed through rtk-proxy when it runs, proxy state and project savings in the footer (needs `rtk` >= 0.23.0 on PATH) |
 | shift-enter-newline | Shift+Enter newline for terminals that cannot report it |
-| ai-badger hooks adapter | PreToolUse gates and PostToolUse arms (vendored into ai-badger) |
+| ai-badger hooks adapter | PreToolUse gates and PostToolUse arms (vendored into ai-badger); the memory-first gate redirects greps and file reads to the ai-raccoon bank first (raw output via the `get-raw-grep-result` skill) |
 
 Details sit in the [extension catalog](docs/reference/extension-catalog.md). Provider keys for the fallback chain are covered in [Configure provider keys](docs/howto/configure-provider-keys.md).
 
