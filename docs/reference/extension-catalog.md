@@ -7,7 +7,9 @@ Deep reference for the extensions this repo ships. For install steps see [Instal
 Substantive user prompts gain a labelled `Memory context:` block injected via
 `before_agent_start` — top-5 memory snippets plus top-5 code snippets from
 `memory_search`, each with its hash so the agent can `memory_get`/`code_get` the
-full entry. The prompt itself is never rewritten: the `input` handler only
+full entry. The block is agent-side only: it is injected with `display: false`,
+so the terminal renders no memory card while the model still receives the
+context. The prompt itself is never rewritten: the `input` handler only
 captures the raw pre-expansion text (so a `/skill:task <words>` call is queried
 by `<words>`, never by expanded skill content), and enrichment arrives as a
 separate message with its own card.
@@ -595,15 +597,19 @@ tool names are translated to Claude's (`bash` → `Bash`, `read` → `Read`,
 
 ### Memory first: text search
 
-The memory-first gate (ai-badger's `memory_first_gate_hook.py`) denies a repo
-text search until every pattern it searches for was memory-searched for the
-project. On the first sighting the gate runs the search itself and answers
-with JSON: `searchResult.mem_search_result_output` plus a `rawGrepInput` array
-of `{pattern, hash}` pairs. The same object is appended as one line to
+The memory-first gate (ai-badger's `memory_first_gate_hook.py`) answers a repo
+text search with the memory result instead of blocking it. On the first
+sighting of a pattern the gate runs the search itself and hands the hits to the
+model as `additionalContext`; in pi the adapter delivers that as a custom
+message with `display: false`, so the agent gets the data and the user sees
+nothing. The gate's record is a `textSearchInput` array of `{pattern,
+rawResultHash}` pairs — one entry per searched pattern, and a hash only where
+the raw output was captured — plus the memory block. The same object is
+appended as one line to
 `~/.ai-badger/memory-first-search/searches.jsonl` (a private rolling log,
 bounded to 1 MiB). For a shell grep the gate also starts the original command
 in the background and keeps its raw output for about two minutes: the
-`get-raw-grep-result` skill fetches it with `--pattern-hash <hash>` (or
+`get-raw-text-search` skill fetches it with `--pattern-hash <hash>` (or
 `--pattern <pattern>`), so the model can read the raw output without running
 the search twice.
 

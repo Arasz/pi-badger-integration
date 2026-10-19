@@ -266,7 +266,7 @@ describe("(1) capture→filter→inject shape", () => {
 
 		for (const r of [r1, r2]) {
 			expect(r?.message?.customType).toBe("mem-based-rag");
-			expect(r?.message?.display).toBe(true);
+			expect(r?.message?.display).toBe(false);
 			expect(typeof r?.message?.content).toBe("string");
 			expect(r?.message?.details?.mode).toBe("default");
 			expect(typeof r?.message?.details?.uniqueWords).toBe("number");
@@ -309,7 +309,7 @@ describe("(1) capture→filter→inject shape", () => {
 // ------------------------------------------------------------------ (2) both modes card
 
 describe("(2) both modes card", () => {
-	test("default mode yields display:true with renderer-accepted string body", async () => {
+	test("default mode yields display:false with a renderer-accepted string body", async () => {
 		clearRagEnv();
 		process.env["AI_BADGER_PROJECT_ID"] = "proj-default";
 		delete process.env["PI_BADGER_MEM_RAG_MODE"];
@@ -318,7 +318,7 @@ describe("(2) both modes card", () => {
 
 		await fireInput(pi, SKILL_P1, ctx as never);
 		const r = await fireBefore(pi, "", ctx as never);
-		expect(r?.message?.display).toBe(true);
+		expect(r?.message?.display).toBe(false);
 		expect(typeof r?.message?.content).toBe("string");
 		expect(String(r?.message?.content)).toContain("Memory context (ai-raccoon memory_search");
 		expect(String(r?.message?.content)).toContain("first memory snippet");
@@ -346,7 +346,7 @@ describe("(2) both modes card", () => {
 
 		await fireInput(pi, SKILL_P1, ctx as never);
 		const r = await fireBefore(pi, "", ctx as never);
-		expect(r?.message?.display).toBe(true);
+		expect(r?.message?.display).toBe(false);
 		expect(r?.message?.details?.mode).toBe("expanded");
 		const body = String(r?.message?.content ?? "");
 		expect(body).toContain("memory_get/code_get, expanded");

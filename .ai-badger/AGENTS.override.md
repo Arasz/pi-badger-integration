@@ -4,7 +4,7 @@ Canonical source for pi coding-agent extensions that are not part of ai-badger (
 
 > Domain: Developer tooling for coding agents - extension distribution and ai-badger/pi integration
 > Stacks: node, ts, pi, github
-> Scaffolded by ai-badger 0.207.1. Source of truth for this file: `.ai-badger/AGENTS.override.md`.
+> Scaffolded by ai-badger 0.207.2. Source of truth for this file: `.ai-badger/AGENTS.override.md`.
 
 ## Commands
 
@@ -52,6 +52,12 @@ A `!` before the colon (`f!:`, `queue!:`) makes any marker interrupt-grade: stop
 Grep/Glob/Read** — they cost fewer tokens and return structural context (callers, dependents,
 test coverage) that file scanning cannot. Start at `semantic_search_nodes_tool`; fall back to
 Grep/Glob/Read only where the graph doesn't reach. Each tool's own description covers the rest.
+
+<!-- Hermes MCP tools -->
+## MCP Tools: hermes
+
+Read operations use Hermes's session store and work without a running gateway; sending messages
+needs the gateway and its platform adapters. The server's own tool descriptions cover the rest.
 
 <!-- ai-raccoon MCP tools -->
 ## MCP Tools: ai-raccoon
