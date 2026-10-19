@@ -846,7 +846,10 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 				message: {
 					customType: MEM_RAG_CUSTOM_TYPE,
 					content,
-					display: true,
+					// Agent-side only: the block reaches the model (pi converts a custom
+					// message to user-role text), and the terminal renders nothing. The
+					// user asked for no memory card — the retrieval is not their output.
+					display: false,
 					details: {
 						mode: config.mode,
 						uniqueWords: decision.uniqueWords,
