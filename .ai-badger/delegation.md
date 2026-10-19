@@ -1,6 +1,6 @@
 # Delegation map — pi-badger-integration
 
-> Scaffolded by ai-badger 0.206.0. Regenerated on every scaffold; do not edit.
+> Scaffolded by ai-badger 0.207.1. Regenerated on every scaffold; do not edit.
 
 ## Stacks
 
