@@ -522,7 +522,7 @@ The extension writes one `rtk` status, in square brackets so it stays distinct f
 
 | footer | meaning |
 |---|---|
-| `[rtk ⇄proxy · cmd 62% · proxy 18% · post 3/5]` | pi's anthropic traffic goes through rtk-proxy |
+| `[rtk ⇄proxy · cmd 62% · proxy 18% · compressed 3/5]` | pi's anthropic traffic goes through rtk-proxy |
 | `[rtk proxy up · pi direct · cmd 62%]` | the proxy runs, pi does not use it |
 | `[rtk proxy off · cmd 62%]` | no proxy is running |
 | `[rtk proxy down! · cmd 62%]` | pi is pointed at the proxy, but it does not answer |
@@ -533,10 +533,10 @@ A project proxy figure that was measured earlier also shows while pi is direct, 
 `cmd` is the project's command savings from `rtk gain -p -f json`, as total saved over
 total input. `proxy` is the project's proxy savings, read-only from the proxy's
 `usage_records` (rows tagged with this project or a directory under it). It shows `–` when
-pi is routed but nothing has been measured yet. `post` counts this session's tool results
-sent to the pipeline (`compressed/sent`), which is the direct sign the after-tool pipeline
-is working. The line refreshes on `session_start` and `model_select`, and on `turn_end` at
-most every 10 s.
+pi is routed but nothing has been measured yet. `compressed` counts this session's tool
+results sent to the after-tool pipeline and how many of them came back shortened
+(`compressed/sent`) — it is the direct sign the after-tool pipeline is working. The line
+refreshes on `session_start` and `model_select`, and on `turn_end` at most every 10 s.
 
 `rtk gain` lists "Excluded: N oversized outputs" for commands whose raw input passed about
 30,000 characters. It counts raw size, not failures, so it keeps rising even when rtk cuts
@@ -593,7 +593,7 @@ tool names are translated to Claude's (`bash` → `Bash`, `read` → `Read`,
 `grep` → `Grep`, `find` → `Glob`), and the decision comes back as pi's
 `{ block, reason }`.
 
-### Memory first: greps and file reads
+### Memory first: text search
 
 The memory-first gate (ai-badger's `memory_first_gate_hook.py`) denies a repo
 text search until every pattern it searches for was memory-searched for the
@@ -607,18 +607,16 @@ in the background and keeps its raw output for about two minutes: the
 `--pattern <pattern>`), so the model can read the raw output without running
 the search twice.
 
-pi's `read` tool is redirected the same way: the adapter asks the very same
-gate about the file path before the file is read, so a read shares the grep
-gate's searched-pattern store, its project id and its JSONL log — a path a grep
-already searched is not searched again. The rules:
+In pi the text-search tools are `grep` (file contents), `find` (file names) and
+greps inside bash. The adapter maps them to Claude's `Grep`/`Glob`/`Bash`, which
+is what the shipped gate's matcher covers — so the redirect works on pi's own
+search tools, not only on shell greps. A native tool call has no background
+capture (the capture re-runs a command, and a native tool call is not one):
+the agent re-issues the call to get the raw output.
 
-- a bank answer stops the read: the model gets the memory result and re-issues
-  the read when it wants the raw file;
-- nothing to offer (no hits, a bank that could not search, a project without
-  the gate script, a gate that failed) lets the read through — the gate never
-  stands between the model and a file;
-- `PI_BADGER_READ_GATE=0` turns the read gate off (the grep gate is the
-  framework's own switch).
+`read` is a file view, not a text search, and is deliberately not the gate's
+subject: a read of a known path is not a query the bank can answer better than
+the file itself.
 
 ## Footer statuses
 

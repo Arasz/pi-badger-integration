@@ -40,12 +40,12 @@ const HEAD: Record<ProxyState, string> = {
 	off: "rtk proxy off",
 };
 
-/** One bracketed footer segment (pi joins extension statuses with a bare space): proxy state, project cmd %, proxy % (a dash when routed but unmeasured), session post counter. */
+/** One bracketed footer segment (pi joins extension statuses with a bare space): proxy state, project cmd %, proxy % (a dash when routed but unmeasured), the session's compression counter. */
 export function formatStatus(input: StatusInput): string {
 	const parts = [HEAD[input.proxy], `cmd ${pctText(input.cmdPct)}`];
 	const known = input.proxyPct !== undefined && Number.isFinite(input.proxyPct);
 	if (input.proxy === "routed" || known) parts.push(`proxy ${pctText(input.proxyPct)}`);
-	if (input.post && input.post.sent > 0) parts.push(`post ${input.post.compressed}/${input.post.sent}`);
+	if (input.post && input.post.sent > 0) parts.push(`compressed ${input.post.compressed}/${input.post.sent}`);
 	return `[${parts.join(" · ")}]`;
 }
 

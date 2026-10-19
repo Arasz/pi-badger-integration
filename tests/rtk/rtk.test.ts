@@ -441,7 +441,7 @@ async function statusSetup(opts: StatusOpts = {}) {
 }
 
 describe("rtk footer status", () => {
-	test("session_start sets one status from project gain, proxy state, proxy pct and the post counter", async () => {
+	test("session_start sets one status from project gain, proxy state, proxy pct and the compression counter", async () => {
 		const s = await statusSetup({ hook: (call) => (call.payload.tool_input.pattern === "a" ? hookReply({ mode: "content", content: "x" }) : { stdout: "", code: 1, killed: false }) });
 		s.ctx.model.baseUrl = PROXY_URL;
 		await fire(s.fake as never, "tool_result", resultEvent("grep", { pattern: "a" }, bigText(2_000)), s.ctx);
@@ -450,7 +450,7 @@ describe("rtk footer status", () => {
 		await flush();
 
 		expect(s.statuses).toEqual([["rtk", formatStatus({ proxy: "routed", cmdPct: 75, proxyPct: 40, post: { compressed: 1, sent: 2 } })]]);
-		expect(s.statuses[0][1]).toBe("[rtk ⇄proxy · cmd 75% · proxy 40% · post 1/2]");
+		expect(s.statuses[0][1]).toBe("[rtk ⇄proxy · cmd 75% · proxy 40% · compressed 1/2]");
 		const [gain] = s.gainCalls();
 		expect(gain.args).toEqual(["gain", "-p", "-f", "json"]);
 		expect(gain.options?.cwd).toBe("/work/proj");
