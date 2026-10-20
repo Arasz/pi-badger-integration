@@ -101,7 +101,7 @@ def export(src: str, dst: str) -> None:
     os.makedirs(dst, exist_ok=True)
 
     weights = _load_weights(src)
-    kept = {k: v for k, v in weights.items() if k.startswith(KEEP_PREFIX)}
+    kept = {key: value for key, value in weights.items() if key.startswith(KEEP_PREFIX)}
     dropped = len(weights) - len(kept)
     print(f"tensors: kept {len(kept)}, dropped {dropped} (vision/merger)")
     if not kept:

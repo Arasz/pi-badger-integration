@@ -40,7 +40,7 @@ CODE = re.compile(r"`([^`]{4,90})`")
 
 def resolve(path: str) -> str | None:
     """Map a cited path to a file on disk, using the longest matching SRC prefix."""
-    candidates = [c for c in SRC if path.startswith(c)]
+    candidates = [root for root in SRC if path.startswith(root)]
     if not candidates:
         return None
     root = max(candidates, key=len)
@@ -60,7 +60,7 @@ def main(argv: list[str]) -> int:
         return 2
     paths: list[str] = []
     for arg in argv:
-        paths.extend(expand(arg) if any(c in arg for c in "*?[") else [arg])
+        paths.extend(expand(arg) if any(char in arg for char in "*?[") else [arg])
 
     total = range_ok = snippet_ok = no_snippet = unresolved = 0
     problems: list[tuple[str, str, str]] = []
@@ -68,13 +68,13 @@ def main(argv: list[str]) -> int:
 
     for path in paths:
         text = open(path, encoding="utf-8").read()
-        for m in CITATION.finditer(text):
-            cited, first, last = m.group(1), int(m.group(2)), m.group(3)
+        for match in CITATION.finditer(text):
+            cited, first, last = match.group(1), int(match.group(2)), match.group(3))
             last = int(last) if last else first
             full = resolve(cited)
             if not full or not os.path.isfile(full):
                 # a missing source tree is a setup gap, not a bad citation — say which
-                root = next((c for c in SRC if cited.startswith(c)), None)
+                root = next((root for root in SRC if cited.startswith(root)), None)
                 if root and not os.path.exists(SRC[root]):
                     missing_sources.add(root)
                 else:
@@ -90,7 +90,7 @@ def main(argv: list[str]) -> int:
             range_ok += 1
             total += 1
             window = text[m.end() : m.end() + 170]
-            quoted = [c for c in CODE.findall(window) if ("=" in c or "def " in c or "class " in c)]
+            quoted = [frag for frag in CODE.findall(window) if ("=" in frag or "def " in frag or "class " in frag)]
             if not quoted:
                 no_snippet += 1
                 continue

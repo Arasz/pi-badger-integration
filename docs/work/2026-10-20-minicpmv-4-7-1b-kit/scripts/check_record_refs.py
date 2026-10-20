@@ -60,7 +60,9 @@ def load(paths: list[str]) -> dict[str, dict[int, str]]:
     records: dict[str, dict[int, str]] = {}
     for path in paths:
         text = open(path, encoding="utf-8").read()
-        records[path] = {int(m.group(1)[1:]): m.group(2) for m in HEADING.finditer(text)}
+        records[path] = {
+            int(heading.group(1)[1:]): heading.group(2) for heading in HEADING.finditer(text)
+        }
     return records
 
 
@@ -138,8 +140,8 @@ def main(argv: list[str]) -> int:
         # only the bullet lines count as "listed" — a mention inside a bullet's prose does not
         bullets = [ln for ln in (files_section.group(1).splitlines() if files_section else [])
                    if ln.lstrip().startswith("- ")]
-        listed = {m for ln in bullets for m in re.findall(r"scripts/([A-Za-z0-9_]+\.(?:py|sh))", ln)}
-        on_disk = {f for f in os.listdir(kit_dir) if f.endswith((".py", ".sh"))}
+        listed = {name for line in bullets for name in re.findall(r"scripts/([A-Za-z0-9_]+\.(?:py|sh))", line)}
+        on_disk = {name for name in os.listdir(kit_dir) if name.endswith((".py", ".sh"))}
         for name in sorted(on_disk - listed):
             broken += 1
             print(f"\n!! {kit_readme}: scripts/{name} exists but is not listed")
@@ -155,18 +157,18 @@ def main(argv: list[str]) -> int:
         if not os.path.isfile(path):
             continue
         base = os.path.dirname(os.path.abspath(path))
-        for m in re.finditer(r"((?:docs/work/[^\s`]*?/)?scripts/[A-Za-z0-9_.-]+\.(?:py|sh))",
+        for match in re.finditer(r"((?:docs/work/[^\s`]*?/)?scripts/[A-Za-z0-9_.-]+\.(?:py|sh))",
                              open(path, encoding="utf-8").read()):
-            ref = m.group(1)
+            ref = match.group(1)
             candidates = [ref if os.path.isabs(ref) else os.path.join(repo, ref),
                           ref if os.path.isabs(ref) else os.path.join(base, ref)]
-            if not any(os.path.isfile(c) for c in candidates):
+            if not any(os.path.isfile(candidate) for candidate in candidates):
                 broken += 1
                 print(f"\n!! referenced script does not exist: {ref} (mentioned in {path})")
 
     for path in paths:
         text = open(path, encoding="utf-8").read()
-        bad = {m.group(1) for m in GRADE_TOKEN.finditer(text)} - VALID_GRADES
+        bad = {token.group(1) for token in GRADE_TOKEN.finditer(text)} - VALID_GRADES
         slips = set(GRADE_SLIP.findall(text))
         if bad or slips:
             broken += 1
@@ -177,15 +179,15 @@ def main(argv: list[str]) -> int:
                 broken += 1
                 print(f"\n!! {path}: known-wrong phrasing — {why}")
         # every finding-shaped heading must carry a grade from the closed set
-        strict = {m.group(0) for m in HEADING.finditer(text)}
-        for heading in FINDING_SHAPED.finditer(text):
-            if heading.group(0) not in strict:
+        strict = {heading.group(0) for heading in HEADING.finditer(text)}
+        for finding in FINDING_SHAPED.finditer(text):
+            if finding.group(0) not in strict:
                 broken += 1
-                print(f"\n!! {path}: finding heading without a grade marker — {heading.group(0)[:80]!r}")
+                print(f"\n!! {path}: finding heading without a grade marker — {finding.group(0)[:80]!r}")
         # grade mix, counted from the finding headings only
         counts: dict[str, int] = {}
-        for m in HEADING.finditer(text):
-            grade = m.group(3)
+        for heading in HEADING.finditer(text):
+            grade = heading.group(3)
             counts[grade] = counts.get(grade, 0) + 1
             mix[grade] = mix.get(grade, 0) + 1
         # the skill's checklist: an empty "Still open" must be defended, so flag it
