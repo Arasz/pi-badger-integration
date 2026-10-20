@@ -8,10 +8,10 @@
 # docs/work/2026-10-20-mtplx-format-for-minicpmv.md).
 #
 # Usage:
-#   ./convert_minicpmv47.sh                        # all formats, export, verify
-#   ./convert_minicpmv47.sh --help
-#   FORMATS="bf16 affine4" ./convert_minicpmv47.sh  # only these formats
-#   OUT_ROOT=~/models/mc47 VENV=~/venvs/mc47 ./convert_minicpmv47.sh
+#   bash docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh
+#   bash docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh --help
+#   FORMATS="bf16 affine4" bash docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh          # only these formats
+#   OUT_ROOT=~/models/mc47 VENV=~/venvs/mc47 bash docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh
 #
 # Environment overrides:
 #   MODEL_ID   source repo id                (default openbmb/MiniCPM-V-4.7-1B)
