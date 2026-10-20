@@ -187,12 +187,28 @@ MiniCPM's class (`MiniCPMV4_7ForConditionalGeneration`) is not in that table, so
 nothing to alias to — which is why the multimodal checkpoint is refused outright.
 
 One detail worth knowing if you ever write such a config by hand: the alias installer matches the
-declared class **case-sensitively** (`_ARCHITECTURE_DECLARED_MODULES.get(arch)`, `mtplx/runtime.py:558`),
-whereas the registry's own resolution path uses a lowercased, dash-folded copy
-(`_DECLARED_MODULES_LOWERED`, `mtplx/backends/registry.py:1254-1257`, consulted at `:1350`). So the
-export's `architectures: ["Qwen3_5ForCausalLM"]` has to be spelled exactly that way for the alias
-route to work — a lowercase spelling would not be aliased, even though the registry's path would
-still recognise it.
+declared class **case-sensitively** (`_ARCHITECTURE_DECLARED_MODULES.get(arch)`,
+`mtplx/runtime.py:558`), whereas the registry's own resolution path uses a lowercased, dash-folded
+copy — `mtplx/backends/registry.py:1254-1257`:
+
+```python
+_DECLARED_MODULES_LOWERED = {
+    key.lower().replace("-", "_"): value
+    for key, value in ARCHITECTURE_DECLARED_MODULES.items()
+}
+```
+
+consulted at `:1350`, where the architecture string is first split on commas and spaces and each
+token is folded the same way:
+
+```python
+for token in architecture.replace(",", " ").split():
+    target = _DECLARED_MODULES_LOWERED.get(token.lower().replace("-", "_"))
+```
+
+So the export's `architectures: ["Qwen3_5ForCausalLM"]` has to be spelled exactly that way for
+the *alias* route to work — a lowercase spelling would not be aliased — while the registry's path
+would still recognise it, folded and tokenised.
 
 ### F10 — MiniCPM-V 4.7's text tower *is* a Qwen3.5 text model, and mlx-lm can load it [MEASURED]
 
