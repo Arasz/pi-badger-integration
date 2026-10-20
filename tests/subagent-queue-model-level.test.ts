@@ -19,11 +19,13 @@ import { join } from "node:path";
 import { FakeChild } from "./helpers/fake-child.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 import { AGENTS_DIR } from "../extensions/subagent/index.ts";
-import { MODEL_ID_PATTERN } from "../extensions/subagent/delegation-core.ts";
+import { FROZEN_MODEL_GROUPS, MODEL_ID_PATTERN, groupMembers } from "../extensions/subagent/delegation-core.ts";
 import subagent from "../extensions/subagent/index.ts";
 
-const LOW_PREF = "openrouter/z-ai/glm-5.3-flash";
-const MED_PREF = "openrouter/deepseek/deepseek-v4.1-flash";
+/** The pins the queue resolves to. The harness's project directory carries no map file, so
+ * the loader degrades to the frozen fallback — derived from it, never hand-copied. */
+const LOW_PREF = groupMembers(FROZEN_MODEL_GROUPS.groups.low)?.[0]?.id;
+const MED_PREF = groupMembers(FROZEN_MODEL_GROUPS.groups.medium)?.[0]?.id;
 
 interface Harness {
   pi: any;

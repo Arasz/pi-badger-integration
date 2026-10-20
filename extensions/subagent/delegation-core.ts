@@ -1043,8 +1043,15 @@ export function elideTeeStream(headerLine: string, stream: string, capBytes: num
  * the rest of this file: no imports, no clock, no fs — decisions take injected data.
  */
 
-/** Closed level set (contract §1 inv 6): exactly low|medium|high. */
-export const VALID_LEVELS = ["low", "medium", "high"] as const;
+/** Closed level set (contract §1 inv 6): exactly low|medium|high|top. */
+export const VALID_LEVELS = ["low", "medium", "high", "top"] as const;
+
+/**
+ * The levels every registry must carry. `top` joined the map in framework 0.210.x, so a
+ * registry scaffolded before it is still consumable: its missing fourth tier is an empty
+ * group, not a malformed file, and asking for it names the rule.
+ */
+export const REQUIRED_LEVELS = ["low", "medium", "high"] as const;
 
 /** One of the closed levels. */
 export type ModelLevel = (typeof VALID_LEVELS)[number];
@@ -1066,11 +1073,34 @@ export interface LevelRegistryMember {
   readonly [key: string]: unknown;
 }
 
-/** Minimal structural view of the registry — `groups[level][0].id` is the only read. */
+/**
+ * One group of the map: the object shape the framework's map carries (`{ models: [...] }`,
+ * 0.210.x) or the list shape a pre-0.210 scaffold delivered. Both are read; neither is
+ * guessed at.
+ */
+export type LevelRegistryGroup =
+  | readonly LevelRegistryMember[]
+  | { readonly models: readonly LevelRegistryMember[]; readonly [key: string]: unknown };
+
+/** Minimal structural view of the registry — a group's preferred member id is the only read. */
 export interface LevelRegistry {
-  readonly groups: Record<ModelLevel, readonly LevelRegistryMember[]>;
+  readonly groups: Readonly<Record<string, LevelRegistryGroup | undefined>>;
   readonly registryVersion?: number;
   readonly [key: string]: unknown;
+}
+
+/**
+ * The members of one group, whichever shape it carries; undefined when it carries none.
+ * The map's shape hides the members one level deeper than the legacy list shape did, and
+ * every read goes through here so the two cannot drift.
+ */
+export function groupMembers(group: LevelRegistryGroup | undefined): readonly LevelRegistryMember[] | undefined {
+  if (Array.isArray(group)) return group as readonly LevelRegistryMember[];
+  if (typeof group === "object" && group !== null) {
+    const models = (group as { models?: unknown }).models;
+    if (Array.isArray(models)) return models as readonly LevelRegistryMember[];
+  }
+  return undefined;
 }
 
 /**
@@ -1080,15 +1110,19 @@ export interface LevelRegistry {
  * when the target project has no usable registry file (absence rule — the warning rides
  * `ModelGroupsLoad.warning`). The degraded load is marked by `source: "frozen"` plus its
  * warning; re-pin against the framework canonical when preferreds rotate (G1 follow-up).
+ *
+ * The pins are the 2026-09 rotation, kept as they are across the map's shape change (the
+ * shape moved, the pins did not); the fourth tier joins at the canonical's top pin.
  */
 export const FROZEN_MODEL_GROUPS: LevelRegistry & { readonly frozen: true } = {
-  registryVersion: 1,
+  registryVersion: 3,
   frozen: true,
   source: "ai-badger canonical preferred pins (frozen fallback, revisit on rotation)",
   groups: {
-    low: [{ id: "openrouter/z-ai/glm-5.3-flash", preferred: true }],
-    medium: [{ id: "openrouter/deepseek/deepseek-v4.1-flash", preferred: true }],
-    high: [{ id: "openrouter/deepseek/deepseek-v4.1-flash", preferred: true }],
+    low: { models: [{ id: "openrouter/z-ai/glm-5.3-flash", preferred: true }] },
+    medium: { models: [{ id: "openrouter/deepseek/deepseek-v4.1-flash", preferred: true }] },
+    high: { models: [{ id: "openrouter/deepseek/deepseek-v4.1-flash", preferred: true }] },
+    top: { models: [{ id: "openrouter/anthropic/claude-fable-5.1", preferred: true }] },
   },
 };
 
@@ -1103,13 +1137,18 @@ export function isUsableModelRegistry(value: unknown): value is LevelRegistry {
   if (typeof value !== "object" || value === null) return false;
   const groups = (value as { groups?: unknown }).groups;
   if (typeof groups !== "object" || groups === null) return false;
-  for (const level of VALID_LEVELS) {
-    const group = (groups as Record<string, unknown>)[level];
-    if (!Array.isArray(group) || group.length === 0) return false;
-    const first = group[0] as { id?: unknown } | null;
-    if (typeof first !== "object" || first === null || typeof first.id !== "string" || !first.id) return false;
+  for (const level of REQUIRED_LEVELS) {
+    if (!hasUsablePreferred((groups as Record<string, unknown>)[level])) return false;
   }
   return true;
+}
+
+/** True when a group carries at least one member and its first member bears an id. */
+function hasUsablePreferred(group: unknown): boolean {
+  const members = groupMembers(group as LevelRegistryGroup | undefined);
+  if (!members || members.length === 0) return false;
+  const first = members[0] as { id?: unknown } | null;
+  return typeof first === "object" && first !== null && typeof first.id === "string" && !!first.id;
 }
 
 // ------------------------------------------------------------------ level resolution (PKG-5 5b)
@@ -1194,14 +1233,14 @@ export function admitExplicitModel(raw: unknown): { model?: string; refusal?: st
 
 /** The preferred id of one group — throws naming the rule instead of guessing (§4 step 8). */
 function readPreferredId(registry: LevelRegistry, level: ModelLevel): string {
-  const group = registry.groups[level];
-  if (!Array.isArray(group) || group.length === 0) {
+  const members = groupMembers(registry.groups[level]);
+  if (!members || members.length === 0) {
     throw new Error(
       `ai-badger: model registry has no usable "${level}" group (missing or empty) — ` +
       `refusing to guess; valid levels are ${VALID_LEVELS.join(", ")}.`,
     );
   }
-  const id = group[0]?.id;
+  const id = members[0]?.id;
   if (typeof id !== "string" || !id) {
     throw new Error(`ai-badger: model registry "${level}" preferred entry has no usable id — refusing to guess.`);
   }
@@ -1338,7 +1377,7 @@ function withProviderAffinity(registry: LevelRegistry, resolved: ResolvedLevelPi
   if (level === undefined || resolved.model === undefined || session === undefined) return resolved;
   const provider = providerOf(session);
   if (providerOf(resolved.model) === provider) return resolved;
-  const sameProvider = registry.groups[level].find(
+  const sameProvider = (groupMembers(registry.groups[level]) ?? []).find(
     (member) => typeof member.id === "string" && providerOf(member.id) === provider && MODEL_ID_PATTERN.test(member.id),
   )?.id;
   const model = sameProvider ?? session;
