@@ -189,7 +189,7 @@ gate is `validate_dflash_target`, whose whole body is four checks (upstream
 `mlx_vlm/speculative/drafters/compatibility.py:21-50`, byte-identical in 0.7.9 and upstream `main`):
 
 ```python
-# abridged from compatibility.py:21-50 — the function header and the raise-message
+# abridged from the file cited above — the function header and the raise-message
 # texts are omitted; the numbered comments are mine
 hidden_size = _config_value(target_config, "hidden_size")
 if hidden_size != config.hidden_size:            # 1. hidden size
