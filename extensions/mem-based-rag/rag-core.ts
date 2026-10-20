@@ -63,6 +63,7 @@ const CONTROL_WORDS = new Set([
 
 export type SkipReason =
 	| "empty"
+	| "injected-turn"
 	| "command"
 	| "control-word"
 	| "bare-skill-call"
@@ -106,6 +107,26 @@ export function uniqueLongWords(text: string): Set<string> {
 }
 
 /**
+ * The first line of each block shape this module renders, and the shape the
+ * ai-badger memory-first gate renders (the same strings, by design).
+ *
+ * A turn that starts with one of them is the HARNESS's own output, not a person's
+ * words. Enriching it searches memory for the identifiers inside the block the
+ * harness just wrote, and produces a new block whose query is the previous block's
+ * header — the self-feeding loop. The framework's port of this filter refuses such a
+ * turn for the same reason (`memory_context.py`'s `injected_turn`).
+ */
+export const MEMORY_BLOCK_HEADERS: readonly string[] = [
+	"Memory context (ai-raccoon memory_search, snippets — query: ",
+	"Memory context (ai-raccoon memory_get/code_get, expanded — query: ",
+];
+
+/** True when *text* starts with a memory block header — a harness-written turn. */
+export function isInjectedTurn(text: string): boolean {
+	return MEMORY_BLOCK_HEADERS.some((header) => text.startsWith(header));
+}
+
+/**
  * Decide whether a raw user prompt (pre-expansion, as the `input` event sees it)
  * deserves a memory_search. Order matters: the bare-skill and command gates run
  * before the length gates, so `/skill:task` reports `bare-skill-call` instead of
@@ -122,6 +143,10 @@ export function shouldEnrich(
 	const minWords = opts?.minWords ?? 6;
 	const text = rawPrompt.trim();
 	if (!text) return { enrich: false, reason: "empty", query: "", uniqueWords: 0 };
+	// A turn that is a memory block is the harness's own output: never enrich it.
+	if (isInjectedTurn(text)) {
+		return { enrich: false, reason: "injected-turn", query: "", uniqueWords: 0 };
+	}
 	// Bare skill call: an invocation with no extension text carries no query.
 	if (BARE_SKILL_RE.test(text)) {
 		return { enrich: false, reason: "bare-skill-call", query: "", uniqueWords: 0 };

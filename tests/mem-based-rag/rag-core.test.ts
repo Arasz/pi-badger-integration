@@ -29,6 +29,28 @@ describe("shouldEnrich filter gates", () => {
 		expect(decision.query).toBe(prompt);
 	});
 
+	test("a turn that IS an injected block is not enriched", () => {
+		// The block the harness itself wrote is not a person's words. Enriching it searches
+		// memory for the identifiers inside the block and produces a new block whose query
+		// is the previous block's header — the self-feeding loop.
+		const block = toMemoryContext("a sufficiently long and meaningful question here", [
+			{ hash: "aaa", ranking: 1, path: "shared/x.md", snippet: "first memory snippet" },
+		], []);
+		const decision = shouldEnrich(block);
+		expect(decision.enrich).toBe(false);
+		expect(decision.reason).toBe("injected-turn");
+		expect(decision.query).toBe("");
+	});
+
+	test("an expanded block is not enriched either", () => {
+		const block = toExpandedMemoryContext("a sufficiently long and meaningful question here", [
+			{ hit: { hash: "aaa", path: "shared/x.md" }, kind: "memory", value: "the full decision text", path: "shared/x.md", chunk: "chunk 2/36" },
+		]);
+		const decision = shouldEnrich(block);
+		expect(decision.enrich).toBe(false);
+		expect(decision.reason).toBe("injected-turn");
+	});
+
 	test("control words skip even though some pass the length gate", () => {
 		for (const word of ["stop", "continue", "exit", "quit", "clear", "help"]) {
 			expect(shouldEnrich(word).reason).toBe(word.length < 20 ? "control-word" : "control-word");
