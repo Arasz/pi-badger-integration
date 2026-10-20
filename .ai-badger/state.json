@@ -3,6 +3,13 @@
   "next": null,
   "completedTasks": [
     {
+      "id": "pbi-402-plan-as-shipped",
+      "title": "The 402 retry plan carries its as-shipped delta",
+      "pr": "https://github.com/Arasz/pi-badger-integration/pull/61",
+      "finished": "2026-10-20",
+      "summary": "Doc-only: the plan for the 402 retry described the pre-review design (the respawn takes the reason alone) and left D1 open, while the shipped code takes the failure class alongside the reason and marks an attempt boundary, and D1 was decided (respawn even when the child had produced output; the duplication of side effects is documented in the catalog). The plan now carries the delta in the same shape the sibling plan uses, so a committed design record matches the code it describes."
+    },
+    {
       "id": "pbi-402-invariants-tests",
       "title": "The 402 respawn's log, note and card invariants are pinned",
       "pr": "https://github.com/Arasz/pi-badger-integration/pull/60",
