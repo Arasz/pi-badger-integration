@@ -144,6 +144,12 @@ function frozenEntry(entry: FallbackProviderEntry): FallbackProviderEntry {
  * without credits), so heavy fallback days still burn the OR budget first and fall
  * through to Groq/Gemini. Model IDs are folds F1-J3 corrected (C1/C2 stale IDs
  * appear ONLY as C15 regression fixtures).
+ *
+ * The OpenRouter head is an EXPLICIT `:free` id, and the paid id sits last. A
+ * billing failure parks the whole entry and serves its head, so a head that needs
+ * credits answers 402 on an empty account and the switch lands on a model that
+ * cannot serve either (measured 2026-10-20: the previous head answered "Insufficient
+ * credits"). "Free at its base id" is not a property OpenRouter guarantees.
  */
 export const DEFAULT_PROVIDERS: readonly FallbackProviderEntry[] = Object.freeze([
 	frozenEntry({
@@ -151,12 +157,12 @@ export const DEFAULT_PROVIDERS: readonly FallbackProviderEntry[] = Object.freeze
 		piProvider: "openrouter",
 		label: "OpenRouter",
 		apiKeyEnv: "OPENROUTER_API_KEY",
-		model: "inclusionai/ling-3.1-flash",
+		model: "minimax/minimax-m3.1-flash:free",
 		models: [
-			"inclusionai/ling-3.1-flash",
+			"minimax/minimax-m3.1-flash:free",
 			"poolside/laguna-s-2.1:free",
-			"minimax/minimax-m3:free",
 			"thinkingmachines/inkling-small:free",
+			"inclusionai/ling-3.1-flash",
 		],
 		enabled: true,
 		timeoutMs: FALLBACK_TIMEOUT_MS_DEFAULT,

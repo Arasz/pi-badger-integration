@@ -76,7 +76,7 @@ const CATALOG: Record<string, FakeCatalogModel> = {
     api: "openai-completions",
     baseUrl: "https://openrouter.ai/api/v1",
   },
-  "openrouter/minimax/minimax-m3:free": {
+  "openrouter/minimax/minimax-m3.1-flash:free": {
     reasoning: false,
     api: "openai-completions",
     baseUrl: "https://openrouter.ai/api/v1",

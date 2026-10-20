@@ -3,6 +3,13 @@
   "next": null,
   "completedTasks": [
     {
+      "id": "pbi-router-free-head",
+      "title": "The router-fallback's OpenRouter head is an explicit :free id",
+      "pr": "https://github.com/Arasz/pi-badger-integration/pull/65",
+      "finished": "2026-10-20",
+      "summary": "A billing failure parks the whole fallback ENTRY and then serves its head, so the OpenRouter head must be a model that answers without credits. The shipped head was inclusionai/ling-3.1-flash, assumed 'free at its base id' (the catalog's note); measured 2026-10-20 it answered 402 'Insufficient credits' on an account with no credit, so the switch landed on a model that could not serve either, and the in-child episode guard held - the delegation died silently. The head is now an explicit :free id (openrouter/minimax/minimax-m3.1-flash:free, measured working) with the paid id last; the stale minimax/minimax-m3:free id (no longer in the catalog) is gone. A new test pins the head as an explicit :free id, so 'free at its base id' can never come back; both mutations (paid head, head missing from the rotation list) turn it red."
+    },
+    {
       "id": "pbi-402-plan-as-shipped",
       "title": "The 402 retry plan carries its as-shipped delta",
       "pr": "https://github.com/Arasz/pi-badger-integration/pull/61",
