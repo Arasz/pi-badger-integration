@@ -23,7 +23,7 @@ import sys
 
 sys.dont_write_bytecode = True   # keep the kit free of __pycache__
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _kit_paths import expand  # noqa: E402
+from _kit_paths import expand, repo_root  # noqa: E402
 
 HEADING = re.compile(r"^### (F\d+) — (.+?) \[(MEASURED|READ|INFERRED|UNVERIFIED)\]$", re.M)
 # a finding-shaped heading that does not carry a grade is a defect, not a heading to skip
@@ -147,6 +147,23 @@ def main(argv: list[str]) -> int:
             broken += 1
             print(f"\n!! {kit_readme}: scripts/{name} is listed but does not exist")
 
+    # every script path the records mention must exist — resolved from the repository root,
+    # or from the directory of the file that mentions it (the kit README uses the short form)
+    repo = repo_root()
+    mentioned = paths + ([kit_readme] if os.path.isfile(kit_readme) else [])
+    for path in mentioned:
+        if not os.path.isfile(path):
+            continue
+        base = os.path.dirname(os.path.abspath(path))
+        for m in re.finditer(r"((?:docs/work/[^\s`]*?/)?scripts/[A-Za-z0-9_.-]+\.(?:py|sh))",
+                             open(path, encoding="utf-8").read()):
+            ref = m.group(1)
+            candidates = [ref if os.path.isabs(ref) else os.path.join(repo, ref),
+                          ref if os.path.isabs(ref) else os.path.join(base, ref)]
+            if not any(os.path.isfile(c) for c in candidates):
+                broken += 1
+                print(f"\n!! referenced script does not exist: {ref} (mentioned in {path})")
+
     for path in paths:
         text = open(path, encoding="utf-8").read()
         bad = {m.group(1) for m in GRADE_TOKEN.finditer(text)} - VALID_GRADES
@@ -186,7 +203,9 @@ def main(argv: list[str]) -> int:
         print(
             "\nOK — checked: every finding pointer resolves into the right record; every finding carries a\n"
             "     grade from the closed set {MEASURED, READ, INFERRED, UNVERIFIED}; no grade-like slip;\n"
-            "     every '## Still open' section is non-empty; no known-wrong phrasing present; the kit's\n     README lists exactly the scripts that exist beside it."
+            "     every '## Still open' section is non-empty; no known-wrong phrasing present; the\n"
+            "     kit's README lists exactly the scripts that exist beside it; every script path the\n"
+            "     records mention exists."
         )
     return 0 if not broken else 1
 
