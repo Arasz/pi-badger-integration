@@ -14,7 +14,7 @@ Everything here was run on an **Apple M4 MacBook Air, 24 GB RAM, macOS 27.0.1**,
 ## TL;DR
 
 - **To run it with vision on a Mac:** `mlx_vlm.convert` the checkpoint, then
-  `python -m mlx_vlm.server --model <dir> --port 8000` — an OpenAI, Anthropic *and* Responses
+  `~/.venvs/minicpmv47/bin/python3 -m mlx_vlm.server --model <dir> --port 8000` — an OpenAI, Anthropic *and* Responses
   endpoint with images and multiple images per request.
 - **To run it in MTPLX:** it cannot — MTPLX's loader rejects `model_type: minicpmv4_7`. Use the
   text-only export (`scripts/export_mtplx_textonly.py`), which runs AR-only, without vision.
@@ -133,7 +133,7 @@ mlx_vlm.generate --model ~/models/minicpmv47/MiniCPM-V-4.7-1B-affine4 \
   --image photo.jpg --prompt "Describe this image." --max-tokens 200 --temperature 0
 
 # an OpenAI / Anthropic / Responses server, with images
-python -m mlx_vlm.server --model ~/models/minicpmv47/MiniCPM-V-4.7-1B-mxfp4 --port 8000
+~/.venvs/minicpmv47/bin/python3 -m mlx_vlm.server --model ~/models/minicpmv47/MiniCPM-V-4.7-1B-mxfp4 --port 8000
 ```
 
 The server takes images on all three dialects — an OpenAI `image_url` data URL, an Anthropic
