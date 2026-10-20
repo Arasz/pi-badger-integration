@@ -30,7 +30,7 @@ on:
 permissions:
   contents: read
 
-# Serialise with release.yml's group semantics: two pushes racing to bump must
+# Serialize with release.yml's group semantics: two pushes racing to bump must
 # not fork VERSION. Never cancel a run that may already have pushed a bump.
 concurrency:
   group: auto-bump
@@ -150,7 +150,7 @@ jobs:
 
           # The merge is the gate: the ruleset has already seen the check pass.
           # A squash keeps the bump one commit, like every other PR here.
-          gh pr merge "$PR" --squash --delete-branch
+          gh pr merge "$PR" --squash --delete-branch --auto
 
           # Wait for the merge to land on main before tagging it: the tag must
           # point at the commit that carries the new VERSION.
