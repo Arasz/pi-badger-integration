@@ -775,7 +775,20 @@ the transformers reference matters to you: the SSM precision convention.
 **Evidence:** mlx-lm 0.31.3 in MTPLX's runtime venv —
 `…/mlx_lm/models/qwen3_5.py`: `@dataclass` at `:24` and `class TextModelArgs(BaseModelArgs):` at
 `:25`, its fields from `:26` to `:83` (`rope_scaling` at `:83`), `Model.sanitize` at `:384-398`
-(quoted above), and the `cast_predicate` that keeps `A_log` at source precision; the
+(quoted above), and the cast rule at `:346-352` and `:530-531`:
+
+```python
+def cast_predicate(self):
+    def predicate(path: str):
+        if path.endswith("A_log"):
+            return False
+        return True
+    return predicate
+```
+
+so `A_log` — the SSM decay term, the one tensor whose precision decides the linear-attention
+numerics — is the **only** parameter excluded from the cast to the model's dtype, which is why the
+source's `mamba_ssm_dtype: float32` caveat is a real one and not a non-issue; the
 MiniCPM `text_config` from `https://huggingface.co/openbmb/MiniCPM-V-4.7-1B/raw/main/config.json`;
 the strict-loader failure quoted above, observed while building this export (the 22
 `merger`/`vit_merger` tensors), and the successful load after dropping them.
