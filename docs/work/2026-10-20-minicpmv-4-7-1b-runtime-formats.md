@@ -189,6 +189,8 @@ gate is `validate_dflash_target`, whose whole body is four checks (upstream
 `mlx_vlm/speculative/drafters/compatibility.py:21-50`, byte-identical in 0.7.9 and upstream `main`):
 
 ```python
+# abridged from compatibility.py:21-50 — the function header and the raise-message
+# texts are omitted; the numbered comments are mine
 hidden_size = _config_value(target_config, "hidden_size")
 if hidden_size != config.hidden_size:            # 1. hidden size
     raise ValueError(...)
@@ -226,6 +228,7 @@ implementation. The chain (mlx-vlm 0.7.9 as installed) is:
 The two MiniCPM classes are three lines each (mlx-vlm 0.7.9 as installed):
 
 ```python
+# abridged: the path comments are mine, the `...` stands for the method bodies
 # mlx_vlm/models/minicpmv4_6/language.py:5-9
 from ..qwen3_5.language import LanguageModel as Qwen35LanguageModel
 
@@ -293,6 +296,7 @@ registry ever sees it. `mlx_vlm/utils.py:222-227` computes
 - `mlx_vlm/speculative/drafters/__init__.py:12-20` — the kind map, quoted:
 
   ```python
+  # abridged: the `...` stands for the map's other entries
   KNOWN_DRAFTER_KINDS = {"dflash", "mtp", "eagle3"}
 
   # Drafter HF ``model_type`` → required round-loop kind. Anything not listed
