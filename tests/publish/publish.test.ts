@@ -18,7 +18,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ADAPTER_FILES, directoryTarget, drifts, main, type InstallDeps } from "../../publish.ts";
+import { ADAPTER_FILES, aiBadgerDrift, directoryTarget, drifts, main, type InstallDeps } from "../../publish.ts";
 
 /** The repo root — for reading canonical SOURCE trees only (never a destination). */
 function rootDir(): string {
@@ -201,6 +201,14 @@ describe("CLI contract", () => {
 
 	test("--ai-badger without a path is refused (exit 1)", () => {
 		expect(main(["--ai-badger"])).toBe(1);
+	});
+
+	test("--check combined with --from-ai-badger is refused (exit 1)", () => {
+		expect(main(["--check", "--from-ai-badger", "/tmp/irrelevant"])).toBe(1);
+	});
+
+	test("--from-ai-badger without a path is refused (exit 1)", () => {
+		expect(main(["--from-ai-badger"])).toBe(1);
 	});
 
 	test("warnings never make --check fatal; problems do", () => {
@@ -686,5 +694,85 @@ describe("extension registry (PKG-4)", () => {
 		for (const name of EXTENSION_DIRS) {
 			expect(existsSync(join(root, "extensions", name, "index.ts"))).toBe(true);
 		}
+	});
+});
+
+/**
+ * The shipping copy of the adapter must be the ai-badger checkout's copy.
+ *
+ * The adapter this repo installs is the one pi loads. PR #638 (ai-badger 0.210.0)
+ * fixed the memory-first gate's delivery in ai-badger's copy of the adapter; that fix
+ * never reached the copy that ships, because the only tool moved canonical → ai-badger
+ * and nothing ever moved the other way. Every live pi session kept delivering the
+ * gate's result as a user-role message — the exact defect 0.210.0 fixed.
+ *
+ * So: the check compares the two, and the missing direction exists.
+ */
+describe("the adapter mirrors the ai-badger checkout", () => {
+	/** A fake ai-badger checkout with an adapter dir holding *files*. */
+	function aiBadgerCheckout(files: Record<string, string>): string {
+		const root = mkdtempSync(join(tmpdir(), "aib-"));
+		cleanup.push(root);
+		const dir = join(root, "features/pi/adjustments/adapter");
+		mkdirSync(dir, { recursive: true });
+		for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body);
+		return root;
+	}
+
+	/** The canonical adapter's bytes, as the check sees them. */
+	function canonicalAdapter(): Record<string, string> {
+		const dir = join(rootDir(), "features/pi/adjustments/adapter");
+		const out: Record<string, string> = {};
+		for (const name of ADAPTER_FILES) {
+			const path = join(dir, name);
+			if (existsSync(path)) out[name] = readFileSync(path, "utf-8");
+		}
+		return out;
+	}
+
+	test("an identical checkout is in sync (no problems, no warnings)", () => {
+		const checkout = aiBadgerCheckout(canonicalAdapter());
+		const drift = aiBadgerDrift(checkout);
+		expect(drift.problems).toEqual([]);
+		expect(drift.warnings).toEqual([]);
+	});
+
+	test("a checkout with a different adapter is a warning, not a problem", () => {
+		// Unmerged work in the checkout: the human decides whether it should ship.
+		const checkout = aiBadgerCheckout({ ...canonicalAdapter(), "hook-bridge.ts": "// older copy\n" });
+		const drift = aiBadgerDrift(checkout);
+		expect(drift.problems).toEqual([]);
+		expect(drift.warnings.join("\n")).toContain("hook-bridge.ts");
+		expect(drift.warnings.join("\n")).toContain("--from-ai-badger");
+	});
+
+	test("a checkout missing a file the canonical copy has is a warning", () => {
+		const files = canonicalAdapter();
+		const checkout = aiBadgerCheckout(
+			Object.fromEntries(Object.entries(files).filter(([n]) => n !== "index.ts")),
+		);
+		const drift = aiBadgerDrift(checkout);
+		expect(drift.problems).toEqual([]);
+		expect(drift.warnings.join("\n")).toContain("index.ts");
+	});
+
+	test("a checkout at a NEWER release than the copy mirrors is a problem", () => {
+		// The shipping gap: ai-badger released a fix the shipping copy does not carry.
+		const checkout = aiBadgerCheckout(canonicalAdapter());
+		writeFileSync(join(checkout, "VERSION"), "9.9.9\n");
+		const drift = aiBadgerDrift(
+			checkout,
+			join(rootDir(), "features/pi/adjustments/adapter"),
+			"0.210.0",
+		);
+		expect(drift.problems.length).toBeGreaterThan(0);
+		expect(drift.problems.join("\n")).toContain("release the shipping copy lacks");
+	});
+
+	test("no checkout is not drift — the check stays silent", () => {
+		expect(aiBadgerDrift("/tmp/definitely-not-an-ai-badger-checkout")).toEqual({
+			problems: [],
+			warnings: [],
+		});
 	});
 });
