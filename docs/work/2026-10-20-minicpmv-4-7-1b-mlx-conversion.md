@@ -320,6 +320,11 @@ value** under both modes — same 3 slices, same (3, 14, 14112) shape, and
 `max |pixel difference| = 0.0` between the two runs — with the image-token count moving by
 exactly 4x (203 -> 812 on a synthetic 640x480 test image; 315 -> 1260 on the test photo).
 
+(That third dimension, 14112, is the flattened patch buffer: 3 channels x a 14-pixel patch edge x
+14 x 1008 patches — 1008 being 28x36, the largest of the three slices' target sizes
+(28x36, 40x28, 40x28), to which every slice is padded. Measured from the processor's own
+`tgt_sizes` on the same test image.)
+
 ### F17 — All four MLX quant formats were built and compared; the ranking is not monotone in bit width [MEASURED]
 
 Every `--q-mode` the converter offers was built locally and captioned the same photo, and each was
