@@ -153,7 +153,7 @@ export function loadModelGroups(
       source: "frozen",
       warning:
         `${file} has no usable low|medium|high groups ` +
-        `(each needs a non-empty list with an id-bearing first entry) — using frozen model tiers`,
+        `(each needs a non-empty models list with an id-bearing first entry) — using frozen model tiers`,
     };
   }
   return { registry: parsed, source: "project" };

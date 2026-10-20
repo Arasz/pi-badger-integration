@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   FROZEN_MODEL_GROUPS,
+  groupMembers,
   InvalidLevelError,
   MODEL_ID_PATTERN,
   resolveDelegationModel,
@@ -102,15 +103,16 @@ describe("5a loadModelGroups — absence rule (T-MISS halves)", () => {
       projectFile(dir, {
         registryVersion: 7,
         groups: {
-          low: [member("openrouter/z-ai/glm-5.3-flash", true)],
-          medium: [member("openrouter/meta/muse-spark-1.3-contributor", true)],
-          high: [member("openrouter/meta/muse-spark-1.3-contributor", true)],
+          low: { models: [member("openrouter/z-ai/glm-5.3-flash", true)] },
+          medium: { models: [member("openrouter/meta/muse-spark-1.3-contributor", true)] },
+          high: { models: [member("openrouter/meta/muse-spark-1.3-contributor", true)] },
+          top: { models: [member("openrouter/anthropic/claude-fable-5.1", true)] },
         },
       });
       const loaded = loadModelGroups(dir);
       expect(loaded.source).toBe("project");
       expect(loaded.warning).toBeUndefined();
-      expect(loaded.registry.groups.low[0]?.id).toBe("openrouter/z-ai/glm-5.3-flash");
+      expect(groupMembers(loaded.registry.groups.low)?.[0]?.id).toBe("openrouter/z-ai/glm-5.3-flash");
       expect(loaded.registry.registryVersion).toBe(7);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -121,14 +123,15 @@ describe("5a loadModelGroups — absence rule (T-MISS halves)", () => {
 describe("5a FROZEN_MODEL_GROUPS — degrade-on-stale pins", () => {
   test("frozen carries the ai-badger canonical preferred pins", () => {
     expect(FROZEN_MODEL_GROUPS.source).toContain("ai-badger canonical");
-    expect(FROZEN_MODEL_GROUPS.groups.low[0]?.id).toBe("openrouter/z-ai/glm-5.3-flash");
-    expect(FROZEN_MODEL_GROUPS.groups.medium[0]?.id).toBe("openrouter/deepseek/deepseek-v4.1-flash");
-    expect(FROZEN_MODEL_GROUPS.groups.high[0]?.id).toBe("openrouter/deepseek/deepseek-v4.1-flash");
+    expect(groupMembers(FROZEN_MODEL_GROUPS.groups.low)?.[0]?.id).toBe("openrouter/z-ai/glm-5.3-flash");
+    expect(groupMembers(FROZEN_MODEL_GROUPS.groups.medium)?.[0]?.id).toBe("openrouter/deepseek/deepseek-v4.1-flash");
+    expect(groupMembers(FROZEN_MODEL_GROUPS.groups.high)?.[0]?.id).toBe("openrouter/deepseek/deepseek-v4.1-flash");
+    expect(groupMembers(FROZEN_MODEL_GROUPS.groups.top)?.[0]?.id).toBe("openrouter/anthropic/claude-fable-5.1");
   });
 
-  test("closed level set is exactly low|medium|high", () => {
-    expect([...VALID_LEVELS]).toEqual(["low", "medium", "high"]);
-    expect(Object.keys(FROZEN_MODEL_GROUPS.groups).sort()).toEqual(["high", "low", "medium"]);
+  test("closed level set is exactly low|medium|high|top", () => {
+    expect([...VALID_LEVELS]).toEqual(["low", "medium", "high", "top"]);
+    expect(Object.keys(FROZEN_MODEL_GROUPS.groups).sort()).toEqual(["high", "low", "medium", "top"]);
   });
 });
 
@@ -244,7 +247,7 @@ describe("5b resolveLevel — pure level resolution", () => {
     expect(err.message).toMatch(/meduim/);
     expect(err.message).toMatch(/low, medium, high/);
     expect(err.invalidLevel).toBe("meduim");
-    expect(err.validLevels).toEqual(["low", "medium", "high"]);
+    expect(err.validLevels).toEqual(["low", "medium", "high", "top"]);
     expect(err.status).toBe(400);
     expect(err.type).toBe("https://github.com/Arasz/ai-badger/problems/invalid-level");
   });

@@ -28,7 +28,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeChild } from "./helpers/fake-child.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
-import { FROZEN_MODEL_GROUPS, MODEL_ID_PATTERN } from "../extensions/subagent/delegation-core.ts";
+import { FROZEN_MODEL_GROUPS, groupMembers, MODEL_ID_PATTERN } from "../extensions/subagent/delegation-core.ts";
 import {
   AGENTS_DIR,
   delegationArgs,
@@ -65,10 +65,10 @@ function canonicalProjectFile(dir: string): void {
 }
 
 describe("join 7a — frozen fallback triangulates the ai-badger canonical pins", () => {
-  test("FROZEN preferred ids are the canonical three", () => {
-    expect(FROZEN_MODEL_GROUPS.groups.low[0]?.id).toBe(LOW_PREF);
-    expect(FROZEN_MODEL_GROUPS.groups.medium[0]?.id).toBe(MED_PREF);
-    expect(FROZEN_MODEL_GROUPS.groups.high[0]?.id).toBe(HIGH_PREF);
+  test("FROZEN preferred ids are the canonical pins", () => {
+    expect(groupMembers(FROZEN_MODEL_GROUPS.groups.low)?.[0]?.id).toBe(LOW_PREF);
+    expect(groupMembers(FROZEN_MODEL_GROUPS.groups.medium)?.[0]?.id).toBe(MED_PREF);
+    expect(groupMembers(FROZEN_MODEL_GROUPS.groups.high)?.[0]?.id).toBe(HIGH_PREF);
   });
 
   test("the PKG-5 ADR names the same three pins (prose == registry, not eyeball)", async () => {
