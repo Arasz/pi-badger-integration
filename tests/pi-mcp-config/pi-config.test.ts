@@ -4,9 +4,14 @@
  *
  * pi 0.99.1's built-in MCP applies `~` expansion only to command/args/cwd
  * (`dist/extensions/mcp/runtime.js` `createDefaultTransport`); `${NAME}` and
- * `!command` resolve in env/headers values only. These tests pin the five
+ * `!command` resolve in env/headers values only. These tests pin the
  * converted servers so a hand-edit cannot quietly reintroduce a fork-only
  * `tools` array or a `${…}` reference pi would pass through verbatim.
+ *
+ * `ai-raccoon` is `scope:user` in the framework catalog: ai-badger never writes
+ * user-global agent configuration (ADR-0014 decision 6), so it is registered
+ * once by the operator in `~/.pi/agent/mcp.json` and stays out of every
+ * project file.
  */
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
@@ -56,8 +61,12 @@ describe("pi MCP config (.pi/mcp.json)", () => {
 			const text = JSON.stringify([server.command, server.args, server.cwd]);
 			expect(text, `${name} command/args/cwd`).not.toMatch(/\$\{[^}]+\}/);
 		}
-		expect(servers["ai-raccoon"].command).toBe("~/.dotnet/tools/ai-raccoon");
 		expect(servers["semantica"].command).toBe("~/.local/bin/semantica-mcp");
+	});
+
+	test("a user-scoped server stays out of the project configs", () => {
+		expect(piServers()["ai-raccoon"]).toBeUndefined();
+		expect(claude.mcpServers["ai-raccoon"]).toBeUndefined();
 	});
 
 	test("task-graph runs the repo script by relative path", () => {
