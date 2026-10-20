@@ -144,7 +144,7 @@ describe("the memory gate's footer status in pi", () => {
 
 		await capture(toolCall, toolResult, ctx);
 
-		expect(ctx.statuses.at(-1)).toEqual(["mem", "[mem 1 0/1%]"]);
+		expect(ctx.statuses.at(-1)).toEqual(["mem", "[mem 1 0%]"]);
 	});
 
 	test("a raw-result fetch is counted, and the footer follows", async () => {
@@ -167,7 +167,7 @@ describe("the memory gate's footer status in pi", () => {
 			ctx,
 		);
 
-		expect(ctx.statuses.at(-1)).toEqual(["mem", "[mem 1 1/1%]"]);
+		expect(ctx.statuses.at(-1)).toEqual(["mem", "[mem 1 100%]"]);
 	});
 
 	test("a denied fetch is not counted — the retrieval never ran", async () => {
@@ -182,7 +182,7 @@ describe("the memory gate's footer status in pi", () => {
 		);
 
 		expect(blocked).toMatchObject({ block: true });
-		expect(ctx.statuses.at(-1)).toEqual(["mem", "[mem 1 0/1%]"]);
+		expect(ctx.statuses.at(-1)).toEqual(["mem", "[mem 1 0%]"]);
 	});
 
 	test("a new session starts the counters over", async () => {
@@ -204,14 +204,14 @@ describe("the memory gate's footer status in pi", () => {
 			},
 			ctx,
 		);
-		expect(ctx.statuses.at(-1)).toEqual(["mem", "[mem 1 1/1%]"]);
+		expect(ctx.statuses.at(-1)).toEqual(["mem", "[mem 1 100%]"]);
 
 		// /new, /resume, /fork and /clone re-fire session_start on the same adapter.
 		await sessionStart({}, ctx);
 		expect(ctx.statuses.at(-1)).toEqual(["mem", undefined]);
 
 		await capture(toolCall, toolResult, ctx);
-		expect(ctx.statuses.at(-1)).toEqual(["mem", "[mem 1 0/1%]"]);
+		expect(ctx.statuses.at(-1)).toEqual(["mem", "[mem 1 0%]"]);
 	});
 
 	test("a gate that captured nothing shows no status at all", async () => {
