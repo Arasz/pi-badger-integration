@@ -62,10 +62,10 @@ prove each one loads and sees the image. It stops at the first failure (exit 3) 
 reporting success over a checkpoint that was not built. Overrides:
 
 ```bash
-KIT=docs/work/2026-10-20-minicpmv-4-7-1b-kit
-FORMATS="bf16 affine4" OUT_ROOT=~/models/mc47 VENV=~/venvs/mc47 $KIT/scripts/convert_minicpmv47.sh
-DO_EXPORT=0 DO_VERIFY=0 $KIT/scripts/convert_minicpmv47.sh      # conversions only
-$KIT/scripts/convert_minicpmv47.sh --help
+FORMATS="bf16 affine4" OUT_ROOT=~/models/mc47 VENV=~/venvs/mc47 \
+  docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh
+DO_EXPORT=0 DO_VERIFY=0 docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh   # conversions only
+docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh --help
 ```
 
 ## The conversions, one by one
@@ -229,19 +229,17 @@ also prints a transformers warning about the tokenizer's regex pattern; it is no
 All commands are written **from the repository root** and are copy-pasteable as they stand:
 
 ```bash
-KIT=docs/work/2026-10-20-minicpmv-4-7-1b-kit
-
 # the whole chain: environment, five conversions, the export, one caption per checkpoint
-$KIT/scripts/convert_minicpmv47.sh
+docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh
 
 # the MTPLX text-only export on its own
-python3 $KIT/scripts/export_mtplx_textonly.py <src-mlx-dir> <dst-dir>
+python3 docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/export_mtplx_textonly.py <src-mlx-dir> <dst-dir>
 
 # every finding pointer in the three records resolves, and every grade marker is in the closed set
-python3 $KIT/scripts/check_record_refs.py "docs/work/2026-10-20-*.md"
+python3 docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/check_record_refs.py "docs/work/2026-10-20-*.md"
 
 # every cited line still says what the record claims (needs the pinned sources — see the script)
-python3 $KIT/scripts/check_citations.py "docs/work/2026-10-20-*.md"
+python3 docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/check_citations.py "docs/work/2026-10-20-*.md"
 ```
 
 (The two checkers also locate the repository root themselves, so running them from inside the kit
