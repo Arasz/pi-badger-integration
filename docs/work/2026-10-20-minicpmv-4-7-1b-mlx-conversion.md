@@ -315,10 +315,10 @@ upstream `main` on 2026-10-20, checked both ways):
 `mlx_vlm/models/minicpmv4_6/processing_minicpmv4_6.py:1453-1457` (the image divisor),
 `:1458-1462` (the mirrored video divisor), `:1031-1032` (the token-count formula) and `:152`
 (the constructor assignment — the attribute's only other occurrences in that file are `:132`, `:1455`
-and `:1460`, i.e. it is never read by the resize path); measured `pixel_values` **identical in
-value** under both modes — same 3 slices, same (3, 14, 14112) shape, and
-`max |pixel difference| = 0.0` between the two runs — with the image-token count moving by
-exactly 4x (203 -> 812 on a synthetic 640x480 test image; 315 -> 1260 on the test photo).
+and `:1460`, i.e. it is never read by the resize path); measured `pixel_values` identical in value
+under both modes — same 3 slices, same (3, 14, 14112) shape, and `max |pixel difference| = 0.0`
+between the two runs — with the image-token count moving by exactly 4x (203 -> 812 on a synthetic
+640x480 test image; 315 -> 1260 on the test photo).
 
 (That third dimension, 14112, is the flattened patch buffer: 3 channels x a 14-pixel patch edge x
 14 x 1008 patches — 1008 being 28x36, the largest of the three slices' target sizes
