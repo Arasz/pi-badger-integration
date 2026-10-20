@@ -29,19 +29,10 @@ import os
 import re
 import sys
 
-# where each cited tree lives
-SRC = {
-    "mlx_lm/models": os.path.expanduser(
-        "~/Library/Application Support/MTPLX/runtime-venv/lib/python3.14/site-packages/mlx_lm/models"
-    ),
-    "mlx_lm/utils.py": os.path.expanduser(
-        "~/Library/Application Support/MTPLX/runtime-venv/lib/python3.14/site-packages/mlx_lm/utils.py"
-    ),
-    "mlx_vlm/models": "/tmp/auditv/lib/python3.15/site-packages/mlx_vlm/models",
-    "mlx_vlm/utils.py": "/tmp/auditv/lib/python3.15/site-packages/mlx_vlm/utils.py",
-    "mlx_vlm/speculative": "/tmp/auditv/lib/python3.15/site-packages/mlx_vlm/speculative",
-    "mtplx": "/tmp/auditsrc/MTPLX-main/mtplx",
-}
+sys.dont_write_bytecode = True   # keep the kit free of __pycache__
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _paths import SRC, expand  # noqa: E402
+
 
 CITATION = re.compile(r"([A-Za-z0-9_./]+\.py):(\d+)(?:-(\d+))?")
 CODE = re.compile(r"`([^`]{4,90})`")
@@ -56,27 +47,6 @@ def resolve(path: str) -> str | None:
     if path == root:
         return SRC[root]
     return os.path.join(SRC[root], path[len(root) :].lstrip("/"))
-
-
-def expand(pattern: str) -> list[str]:
-    """Expand a glob, falling back to the repository root.
-
-    The records live at the repo root, so `docs/work/…` only matches there; a reader who
-    runs the checker from inside this folder should not have to know that.
-    """
-    import glob as _glob
-    hits = sorted(_glob.glob(pattern))
-    if hits:
-        return hits
-    root = os.getcwd()
-    for _ in range(6):
-        if os.path.exists(os.path.join(root, ".git")):   # a dir or a worktree file
-            break
-        parent = os.path.dirname(root)
-        if parent == root:
-            break
-        root = parent
-    return sorted(_glob.glob(os.path.join(root, pattern)))
 
 
 def normalise(text: str) -> str:

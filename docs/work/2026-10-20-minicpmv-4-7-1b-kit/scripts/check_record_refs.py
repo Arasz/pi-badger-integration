@@ -21,6 +21,10 @@ import os
 import re
 import sys
 
+sys.dont_write_bytecode = True   # keep the kit free of __pycache__
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _paths import expand  # noqa: E402
+
 HEADING = re.compile(r"^### (F\d+) — (.+?) \[(MEASURED|READ|INFERRED|UNVERIFIED)\]$", re.M)
 # a finding-shaped heading that does not carry a grade is a defect, not a heading to skip
 FINDING_SHAPED = re.compile(r"^### F\d+ — .*$", re.M)
@@ -50,27 +54,6 @@ KNOWN_WRONG = [
         "the DSpark checkpoint resolves to model_type 'dspark', not 'qwen3_dspark'",
     ),
 ]
-
-
-def expand(pattern: str) -> list[str]:
-    """Expand a glob, falling back to the repository root.
-
-    The records live at the repo root, so `docs/work/…` only matches there; a reader who
-    runs the checker from inside this folder should not have to know that.
-    """
-    import glob as _glob
-    hits = sorted(_glob.glob(pattern))
-    if hits:
-        return hits
-    root = os.getcwd()
-    for _ in range(6):
-        if os.path.exists(os.path.join(root, ".git")):   # a dir or a worktree file
-            break
-        parent = os.path.dirname(root)
-        if parent == root:
-            break
-        root = parent
-    return sorted(_glob.glob(os.path.join(root, pattern)))
 
 
 def load(paths: list[str]) -> dict[str, dict[int, str]]:
