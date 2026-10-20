@@ -28,8 +28,13 @@ SRC = {
 
 
 def repo_root(start: str | None = None) -> str:
-    """The repository root above `start` (default: the cwd)."""
-    root = os.path.abspath(start or os.getcwd())
+    """The repository root above `start`.
+
+    Defaults to this module's own location, not the working directory: the kit lives inside
+    the repository, and the paths its records cite are relative to the repository root, so
+    running a checker from another directory must still resolve them.
+    """
+    root = os.path.abspath(start or os.path.dirname(os.path.abspath(__file__)))
     for _ in range(8):
         if os.path.exists(os.path.join(root, ".git")):   # a directory or a worktree file
             return root

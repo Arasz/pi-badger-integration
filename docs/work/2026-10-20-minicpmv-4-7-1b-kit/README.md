@@ -240,6 +240,9 @@ python3 docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/check_record_refs.py "d
 
 # every cited line still says what the record claims (needs the pinned sources — see the script)
 python3 docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/check_citations.py "docs/work/2026-10-20-*.md"
+
+# the checkers' own tests
+python3 -m pytest docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts -q
 ```
 
 (The two checkers also locate the repository root themselves, so running them from inside the kit
@@ -258,6 +261,8 @@ folder works too.)
   python3 docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/check_citations.py "docs/work/2026-10-20-*.md"
   ```
 
+- `docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/test_checkers.py` — the checkers' own tests
+  (`python3 -m pytest docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts -q`)
 - `docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/_kit_paths.py` — the shared path resolution the two
   checkers use (and the `SRC` map of pinned source trees)
 - `docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/check_record_refs.py` — prints every `F<n>` pointer in these records next to the finding it
