@@ -16,8 +16,8 @@ Pinned sources (edit these to match the versions the records cite):
     MTPLX   main     — an unpacked checkout (upstream, fetched on the citation date)
 
 Usage:
-    python check_citations.py <record.md|glob> [...]
-    python check_citations.py "docs/work/2026-10-20-*.md"
+    python3 check_citations.py <record.md|glob> [...]
+    python3 check_citations.py "docs/work/2026-10-20-*.md"
 
 Exit code 0 when every citation resolves, 1 otherwise.
 """

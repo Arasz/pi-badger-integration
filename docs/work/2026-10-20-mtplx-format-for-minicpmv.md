@@ -308,7 +308,7 @@ So: keep the `language_model.*` tensors, drop the vision/merger ones, and rewrit
 with `model_type: qwen3_5` and the original `text_config`.
 
 Usage:
-    python export_mtplx_textonly.py <src-mlx-dir> <dst-dir>
+    python3 export_mtplx_textonly.py <src-mlx-dir> <dst-dir>
 
 Requires: mlx (numpy is not needed; mx.load/mx.save_safetensors do the work).
 """

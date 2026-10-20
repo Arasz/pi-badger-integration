@@ -7,8 +7,8 @@ This script prints every in-text reference next to the title of the finding it r
 mismatch is visible at a glance.
 
 Usage:
-    python check_record_refs.py "docs/work/2026-10-20-*.md"     # every reference, with its target
-    python check_record_refs.py --quiet "docs/work/2026-10-20-*.md"   # summary only
+    python3 check_record_refs.py "docs/work/2026-10-20-*.md"     # every reference, with its target
+    python3 check_record_refs.py --quiet "docs/work/2026-10-20-*.md"   # summary only
 
 Exit code 0 when every reference resolves and every grade marker is in the closed set; 1 when a
 reference points at a finding that does not exist, or a grade marker is misspelled.

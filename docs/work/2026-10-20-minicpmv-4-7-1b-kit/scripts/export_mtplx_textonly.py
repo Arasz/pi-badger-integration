@@ -14,7 +14,7 @@ The result runs in MTPLX autoregressively (no vision, no speculative decoding) a
 Evidence: docs/work/2026-10-20-mtplx-format-for-minicpmv.md.
 
 Usage:
-    python export_mtplx_textonly.py <src-mlx-dir> <dst-dir>
+    python3 export_mtplx_textonly.py <src-mlx-dir> <dst-dir>
 
 Requires: mlx (mx.load / mx.save_safetensors do the work; numpy is not needed).
 """
