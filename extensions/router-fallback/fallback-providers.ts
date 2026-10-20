@@ -145,11 +145,14 @@ function frozenEntry(entry: FallbackProviderEntry): FallbackProviderEntry {
  * through to Groq/Gemini. Model IDs are folds F1-J3 corrected (C1/C2 stale IDs
  * appear ONLY as C15 regression fixtures).
  *
- * The OpenRouter head is an EXPLICIT `:free` id, and the paid id sits last. A
- * billing failure parks the whole entry and serves its head, so a head that needs
- * credits answers 402 on an empty account and the switch lands on a model that
- * cannot serve either (measured 2026-10-20: the previous head answered "Insufficient
- * credits"). "Free at its base id" is not a property OpenRouter guarantees.
+ * The OpenRouter head is OpenRouter's FREE MODELS ROUTER (`openrouter/free`) — the
+ * provider's own id for "any free model" — and the paid id sits last. A billing failure
+ * parks the whole entry and serves its head, so a head that needs credits answers 402 on
+ * an empty account and the switch lands on a model that cannot serve either (measured
+ * 2026-10-20: the previous head answered "Insufficient credits"). "Free at its base id"
+ * is not a property OpenRouter guarantees, and a hand-kept list of `:free` ids rots (the
+ * chain's `minimax/minimax-m3:free` is gone from the catalog). The router is one id that
+ * always resolves to a free model, so it carries the breadth the list used to.
  */
 export const DEFAULT_PROVIDERS: readonly FallbackProviderEntry[] = Object.freeze([
 	frozenEntry({
@@ -157,11 +160,9 @@ export const DEFAULT_PROVIDERS: readonly FallbackProviderEntry[] = Object.freeze
 		piProvider: "openrouter",
 		label: "OpenRouter",
 		apiKeyEnv: "OPENROUTER_API_KEY",
-		model: "minimax/minimax-m3.1-flash:free",
+		model: "openrouter/free",
 		models: [
-			"minimax/minimax-m3.1-flash:free",
-			"poolside/laguna-s-2.1:free",
-			"thinkingmachines/inkling-small:free",
+			"openrouter/free",
 			"inclusionai/ling-3.1-flash",
 		],
 		enabled: true,

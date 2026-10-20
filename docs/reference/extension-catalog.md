@@ -296,7 +296,7 @@ Fallback chain (array order = priority; all three are pi built-ins, never re-reg
 
 | # | Provider (pi id) | Model(s) | Key (name only, never a value) | Role |
 |---|---|---|---|---|
-| 1 | OpenRouter (`openrouter`) | `minimax/minimax-m3.1-flash:free` → `poolside/laguna-s-2.1:free` → `thinkingmachines/inkling-small:free` → `inclusionai/ling-3.1-flash` | `OPENROUTER_API_KEY` | first — one-key breadth (owner order 2026-09-06); the head is an explicit `:free` id, because a billing failure parks the whole entry and then serves its head — a head that needs credits answers 402 on an empty account (measured 2026-10-20) and the switch lands on a model that cannot serve either, so the paid id sits last; the `:free` rotation is burst-only ≈50 req/day without credits, so heavy fallback days burn this budget first and fall through below |
+| 1 | OpenRouter (`openrouter`) | `openrouter/free` → `inclusionai/ling-3.1-flash` | `OPENROUTER_API_KEY` | first — one-key breadth (owner order 2026-09-06); the head is OpenRouter's **Free Models Router** (`openrouter/free` — the provider's own id for "any free model"), because a billing failure parks the whole entry and then serves its head — a head that needs credits answers 402 on an empty account (measured 2026-10-20) and the switch lands on a model that cannot serve either, so the paid id sits last; one id that always resolves to a free model, where a hand-kept list of `:free` ids rots (the chain's `minimax/minimax-m3:free` is gone from the catalog) |
 | 2 | Groq (`groq`) | `llama-3.3-70b-versatile` | `GROQ_API_KEY` | workhorse — absorbs sustained load |
 | 3 | Gemini (`google`, native built-in) | `gemini-3.1-flash-lite` → escalation `gemini-3.1-pro-preview` | `GEMINI_API_KEY` | last |
 
