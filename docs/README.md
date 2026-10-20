@@ -23,3 +23,4 @@ Map of the documentation in this repo. Plans and research records live alongside
 - [work/](work/), session work logs.
 - [Aborting delegation wait timeouts ADR](work/2026-10-06-aborting-delegation-wait-timeouts-adr.md), cancellation scope, compatibility, and timeout races.
 - [MiniCPM-V-4.7-1B on a Mac](work/2026-10-20-minicpmv-4-7-1b-kit/README.md), MLX conversions with a runnable script, what MTPLX's format is and why the multimodal checkpoint cannot be converted for it, and which runtime takes which format.
+- [Shared-checkout branch rewind](work/2026-10-20-shared-checkout-branch-rewind.md), what a `git reset` in the shared main checkout does to another session's branch, and how to recover it.
