@@ -200,7 +200,7 @@ What does work is exporting the **text tower**, which is a Qwen3.5 text model
 tensor-for-tensor while skipping the vision tower:
 
 ```bash
-docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/export_mtplx_textonly.py <src-mlx-dir> <dst-dir>
+python3 docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/export_mtplx_textonly.py <src-mlx-dir> <dst-dir>
 ```
 
 That keeps only the `language_model.*` tensors — **513 of 972** from an affine-4bit source
@@ -235,7 +235,7 @@ KIT=docs/work/2026-10-20-minicpmv-4-7-1b-kit
 $KIT/scripts/convert_minicpmv47.sh
 
 # the MTPLX text-only export on its own
-$KIT/scripts/export_mtplx_textonly.py <src-mlx-dir> <dst-dir>
+python3 $KIT/scripts/export_mtplx_textonly.py <src-mlx-dir> <dst-dir>
 
 # every finding pointer in the three records resolves, and every grade marker is in the closed set
 python3 $KIT/scripts/check_record_refs.py "docs/work/2026-10-20-*.md"

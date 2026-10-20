@@ -377,7 +377,7 @@ if __name__ == "__main__":
 The block above is the script verbatim, and it now lives in the repository at
 `docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/export_mtplx_textonly.py`
 (the copy that was run here was `/tmp/export_mtplx_textonly.py`, so the two can be diffed). Usage:
-`python export_mtplx_textonly.py <src-mlx-dir> <dst-dir>` then
+`python3 export_mtplx_textonly.py <src-mlx-dir> <dst-dir>` then
 `mtplx run --model <dst-dir> --prompt 'hi' --reasoning off`.
 
 **Evidence:** script run as
