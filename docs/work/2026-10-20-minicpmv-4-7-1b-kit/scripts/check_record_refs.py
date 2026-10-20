@@ -33,8 +33,13 @@ GRADE_SLIP = re.compile(r"\b(INFERIFIED|UNVERIFED|MEASURE|MEASUREMENT|READS|READ
 # cited source. They are guarded so the mistake cannot come back unnoticed.
 KNOWN_WRONG = [
     (
-        re.compile(r"packs each visual patch into a", re.I),
+        # any phrasing of the inverted claim, not just the one that was written before
+        re.compile(r"patch(es)?\s+into\s+an?\s+[^.]{0,24}block of tokens", re.I),
         "inverted: one token COVERS a 4x4 block of patches at 16x, it does not expand into one",
+    ),
+    (
+        re.compile(r"each (visual )?patch (is |becomes )?(packed|mapped|expanded)", re.I),
+        "inverted: one token COVERS a block of patches, it does not expand a patch into tokens",
     ),
     (
         re.compile(r"divides the same target size by that factor", re.I),
