@@ -136,14 +136,68 @@ function providerMessage(body: string): string | undefined {
 }
 
 /**
- * The reason a billing failure names: the status plus the provider's own words. The raw
+ * The reason a provider failure names: the status plus the provider's own words. The raw
  * JSON body is not a sentence a human reads, so the provider's `message` is preferred when
  * the body carries one.
  */
-function billingReasonText(errorMessage: string): string {
+function providerReasonText(errorMessage: string): string {
   const { status, body } = parseProviderError(errorMessage);
   const message = providerMessage(body) ?? body;
   return `${status ?? "?"}: ${message}`.slice(0, 160);
+}
+
+// ------------------------------------------------- model-unavailable (provider rejection)
+
+/** The machine codes providers use for "this model id cannot be used" (measured 2026-10-20). */
+const MODEL_UNAVAILABLE_CODES = new Set([
+  "model_not_supported",
+  "model_not_found",
+  "model_not_exist",
+  "invalid_model",
+]);
+
+/** The wordings providers use for the same rejection. */
+const MODEL_UNAVAILABLE_WORDINGS = [
+  /model[^.]{0,80}?\b(?:is not supported|isn't supported|not supported|not found|does not exist|doesn't exist|is not available|is unavailable)\b/i,
+  /\bunknown model\b/i,
+  /\bno api key found for\b/i,
+];
+
+/** The error codes a provider body carries, at the top level or under `error`. */
+function providerErrorCodes(body: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return [];
+  }
+  if (typeof parsed !== "object" || parsed === null) return [];
+  const record = parsed as { code?: unknown; type?: unknown; error?: { code?: unknown; type?: unknown } };
+  const codes = [record.code, record.type, record.error?.code, record.error?.type];
+  return codes.filter((code): code is string => typeof code === "string").map((code) => code.toLowerCase());
+}
+
+/**
+ * Whether a provider error says the MODEL ITSELF cannot be used — the provider rejected
+ * the id the child was told to run.
+ *
+ * This is the startup class arriving through the other channel: pi's own resolution error
+ * ("No API key found for …", "Model \"x\" not found") arrives on stderr with exit 1, while a
+ * provider that refuses the id answers inside the turn ("The requested model is not
+ * supported.", `model_not_found`) with exit 0 — the child never ran, and without this the
+ * delegation died silently.
+ *
+ * The rule is a machine code where the provider gives one, else the wording — a provider
+ * rejection is not a status the runner can key on (it is a 400, 404 or 401 depending on
+ * the provider and the account).
+ */
+export function isModelUnavailableFailure(errorMessage: string): boolean {
+  const { body } = parseProviderError(errorMessage);
+  for (const code of providerErrorCodes(body)) {
+    if (MODEL_UNAVAILABLE_CODES.has(code)) return true;
+  }
+  const message = providerMessage(body) ?? body;
+  return MODEL_UNAVAILABLE_WORDINGS.some((pattern) => pattern.test(message));
 }
 
 /** The value a tool-built argv passed as `--model <value>`, or undefined. */
@@ -167,14 +221,14 @@ interface RetryFailure {
 }
 
 /**
- * The child's LAST assistant turn's provider failure, when that turn ended on a 402.
+ * The child's LAST assistant turn's provider failure, when that turn failed.
  *
- * The LAST turn, not any 402 in the stream: with the router-fallback extension loaded in
- * the child, a 402 can be recovered in-child (the child switches model and carries on) —
- * a run that ended on a normal turn has an answer and must not be respawned. A last turn
- * that failed for another reason (a 500) is not a billing failure either.
+ * The LAST turn, not any failure in the stream: with the router-fallback extension loaded
+ * in the child, a failure can be recovered in-child (the child switches model and carries
+ * on) — a run that ended on a normal turn has an answer and must not be respawned. A last
+ * turn that failed for another reason is not a billing failure either.
  */
-function billingFailureReason(events: ChildEvent[]): string | undefined {
+function lastAssistantFailure(events: ChildEvent[]): string | undefined {
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i];
     if (event.type !== "message_end") continue;
@@ -183,9 +237,44 @@ function billingFailureReason(events: ChildEvent[]): string | undefined {
     if (message.stopReason !== "error") return undefined;
     const errorMessage = message.errorMessage;
     if (typeof errorMessage !== "string" || errorMessage === "") return undefined;
-    return isBillingExhaustionFailure(errorMessage) ? errorMessage : undefined;
+    return errorMessage;
   }
   return undefined;
+}
+
+/** The child's last assistant turn's provider failure, when that turn ended on a 402. */
+function billingFailureReason(events: ChildEvent[]): string | undefined {
+  const errorMessage = lastAssistantFailure(events);
+  return errorMessage !== undefined && isBillingExhaustionFailure(errorMessage) ? errorMessage : undefined;
+}
+
+/** Whether the child did any work — produced an answer or ran a tool. */
+function didAnyWork(events: ChildEvent[]): boolean {
+  return events.some((event) => {
+    if (event.type === "tool_execution_start") return true;
+    if (event.type !== "message_end") return false;
+    const message = event.message;
+    if (!message || message.role !== "assistant") return false;
+    return (message.content ?? []).some(
+      (part) => part?.type === "text" && typeof part.text === "string" && part.text !== "",
+    );
+  });
+}
+
+/**
+ * The child's last assistant turn's provider failure, when the provider rejected the MODEL
+ * itself and the child never did any work.
+ *
+ * The no-work guard is what separates this from the billing arm: a provider refusal that
+ * reaches a child which already produced output is a failure of the FALLBACK chain, not of
+ * the child's own model, and respawning would repeat that work.
+ */
+function modelUnavailableReason(events: ChildEvent[]): string | undefined {
+  const errorMessage = lastAssistantFailure(events);
+  if (errorMessage === undefined) return undefined;
+  if (!isModelUnavailableFailure(errorMessage)) return undefined;
+  if (didAnyWork(events)) return undefined;
+  return errorMessage;
 }
 
 // ------------------------------------------------------------------ log tee seam
@@ -653,8 +742,10 @@ export class DelegationRunner {
       return { cls: "model-startup", reason: (firstNonEmptyLine(state.rawStderr) ?? "model startup failure").slice(0, 160) };
     }
     const billing = billingFailureReason(state.events);
-    if (billing === undefined) return undefined;
-    return { cls: "billing", reason: billingReasonText(billing) };
+    if (billing !== undefined) return { cls: "billing", reason: providerReasonText(billing) };
+    const unavailable = modelUnavailableReason(state.events);
+    if (unavailable !== undefined) return { cls: "model-startup", reason: providerReasonText(unavailable) };
+    return undefined;
   }
 
   /** Respawn ONCE on the fallback argv under the same run id: flush attempt-1's output to the

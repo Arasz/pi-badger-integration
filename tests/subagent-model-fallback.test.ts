@@ -32,6 +32,7 @@ import {
   DelegationRunner,
   isBillingExhaustionFailure,
   isModelStartupFailure,
+  isModelUnavailableFailure,
   type DelegationNote,
   type LogSinkFactory,
   type RunRequest,
@@ -680,6 +681,99 @@ describe("DelegationRunner — billing (402) fallback retry", () => {
     h.children[1]!.exit(0, null);
     const record = await done;
     expect(record.modelFallback).toContain("requires more credits");
+  });
+});
+
+// ------------------------------------------------------------------ model rejection (provider) retry
+
+/** The provider refusals measured on 2026-10-20 — the model id the child was told to run. */
+const MODEL_NOT_SUPPORTED = '400 {"error":{"message":"The requested model is not supported.","code":"model_not_supported","param":"model","type":"invalid_request_error"}}';
+const MODEL_NOT_FOUND = '404: {"message":"The model `llama-3.3-70b-versatile` does not exist or you do not have access to it.","type":"invalid_request_error","code":"model_not_found"}';
+const MODEL_NOT_SUPPORTED_PLAIN = '400 {"detail":"The \'gpt-5.2\' model is not supported when using Codex with a ChatGPT account."}';
+
+describe("isModelUnavailableFailure", () => {
+  test("matches the provider's machine code", () => {
+    expect(isModelUnavailableFailure(MODEL_NOT_SUPPORTED)).toBe(true);
+    expect(isModelUnavailableFailure(MODEL_NOT_FOUND)).toBe(true);
+  });
+
+  test("matches the provider's wording when it gives no code", () => {
+    expect(isModelUnavailableFailure(MODEL_NOT_SUPPORTED_PLAIN)).toBe(true);
+  });
+
+  test("rejects failures that are not about the model", () => {
+    // Failure mode: the wording list widened into any "not supported" text. Mutation: drop
+    // the "model" requirement → this test must redden.
+    expect(isModelUnavailableFailure('400 {"error":{"message":"This tool is not supported"}}')).toBe(false);
+    expect(isModelUnavailableFailure('401 {"error":{"message":"Invalid API key"}}')).toBe(false);
+    expect(isModelUnavailableFailure(PAYMENT_REQUIRED_BODY)).toBe(false);
+    expect(isModelUnavailableFailure("")).toBe(false);
+  });
+});
+
+describe("DelegationRunner — model rejection (provider) fallback retry", () => {
+  test("a child whose model the provider rejects respawns on the parent model", async () => {
+    // The startup class through the OTHER channel: pi's own resolution error arrives on
+    // stderr with exit 1 (caught today), a provider that refuses the id answers inside the
+    // turn with exit 0 — the child never ran, and the delegation used to die silently.
+    // Failure mode: the arm does not exist → this test must redden.
+    const h = makeRunner();
+    const done = h.runner.run(retryRequest({ fallbackArgs: FALLBACK_ARGS })).done;
+
+    h.children[0]!.emitEvent(failedTurn(MODEL_NOT_SUPPORTED));
+    h.children[0]!.exit(0, null);
+
+    expect(h.children).toHaveLength(2);
+    expect(h.spawnedArgv[1]).toEqual(FALLBACK_ARGS);
+
+    h.children[1]!.emitEvent(assistantEnd("ship it"));
+    h.children[1]!.exit(0, null);
+
+    const record = await done;
+    expect(record.state).toBe("completed");
+    expect(record.modelFallback).toContain("was rejected");
+    expect(record.modelFallback).toContain("not supported");
+  });
+
+  test("a rejection with no fallback argv does not respawn", async () => {
+    // Failure mode: the missing-fallback guard dropped → this test must redden.
+    const h = makeRunner();
+    const done = h.runner.run(retryRequest()).done;
+
+    h.children[0]!.emitEvent(failedTurn(MODEL_NOT_SUPPORTED));
+    h.children[0]!.exit(0, null);
+
+    await done;
+    expect(h.children).toHaveLength(1);
+  });
+
+  test("a child that already worked is not respawned", async () => {
+    // The provider refusal reached a child that had already produced output: the run has an
+    // answer, so a respawn would repeat its work. Failure mode: the "no work" guard dropped
+    // → this test must redden.
+    const h = makeRunner();
+    const done = h.runner.run(retryRequest({ fallbackArgs: FALLBACK_ARGS })).done;
+
+    h.children[0]!.emitEvent(assistantEnd("half an answer"));
+    h.children[0]!.emitEvent(failedTurn(MODEL_NOT_SUPPORTED));
+    h.children[0]!.exit(0, null);
+
+    await done;
+    expect(h.children).toHaveLength(1);
+  });
+
+  test("a last turn that failed for another reason does not respawn", async () => {
+    // Failure mode: the search skips a non-rejection last error and keeps looking backwards
+    // for an earlier rejection → this test must redden.
+    const h = makeRunner();
+    const done = h.runner.run(retryRequest({ fallbackArgs: FALLBACK_ARGS })).done;
+
+    h.children[0]!.emitEvent(failedTurn(MODEL_NOT_SUPPORTED));
+    h.children[0]!.emitEvent(failedTurn('500: {"error":{"message":"internal error"}}'));
+    h.children[0]!.exit(0, null);
+
+    await done;
+    expect(h.children).toHaveLength(1);
   });
 });
 
