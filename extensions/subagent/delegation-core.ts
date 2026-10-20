@@ -39,6 +39,10 @@ export interface ChildMessage {
   role?: string;
   content?: Array<{ type?: string; text?: string }>;
   usage?: ChildUsage;
+  /** How the assistant turn ended ("stop", "error", "aborted"). */
+  stopReason?: string;
+  /** The provider failure pi folded into the turn, verbatim ("<status>: <body>"). */
+  errorMessage?: string;
 }
 
 /**

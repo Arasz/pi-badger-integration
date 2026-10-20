@@ -113,6 +113,16 @@ path. Without either deadline there is no wall-clock limit. The inactivity watch
 automatic: a child that emits no stream events for 10 minutes (default) is aborted and
 settles as `aborted (lost)`.
 
+**One retry, on the parent model.** A child that fails on its model is respawned **once**
+under the same run id on the **parent (session) model** — the retry is not a second
+delegation (one log header, one exit line, one result note). Two failures arm it: the
+persona's `model:` pin (or its `level:`-resolved id) could not **start** the child
+(unknown provider, no API key, ambiguous model), and the provider answered **402** — the
+account is out of credits — which is an API error inside a live child, so it arrives in
+the child's event stream rather than on its stderr. The respawn is never silent: the
+reason (the rejected model, the 402) rides the result note and the card verdict, and the
+retry fires at most once per run.
+
 Checking on delegations:
 
 - **`delegate` tool — management actions** (LLM-facing; pass `action` explicitly — a call without

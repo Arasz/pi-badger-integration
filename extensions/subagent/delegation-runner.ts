@@ -81,10 +81,67 @@ export function isModelStartupFailure(rawStderr: string): boolean {
   return MODEL_STARTUP_FAILURE_RE.test(rawStderr);
 }
 
+// ------------------------------------------------- billing exhaustion (402) signature
+
+/** `"<status>: <body>"` — the `formatProviderError` no-prefix shape. */
+const STATUS_PREFIX = /^\s*(\d{3})\s*:/;
+
+/** `"<provider> (<status>): <body>"` — the `formatProviderError` prefixed shape. */
+const PROVIDER_STATUS_PREFIX = /^\s*[A-Za-z][\w+.~-]*(?:\s+[A-Za-z][\w+.~-]*)*\s*\((\d{3})\)\s*:/;
+
+/** The status a provider error carries, provider-prefixed shape first. */
+function parseStatusPrefix(text: string): number | undefined {
+  const provider = PROVIDER_STATUS_PREFIX.exec(text);
+  if (provider) return Number(provider[1]);
+  const bare = STATUS_PREFIX.exec(text);
+  return bare ? Number(bare[1]) : undefined;
+}
+
+/**
+ * Whether a provider error is a billing exhaustion (HTTP 402) — the failure the parent
+ * model can still answer, because the child's model ran out of credits.
+ *
+ * The rule is the STATUS, not the billing wording: pi folds a provider error into
+ * `formatProviderError`'s "<status>: <body>" shape, and a 402 is unambiguous (a 401 is
+ * auth, a 429 is a throttle — neither is fixed by another model). This mirrors the
+ * status-prefix rule of the router-fallback core
+ * (`extensions/router-fallback/router-fallback-core.ts`); the copy exists because each
+ * extension ships as its own package and cannot import the sibling.
+ */
+export function isBillingExhaustionFailure(errorMessage: string): boolean {
+  return parseStatusPrefix(errorMessage) === 402;
+}
+
 /** The value a tool-built argv passed as `--model <value>`, or undefined. */
 function modelFlagValue(args: string[]): string | undefined {
   const index = args.indexOf("--model");
   return index >= 0 && index + 1 < args.length ? args[index + 1] : undefined;
+}
+
+/** The first line with content — the reason a startup failure names. */
+function firstNonEmptyLine(text: string): string | undefined {
+  return text.split("\n").find((line) => line.trim().length > 0);
+}
+
+/**
+ * The child's LAST assistant turn's provider failure, when that turn ended on a 402.
+ *
+ * The LAST turn, not any 402 in the stream: with the router-fallback extension loaded in
+ * the child, a 402 can be recovered in-child (the child switches model and carries on) —
+ * a run that ended on a normal turn has an answer and must not be respawned.
+ */
+function billingFailureReason(events: ChildEvent[]): string | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event.type !== "message_end") continue;
+    const message = event.message;
+    if (!message || message.role !== "assistant") continue;
+    if (message.stopReason !== "error") return undefined;
+    const errorMessage = message.errorMessage;
+    if (typeof errorMessage !== "string" || errorMessage === "") return undefined;
+    return isBillingExhaustionFailure(errorMessage) ? errorMessage : undefined;
+  }
+  return undefined;
 }
 
 // ------------------------------------------------------------------ log tee seam
@@ -496,11 +553,15 @@ export class DelegationRunner {
       state.buffer = "";
       this.handleLine(state, tail);
     }
-    if (!state.settled && this.shouldRetryOnModelFailure(state, code, signal)) {
-      // f: 2026-09-02: the persona's model pin failed to START (the d-324 class) — respawn
-      // once on the fallback argv under the same run id instead of failing the delegation.
-      this.beginFallbackRetry(state);
-      return;
+    if (!state.settled) {
+      const reason = this.retryReason(state, code, signal);
+      if (reason !== undefined) {
+        // The child failed on its model — the persona's pin could not START it (the d-324
+        // class) or the provider ran out of credits (a 402). Respawn once on the fallback
+        // argv under the same run id instead of failing the delegation.
+        this.beginFallbackRetry(state, reason);
+        return;
+      }
     }
     this.writeTeeStreams(state); // final output belongs to the log even when already settled
     if (!state.settled) this.settleExit(state, code, signal);
@@ -514,28 +575,41 @@ export class DelegationRunner {
 
   // ------------------------------------------------------ model-pin fallback (f: 2026-09-02)
 
-  /** The retry arms only when ALL hold: a fallback argv exists and differs, the retry is not
-   * spent, the child died a natural exit-1, no PROGRESS event was parsed (pi emits a session
-   * header on stdout BEFORE resolving auth — the d-324 log proves it — so "no events" would
-   * never fire), and the stderr matches a model-startup failure signature. Ordinary task
-   * stderr never retries. */
-  private shouldRetryOnModelFailure(state: RunState, code: number | null, signal: string | null): boolean {
+  /** The ONE retry decision: does this failed child respawn on the parent model, and why?
+   *
+   * Two failure classes arm it, each with its own guards:
+   *  - a model STARTUP failure (the d-324 class): the child died a natural exit-1 with the
+   *    startup signature on stderr and no PROGRESS event parsed (pi emits a session header
+   *    on stdout BEFORE resolving auth — the d-324 log proves it — so "no events" would
+   *    never fire). Ordinary task stderr never retries.
+   *  - a BILLING failure (HTTP 402): the child's LAST assistant turn ended on a provider
+   *    402. That is an API error inside a LIVE child — it exits 0 and its stderr says
+   *    nothing — so neither the exit code nor a progress event can rule it out, and the
+   *    parent's model may still serve the task.
+   *
+   * Shared guards: a fallback argv must exist and differ from the primary argv, the retry
+   * fires at most once, and a child killed by a signal is never respawned.
+   *
+   * Returns the reason text (recorded on `modelFallback`) or undefined for no respawn. */
+  private retryReason(state: RunState, code: number | null, signal: string | null): string | undefined {
     const fallbackArgs = state.request.fallbackArgs;
-    if (!fallbackArgs || state.retried) return false;
-    if (JSON.stringify(fallbackArgs) === JSON.stringify(state.request.args)) return false;
-    if (code !== 1 || signal !== null) return false;
-    if (state.events.some((event) => isProgressEvent(event))) return false;
-    return isModelStartupFailure(state.rawStderr);
+    if (!fallbackArgs || state.retried) return undefined;
+    if (JSON.stringify(fallbackArgs) === JSON.stringify(state.request.args)) return undefined;
+    if (signal !== null) return undefined;
+    if (code === 1 && !state.events.some((event) => isProgressEvent(event)) && isModelStartupFailure(state.rawStderr)) {
+      return (firstNonEmptyLine(state.rawStderr) ?? "model startup failure").slice(0, 160);
+    }
+    const billing = billingFailureReason(state.events);
+    return billing !== undefined ? billing.slice(0, 160) : undefined;
   }
 
   /** Respawn ONCE on the fallback argv under the same run id: flush attempt-1's output to the
    * tee, reset the per-attempt buffers, record the reason on the record, and re-wire + re-arm.
    * The log keeps ONE run header and gets ONE exit line — the retry is not a second run, so
    * reconstruction and accounting see exactly what they always saw. */
-  private beginFallbackRetry(state: RunState): void {
+  private beginFallbackRetry(state: RunState, reason: string): void {
     const request = state.request;
     const fallbackArgs = request.fallbackArgs!;
-    const reason = (state.rawStderr.split("\n").find((line) => line.trim().length > 0) ?? "model startup failure").slice(0, 160);
     const pin = modelFlagValue(request.args);
     const target = modelFlagValue(fallbackArgs);
     state.retried = true;

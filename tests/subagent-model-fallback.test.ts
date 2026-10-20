@@ -18,11 +18,19 @@
  *   - `DelegationRunner`: the one retry, its guards, and the recorded reason.
  *   - `DelegationRegistry`: the StartRequest pass-through.
  *   - `notificationVerdict` (card): the fallback clause on the verdict line.
+ *
+ * The SAME retry also covers the billing class: a child that ends on a provider 402
+ * (out of credits) is an API error inside a LIVE child — the 402 arrives in the child's
+ * stdout event stream (an assistant turn with `stopReason: "error"`), the child exits 0,
+ * and its stderr says nothing about it. The startup arm cannot see that (it reads stderr
+ * and demands exit 1), so the billing arm reads the child's last assistant turn instead.
+ * The block at the end of this file pins that arm at every seam it can break.
  */
 
 import { describe, expect, test } from "bun:test";
 import {
   DelegationRunner,
+  isBillingExhaustionFailure,
   isModelStartupFailure,
   type DelegationNote,
   type LogSinkFactory,
@@ -292,6 +300,204 @@ describe("DelegationRunner — model startup fallback retry", () => {
     const record = await done;
     expect(h.children).toHaveLength(2);
     expect(record.exitCode).toBe(0);
+  });
+});
+
+// ------------------------------------------------------------------ billing (402) retry
+
+/** The provider 402, folded into the child's assistant turn — the shape pi's
+ * `formatProviderError` produces ("<status>: <body>"). */
+const PAYMENT_REQUIRED_BODY =
+  '402: {"message":"This request requires more credits, or fewer max_tokens.","code":402,' +
+  '"metadata":{"limit_source":"openrouter_credits"}}';
+
+/** The provider-prefixed shape ("<provider> (<status>): <body>"). */
+const PROVIDER_PREFIXED_402 = 'OpenRouter (402): {"message":"Insufficient credits.","code":402}';
+
+/** One failed assistant turn carrying an error message — the child's turn boundary. */
+function failedTurn(errorMessage: string): Record<string, unknown> {
+  return {
+    type: "message_end",
+    message: { role: "assistant", content: [], stopReason: "error", errorMessage },
+  };
+}
+
+describe("isBillingExhaustionFailure", () => {
+  test("matches the 402 status prefix, in both provider-error shapes", () => {
+    expect(isBillingExhaustionFailure(PAYMENT_REQUIRED_BODY)).toBe(true);
+    expect(isBillingExhaustionFailure(PROVIDER_PREFIXED_402)).toBe(true);
+  });
+
+  test("rejects every other status — a 401 (auth) or 429 (throttle) is not a billing failure", () => {
+    // Failure mode: the status check widened to any 4xx/5xx. Mutation: accept any 3-digit
+    // status → this test must redden.
+    expect(isBillingExhaustionFailure('401: {"message":"Invalid API key"}')).toBe(false);
+    expect(isBillingExhaustionFailure('429: {"message":"Rate limit exceeded"}')).toBe(false);
+    expect(isBillingExhaustionFailure('500: {"message":"internal error"}')).toBe(false);
+    expect(isBillingExhaustionFailure("")).toBe(false);
+  });
+});
+
+describe("DelegationRunner — billing (402) fallback retry", () => {
+  test("a child that ends on a 402 respawns on the parent model and completes there", async () => {
+    // Failure mode: the 402 arm does not exist at all — the run settles on the dead child.
+    // Mutation: delete the billing arm → this test must redden.
+    const h = makeRunner();
+    const done = h.runner.run(retryRequest({ fallbackArgs: FALLBACK_ARGS })).done;
+
+    h.children[0]!.emitEvent(failedTurn(PAYMENT_REQUIRED_BODY));
+    h.children[0]!.exit(0, null);
+
+    expect(h.children).toHaveLength(2);
+    expect(h.spawnedArgv[1]).toEqual(FALLBACK_ARGS);
+
+    h.children[1]!.emitEvent(assistantEnd("ship it"));
+    h.children[1]!.exit(0, null);
+
+    const record = await done;
+    expect(record.state).toBe("completed");
+    expect(record.exitCode).toBe(0);
+    expect(record.modelFallback).toContain("402");
+    expect(h.notes[0]!.modelFallback).toBe(record.modelFallback);
+  });
+
+  test("the 402 arm ignores the exit code and the progress guard", async () => {
+    // The 402 is an API error inside a LIVE child: it exits 0, and the child emitted a
+    // progress event before it. Failure mode: the startup arm's guards (exit 1, no progress
+    // event) applied to the billing arm. Mutation: demand code === 1 and no progress event
+    // for the 402 arm → this test must redden.
+    const h = makeRunner();
+    const done = h.runner.run(retryRequest({ fallbackArgs: FALLBACK_ARGS })).done;
+
+    h.children[0]!.emitEvent(assistantEnd("partial work"));
+    h.children[0]!.emitEvent(failedTurn(PAYMENT_REQUIRED_BODY));
+    h.children[0]!.exit(0, null);
+
+    expect(h.children).toHaveLength(2);
+    h.children[1]!.emitEvent(assistantEnd("ship it"));
+    h.children[1]!.exit(0, null);
+    await done;
+  });
+
+  test("the provider-prefixed 402 shape respawns too", async () => {
+    // Failure mode: only the bare "<status>: " shape is matched. Mutation: drop the
+    // provider-prefixed regex → this test must redden.
+    const h = makeRunner();
+    const done = h.runner.run(retryRequest({ fallbackArgs: FALLBACK_ARGS })).done;
+
+    h.children[0]!.emitEvent(failedTurn(PROVIDER_PREFIXED_402));
+    h.children[0]!.exit(0, null);
+
+    expect(h.children).toHaveLength(2);
+    h.children[1]!.emitEvent(assistantEnd("ship it"));
+    h.children[1]!.exit(0, null);
+    await done;
+  });
+
+  test("a non-billing failure does not respawn", async () => {
+    // Failure mode: the status check widened to any 4xx/5xx. Mutation: accept any status
+    // → this test must redden.
+    for (const errorMessage of ['401: {"message":"Invalid API key"}', '429: {"message":"Rate limit"}']) {
+      const h = makeRunner();
+      const done = h.runner.run(retryRequest({ fallbackArgs: FALLBACK_ARGS })).done;
+      h.children[0]!.emitEvent(failedTurn(errorMessage));
+      h.children[0]!.exit(0, null);
+      // Asserted before the await: a respawn here would leave the second child running and
+      // the run unsettled — the assertion must fail fast, not time out.
+      expect(h.children).toHaveLength(1);
+      await done;
+    }
+  });
+
+  test("a child that recovered from a 402 does not respawn", async () => {
+    // The in-child router-fallback can switch model and carry on: the run then ends on a
+    // NORMAL turn, and the 402 is history. Failure mode: "any 402 in the stream" instead of
+    // "the last assistant turn failed". Mutation: scan every event for a 402 → this test
+    // must redden.
+    const h = makeRunner();
+    const done = h.runner.run(retryRequest({ fallbackArgs: FALLBACK_ARGS })).done;
+
+    h.children[0]!.emitEvent(failedTurn(PAYMENT_REQUIRED_BODY));
+    h.children[0]!.emitEvent(assistantEnd("recovered on the fallback model"));
+    h.children[0]!.exit(0, null);
+
+    await done;
+    expect(h.children).toHaveLength(1);
+    expect(h.notes[0]!.answer).toBe("recovered on the fallback model");
+  });
+
+  test("a 402 without a fallback argv does not respawn", async () => {
+    // Failure mode: the missing-fallback guard dropped. Mutation: pass no fallbackArgs →
+    // this test must redden.
+    const h = makeRunner();
+    const done = h.runner.run(retryRequest()).done;
+
+    h.children[0]!.emitEvent(failedTurn(PAYMENT_REQUIRED_BODY));
+    h.children[0]!.exit(0, null);
+
+    await done;
+    expect(h.children).toHaveLength(1);
+  });
+
+  test("a 402 whose fallback argv equals the primary argv does not respawn", async () => {
+    // Failure mode: the identical-argv guard dropped (the respawn would change nothing).
+    // Mutation: drop the equality check → this test must redden.
+    const h = makeRunner();
+    const done = h.runner.run(retryRequest({ fallbackArgs: PRIMARY_ARGS })).done;
+
+    h.children[0]!.emitEvent(failedTurn(PAYMENT_REQUIRED_BODY));
+    h.children[0]!.exit(0, null);
+
+    await done;
+    expect(h.children).toHaveLength(1);
+  });
+
+  test("a 402 respawns at most once", async () => {
+    // Failure mode: the one-retry guard dropped. Mutation: remove the `retried` guard →
+    // this test must redden.
+    const h = makeRunner();
+    const done = h.runner.run(retryRequest({ fallbackArgs: FALLBACK_ARGS })).done;
+
+    h.children[0]!.emitEvent(failedTurn(PAYMENT_REQUIRED_BODY));
+    h.children[0]!.exit(0, null);
+    h.children[1]!.emitEvent(failedTurn(PAYMENT_REQUIRED_BODY));
+    h.children[1]!.exit(0, null);
+
+    const record = await done;
+    expect(h.children).toHaveLength(2);
+    expect(record.modelFallback).toContain("402");
+  });
+
+  test("the recorded reason names the pin, the 402 and the retried model", async () => {
+    // Failure mode: the reason is not recorded (the respawn would be silent). Mutation:
+    // record an empty reason → this test must redden.
+    const h = makeRunner();
+    const done = h.runner.run(retryRequest({ fallbackArgs: FALLBACK_ARGS })).done;
+
+    h.children[0]!.emitEvent(failedTurn(PAYMENT_REQUIRED_BODY));
+    h.children[0]!.exit(0, null);
+    h.children[1]!.emitEvent(assistantEnd("ship it"));
+    h.children[1]!.exit(0, null);
+
+    const record = await done;
+    expect(record.modelFallback).toContain("opus");
+    expect(record.modelFallback).toContain("402");
+    expect(record.modelFallback).toContain("openrouter/z-ai/glm-5.3-flash");
+  });
+
+  test("a child killed by a signal does not respawn", async () => {
+    // Failure mode: the signal guard dropped — a killed child would be respawned as if it
+    // had failed on its model. Mutation: drop the `signal !== null` guard → this test must
+    // redden.
+    const h = makeRunner();
+    const done = h.runner.run(retryRequest({ fallbackArgs: FALLBACK_ARGS })).done;
+
+    h.children[0]!.emitEvent(failedTurn(PAYMENT_REQUIRED_BODY));
+    h.children[0]!.exit(1, "SIGTERM");
+
+    const record = await done;
+    expect(h.children).toHaveLength(1);
+    expect(record.state).toBe("aborted");
   });
 });
 
