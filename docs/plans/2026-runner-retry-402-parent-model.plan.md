@@ -2,6 +2,19 @@
 
 > Task: `pbi-runner-retry-402-parent-model`. Loop: low. Research record:
 > `docs/plans/2026-runner-retry-402-parent-model.research.md` (cited as R§n below).
+>
+> **As shipped** (PR #59, plus the test-only PR #60). Two refinements the review round forced
+> over the design below, and one the plan left open:
+>
+> - `beginFallbackRetry` takes a `RetryFailure` (the class **and** the reason), not the reason
+>   alone — the two classes must read differently on the card ("was rejected" vs "hit a
+>   provider billing failure"), so the class travels with the reason.
+> - the respawn marks an **attempt boundary** (`state.attemptStart`): the settled answer is the
+>   respawned attempt's, never the failed attempt's partial text. The plan's D1 (respawn even
+>   when the child had produced output) stands, and the duplication of side effects is
+>   documented in the extension catalog.
+> - D1 is decided: respawn even when the child produced output — one respawn, from the start,
+>   under the same run id.
 
 **Objective.** A delegated child that ends on a provider **402** (billing exhaustion) respawns
 **once** on the **parent (session) model** — the machinery that already exists, one decision
