@@ -19,8 +19,8 @@ claim (path:line, a doc URL, a spec section) · `[INFERRED]` = reasoned from the
 memory, macOS 27.0.1; MTPLX 2.12.2 (mlx 0.32.2, mlx-lm 0.31.3, Python 3.14.5) and mlx-vlm 0.7.9
 on Python 3.15.0 (mlx 0.32.4). Each finding quotes its own command.
 
-**Reproduce:** `scripts/convert_minicpmv47.sh` (in the sibling record's directory) builds the
-checkpoints and this export; `scripts/export_mtplx_textonly.py <src> <dst>` does the export on its
+**Reproduce:** `docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh` (in the kit folder beside the
+records) builds the checkpoints and this export; `docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/export_mtplx_textonly.py <src> <dst>` does the export on its
 own; F17 is that script re-run from a clean machine state.
 
 ## Findings
@@ -453,7 +453,7 @@ its base."). `mtplx run` on the freshly exported directory answered "Good mornin
 51.14 tok/s. The recipe is self-contained: no state from the earlier session was needed.
 
 **Evidence:** `VENV=/tmp/recheck-venv OUT_ROOT=/tmp/recheck-out FORMATS=bf16 bash
-scripts/convert_minicpmv47.sh` (run from
+docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh` (run from
 `docs/work/2026-10-20-minicpmv-4-7-1b-kit/`) → outputs `MiniCPM-V-4.7-1B-bf16` (3.0 GB)
 and `MiniCPM-V-4.7-1B-textonly` (1.9 GB) plus the caption; then `mtplx run --model
 /tmp/recheck-out/MiniCPM-V-4.7-1B-textonly --prompt "Say hello in exactly three words."

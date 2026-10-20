@@ -462,10 +462,10 @@ by the table above, while the caption results in those findings stand untouched.
 **Evidence:** the source's own census, read with `mx.load` from the Hub snapshot
 `…/models--openbmb--MiniCPM-V-4.7-1B/snapshots/379f120c…/model.safetensors` in the mlx-vlm 0.7.9
 venv — 780 tensors, every one `mlx.core.bfloat16`, 1554.5 M parameters; plus
-`scripts/convert_minicpmv47.sh` with `FORMATS="bf16 affine4 mxfp4 nvfp4 mxfp8"`,
+`docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh` with `FORMATS="bf16 affine4 mxfp4 nvfp4 mxfp8"`,
 `VENV=<fresh venv with mlx-vlm 0.7.9>`, `OUT_ROOT=/tmp/sz-out` on 2026-10-20, then
 `ls -l /tmp/sz-out/*/model.safetensors` (byte counts above) and the two exports run through
-`scripts/export_mtplx_textonly.py` ("tensors: kept 321, dropped 459" / "kept 513, dropped 459";
+`docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/export_mtplx_textonly.py` ("tensors: kept 321, dropped 459" / "kept 513, dropped 459";
 "weights 2.90 GiB -> 1.87 GiB" / "2.48 GiB -> 1.46 GiB"); the source size from
 `curl -sSIL https://huggingface.co/openbmb/MiniCPM-V-4.7-1B/resolve/379f120c2ff3588e6e06559ec6b9ec15cc05114e/model.safetensors`
 which answers in two hops and carries the size in both:
@@ -485,10 +485,10 @@ carries `content-length` — the same number either way. The revision comes from
 
 ## How to reproduce
 
-`scripts/convert_minicpmv47.sh` runs the whole chain — the environment, the five conversions, the
+`docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh` runs the whole chain — the environment, the five conversions, the
 MTPLX export and one caption per checkpoint — and was verified end to end on the machine above
 (a failed conversion now stops the run with exit 3 instead of being reported as built).
-`scripts/check_record_refs.py "docs/work/2026-10-20-*.md"` checks that every finding pointer in
+`docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/check_record_refs.py "docs/work/2026-10-20-*.md"` checks that every finding pointer in
 these three records resolves and that every grade marker is in the closed set.
 
 ## Still open
