@@ -463,9 +463,19 @@ venv — 780 tensors, every one `mlx.core.bfloat16`, 1554.5 M parameters; plus
 `scripts/export_mtplx_textonly.py` ("tensors: kept 321, dropped 459" / "kept 513, dropped 459";
 "weights 2.90 GiB -> 1.87 GiB" / "2.48 GiB -> 1.46 GiB"); the source size from
 `curl -sSIL https://huggingface.co/openbmb/MiniCPM-V-4.7-1B/resolve/379f120c2ff3588e6e06559ec6b9ec15cc05114e/model.safetensors`
-— which answers in two hops, and both carry the size: the **302** from the Hub carries
-`x-linked-size: 3109054480` (the LFS pointer) and the **200** from the CDN carries
-`content-length: 3109054480` — and the revision from
+which answers in two hops and carries the size in both:
+
+```
+HTTP/2 302
+x-linked-size: 3109054480
+location: https://us.aws.cdn.hf.co/xet-bridge-us/…&X-Xet-Cas-Uid=public&…
+
+HTTP/2 200
+content-length: 3109054480
+```
+
+The **302** from the Hub carries the LFS pointer's `x-linked-size`; the **200** from the CDN
+carries `content-length` — the same number either way. The revision comes from
 `https://huggingface.co/api/models/openbmb/MiniCPM-V-4.7-1B` → `"sha": "379f120c2ff3588e6e06559ec6b9ec15cc05114e"`.
 
 ## How to reproduce
