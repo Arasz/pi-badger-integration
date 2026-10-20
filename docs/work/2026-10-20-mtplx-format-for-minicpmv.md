@@ -772,7 +772,8 @@ weights, no extras.
 `intermediate_size`, `num_hidden_layers`, `num_attention_heads`, `rms_norm_eps`, `vocab_size`,
 `num_key_value_heads`, `max_position_embeddings`, the six `linear_*` sizes, `tie_word_embeddings`,
 `attention_bias`, `head_dim`, `full_attention_interval`, the MoE fields, `rope_parameters`,
-`partial_rotary_factor`, `rope_theta` and `rope_scaling`. The MiniCPM-V 4.7 `text_config` keys it
+`partial_rotary_factor`, `rope_theta` and `rope_scaling`. The dataclass declares **28 fields** in
+all, so that list is the complete set it can populate. The MiniCPM-V 4.7 `text_config` keys it
 does **not** consume are:
 
 | dropped key | value | effect |
