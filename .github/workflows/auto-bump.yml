@@ -10,6 +10,16 @@ name: auto-bump
 # would silently release nothing. release.yml stays as the twin for manual
 # VERSION pushes, which do trigger it.
 #
+# The bump lands as a PULL REQUEST, not as a push to main. main is protected by
+# a ruleset that requires the `test` status check, and a GITHUB_TOKEN push
+# triggers no workflow run — so a pushed bump commit can never carry that
+# check, and the push is rejected (GH013: "Required status check \"test\" is
+# expected"). A bump PR is the ordinary path: the required check runs on it,
+# the merge is the gate, and nothing is weakened to let a bot skip it. The
+# merge is performed by this job once the check passes; a GITHUB_TOKEN merge
+# triggers no workflow run either, which is why the tag and the release stay
+# in this job.
+#
 # net effect: merging without thinking about versions still cuts exactly one
 # patch release per change; thinking about versions overrides cleanly.
 
@@ -31,8 +41,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      # Pushing the bump commit needs `contents: write`. Scoped to this job.
+      # Pushing the bump branch and opening/merging its PR need `contents:
+      # write` and `pull-requests: write`. Scoped to this job.
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -95,43 +107,78 @@ jobs:
             exit 1
           fi
           NEXT="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
+
+          # The bump travels as a branch and a pull request: main's ruleset
+          # requires the `test` check, and only a PR can carry it.
+          BRANCH="chore/bump-$NEXT"
+          git checkout -b "$BRANCH"
           echo "$NEXT" > VERSION
           git add VERSION
           git commit -m "chore(release): bump to $NEXT"
+          git push origin "$BRANCH"
 
-          # A concurrent bump may have landed first: rebase, and if that
-          # conflicts the other run won — abort quietly instead of forking it.
-          # (An identical concurrent bump usually rebases to an empty commit,
-          # which the ahead-count below turns into a clean no-op.)
-          for _ in 1 2 3; do
-            if ! git pull --rebase -q; then
-              echo "Rebase conflicted — a concurrent bump won; standing down."
-              git rebase --abort || true
-              exit 0
+          PR_URL="$(gh pr create --base main --head "$BRANCH" \
+            --title "chore(release): bump to $NEXT" \
+            --body "Automated patch bump $CURRENT -> $NEXT. The ruleset requires the \`test\` check on everything that lands on main, and a GITHUB_TOKEN push triggers no workflow run, so the bump goes through a pull request like any other change.")"
+          PR="${PR_URL##*/}"
+          echo "Bump pull request: $PR_URL"
+
+          # Wait for the required check. `gh pr checks` exits 0 when every
+          # check passed, 8 while one is still pending, and 1 on a failure —
+          # a failure is terminal, so it stops the job instead of waiting out
+          # the timeout.
+          for _ in $(seq 1 60); do
+            set +e
+            CHECKS="$(gh pr checks "$PR" 2>&1)"
+            STATUS=$?
+            set -e
+            if [[ "$STATUS" == "0" ]]; then
+              break
             fi
-            if [[ "$(git rev-list --count origin/main..HEAD)" == "0" ]]; then
-              echo "Nothing to push — the bump already landed concurrently."
-              exit 0
+            if [[ "$STATUS" == "8" ]] || grep -qi "no checks reported" <<<"$CHECKS"; then
+              sleep 15
+              continue
             fi
-            if git push; then
-              echo "Bumped $CURRENT -> $NEXT."
+            echo "::error::the bump pull request's checks did not pass." >&2
+            echo "$CHECKS" >&2
+            exit 1
+          done
+          if [[ "${STATUS:-1}" != "0" ]]; then
+            echo "::error::the bump pull request's checks did not pass in time." >&2
+            exit 1
+          fi
+
+          # The merge is the gate: the ruleset has already seen the check pass.
+          # A squash keeps the bump one commit, like every other PR here.
+          gh pr merge "$PR" --squash --delete-branch
+
+          # Wait for the merge to land on main before tagging it: the tag must
+          # point at the commit that carries the new VERSION.
+          for _ in $(seq 1 30); do
+            git fetch -q origin main
+            if git show origin/main:VERSION 2>/dev/null | tr -d '[:space:]' | grep -qx "$NEXT"; then
               break
             fi
             sleep 5
           done
-          if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
-            echo "::error::bump committed but not pushed after 3 attempts." >&2
-            exit 1
-          fi
 
           # Tag + release the bump commit directly (see header: delegating to
-          # release.yml would silently do nothing on a token push). Same
-          # never-move semantics: an existing tag is a no-op, never `-f`.
+          # release.yml would silently do nothing on a token merge). Same
+          # never-move semantics: an existing tag is a no-op, never `-f`. The
+          # release is checked on its own, because a merge that does trigger
+          # release.yml can cut the same release from the other side.
           TAG="v$NEXT"
           if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
             echo "Tag $TAG already exists; skipping (idempotent no-op)."
           else
-            git tag "$TAG"
+            git fetch -q origin main
+            git tag "$TAG" origin/main
             git push origin "$TAG"
-            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; skipping (idempotent no-op)."
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes \
+              || gh release view "$TAG" >/dev/null 2>&1 \
+              || { echo "::error::could not create the release for $TAG." >&2; exit 1; }
           fi
