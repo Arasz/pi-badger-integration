@@ -53,7 +53,7 @@ Every row is a failure this investigation actually hit, with the fix that was me
 ## One command for everything
 
 ```bash
-scripts/convert_minicpmv47.sh
+docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh
 ```
 
 It creates the venv, installs `mlx-vlm==0.7.9`, makes the HF cache writable, converts the model
@@ -62,9 +62,10 @@ prove each one loads and sees the image. It stops at the first failure (exit 3) 
 reporting success over a checkpoint that was not built. Overrides:
 
 ```bash
-FORMATS="bf16 affine4" OUT_ROOT=~/models/mc47 VENV=~/venvs/mc47 scripts/convert_minicpmv47.sh
-DO_EXPORT=0 DO_VERIFY=0 scripts/convert_minicpmv47.sh      # conversions only
-scripts/convert_minicpmv47.sh --help
+KIT=docs/work/2026-10-20-minicpmv-4-7-1b-kit
+FORMATS="bf16 affine4" OUT_ROOT=~/models/mc47 VENV=~/venvs/mc47 $KIT/scripts/convert_minicpmv47.sh
+DO_EXPORT=0 DO_VERIFY=0 $KIT/scripts/convert_minicpmv47.sh      # conversions only
+$KIT/scripts/convert_minicpmv47.sh --help
 ```
 
 ## The conversions, one by one
@@ -199,7 +200,7 @@ What does work is exporting the **text tower**, which is a Qwen3.5 text model
 tensor-for-tensor while skipping the vision tower:
 
 ```bash
-scripts/export_mtplx_textonly.py <src-mlx-dir> <dst-dir>
+docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/export_mtplx_textonly.py <src-mlx-dir> <dst-dir>
 ```
 
 That keeps only the `language_model.*` tensors — **513 of 972** from an affine-4bit source
@@ -225,31 +226,41 @@ also prints a transformers warning about the tokenizer's regex pattern; it is no
 
 ## Reproduce and check
 
+All commands are written **from the repository root** and are copy-pasteable as they stand:
+
 ```bash
+KIT=docs/work/2026-10-20-minicpmv-4-7-1b-kit
+
 # the whole chain: environment, five conversions, the export, one caption per checkpoint
-scripts/convert_minicpmv47.sh
+$KIT/scripts/convert_minicpmv47.sh
 
 # the MTPLX text-only export on its own
-scripts/export_mtplx_textonly.py <src-mlx-dir> <dst-dir>
+$KIT/scripts/export_mtplx_textonly.py <src-mlx-dir> <dst-dir>
 
 # every finding pointer in the three records resolves, and every grade marker is in the closed set
-python3 scripts/check_record_refs.py "docs/work/2026-10-20-*.md"
+python3 $KIT/scripts/check_record_refs.py "docs/work/2026-10-20-*.md"
+
+# every cited line still says what the record claims (needs the pinned sources — see the script)
+python3 $KIT/scripts/check_citations.py "docs/work/2026-10-20-*.md"
 ```
+
+(The two checkers also locate the repository root themselves, so running them from inside the kit
+folder works too.)
 
 ## Files
 
-- `scripts/convert_minicpmv47.sh` — every conversion, the export, and the verification pass
-- `scripts/export_mtplx_textonly.py` — the MTPLX text-only export (verbatim in the MTPLX record's F13)
-- `scripts/check_citations.py` — re-reads the pinned sources (mlx-lm 0.31.3 from MTPLX's runtime
+- `docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh` — every conversion, the export, and the verification pass
+- `docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/export_mtplx_textonly.py` — the MTPLX text-only export (verbatim in the MTPLX record's F13)
+- `docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/check_citations.py` — re-reads the pinned sources (mlx-lm 0.31.3 from MTPLX's runtime
   venv, mlx-vlm 0.7.9 from a venv, MTPLX `main` unpacked) and verifies that every `file.py:NN`
   citation in the records still points at a real line, with the quoted fragment present there. Set
   the `SRC` map at the top of the script to wherever those live on your machine, then run:
 
   ```bash
-  python3 scripts/check_citations.py "docs/work/2026-10-20-*.md"
+  python3 docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/check_citations.py "docs/work/2026-10-20-*.md"
   ```
 
-- `scripts/check_record_refs.py` — prints every `F<n>` pointer in these records next to the finding it
+- `docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/check_record_refs.py` — prints every `F<n>` pointer in these records next to the finding it
   resolves to **and the record that finding lives in** (so a stale pointer from a renumber is
   visible, and a cross-record pointer is checked against the right file); lints the grade markers
   against the closed set {MEASURED, READ, INFERRED, UNVERIFIED}; prints the per-record and total
@@ -259,7 +270,7 @@ python3 scripts/check_record_refs.py "docs/work/2026-10-20-*.md"
   exits non-zero on any of those; run it after adding or moving a finding:
 
   ```bash
-  python3 scripts/check_record_refs.py "docs/work/2026-10-20-*.md"
+  python3 docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/check_record_refs.py "docs/work/2026-10-20-*.md"
   ```
 
 ## Related records

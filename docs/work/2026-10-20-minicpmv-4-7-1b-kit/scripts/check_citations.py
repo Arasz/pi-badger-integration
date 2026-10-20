@@ -58,6 +58,27 @@ def resolve(path: str) -> str | None:
     return os.path.join(SRC[root], path[len(root) :].lstrip("/"))
 
 
+def expand(pattern: str) -> list[str]:
+    """Expand a glob, falling back to the repository root.
+
+    The records live at the repo root, so `docs/work/…` only matches there; a reader who
+    runs the checker from inside this folder should not have to know that.
+    """
+    import glob as _glob
+    hits = sorted(_glob.glob(pattern))
+    if hits:
+        return hits
+    root = os.getcwd()
+    for _ in range(6):
+        if os.path.exists(os.path.join(root, ".git")):   # a dir or a worktree file
+            break
+        parent = os.path.dirname(root)
+        if parent == root:
+            break
+        root = parent
+    return sorted(_glob.glob(os.path.join(root, pattern)))
+
+
 def normalise(text: str) -> str:
     text = text.replace("\\n", " ").replace("python", " ")
     return re.sub(r"\s+", " ", text).strip()
@@ -69,10 +90,11 @@ def main(argv: list[str]) -> int:
         return 2
     paths: list[str] = []
     for arg in argv:
-        paths.extend(sorted(glob.glob(arg)) if any(c in arg for c in "*?[") else [arg])
+        paths.extend(expand(arg) if any(c in arg for c in "*?[") else [arg])
 
     total = range_ok = snippet_ok = no_snippet = unresolved = 0
     problems: list[tuple[str, str, str]] = []
+    missing_sources: set[str] = set()
 
     for path in paths:
         text = open(path, encoding="utf-8").read()
@@ -81,8 +103,15 @@ def main(argv: list[str]) -> int:
             last = int(last) if last else first
             full = resolve(cited)
             if not full or not os.path.isfile(full):
-                unresolved += 1
-                problems.append((path, f"{cited}:{first}-{last}", "file not found at the cited path"))
+                # a missing source tree is a setup gap, not a bad citation — say which
+                root = next((c for c in SRC if cited.startswith(c)), None)
+                if root and not os.path.exists(SRC[root]):
+                    missing_sources.add(root)
+                else:
+                    unresolved += 1
+                    problems.append(
+                        (path, f"{cited}:{first}-{last}", "file not found at the cited path")
+                    )
                 continue
             lines = open(full, encoding="utf-8", errors="replace").read().splitlines()
             if not (1 <= first <= len(lines) and last <= len(lines)):
@@ -111,10 +140,17 @@ def main(argv: list[str]) -> int:
     print(f"citations found: {total} (file and line range verified: {range_ok})")
     print(f"  quoted fragments verified at the cited line: {snippet_ok}; nothing to check: {no_snippet}")
     print(f"  unresolved paths: {unresolved}")
+    for root in sorted(missing_sources):
+        print(f"  note: the source tree for {root!r} is not present at {SRC[root]!r} — set it in this script")
     for path, cited, why in problems:
         print(f"  PROBLEM {path}: {cited} — {why}")
-    print("OK — every citation resolves" if not problems else f"{len(problems)} citation problem(s)")
-    return 0 if not problems else 1
+    if problems:
+        print(f"{len(problems)} citation problem(s)")
+    elif missing_sources:
+        print("INCOMPLETE — some citations were not checked (source tree missing above)")
+    else:
+        print("OK — every citation resolves")
+    return 0 if not problems and not missing_sources else 1
 
 
 if __name__ == "__main__":

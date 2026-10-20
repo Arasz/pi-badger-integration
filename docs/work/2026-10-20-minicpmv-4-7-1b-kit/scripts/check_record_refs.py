@@ -17,6 +17,7 @@ reference points at a finding that does not exist, or a grade marker is misspell
 from __future__ import annotations
 
 import glob
+import os
 import re
 import sys
 
@@ -44,6 +45,27 @@ KNOWN_WRONG = [
 ]
 
 
+def expand(pattern: str) -> list[str]:
+    """Expand a glob, falling back to the repository root.
+
+    The records live at the repo root, so `docs/work/…` only matches there; a reader who
+    runs the checker from inside this folder should not have to know that.
+    """
+    import glob as _glob
+    hits = sorted(_glob.glob(pattern))
+    if hits:
+        return hits
+    root = os.getcwd()
+    for _ in range(6):
+        if os.path.exists(os.path.join(root, ".git")):   # a dir or a worktree file
+            break
+        parent = os.path.dirname(root)
+        if parent == root:
+            break
+        root = parent
+    return sorted(_glob.glob(os.path.join(root, pattern)))
+
+
 def load(paths: list[str]) -> dict[str, dict[int, str]]:
     records: dict[str, dict[int, str]] = {}
     for path in paths:
@@ -60,9 +82,9 @@ def main(argv: list[str]) -> int:
     if not argv:
         print(__doc__)
         return 2
-    paths = sorted(glob.glob(argv[0]) if len(argv) == 1 else argv[0].split())
+    paths = expand(argv[0]) if len(argv) == 1 else argv[0].split()
     if not paths:
-        print("no records matched")
+        print("no records matched — run this from the repository (or pass an explicit path)")
         return 1
     records = load(paths)
     broken = 0
