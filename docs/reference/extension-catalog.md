@@ -639,6 +639,12 @@ the agent re-issues the call to get the raw output.
 subject: a read of a known path is not a query the bank can answer better than
 the file itself.
 
+The adapter also counts the gate's work for the footer: how many text searches
+the gate captured raw output for, and the share of them the agent fetched back
+with the `get-raw-text-search` skill. The segment is `[mem <captured> <fetched>%]`
+— twelve captures with nine fetched read `[mem 12 75%]` — and a session that
+captured nothing shows no segment at all.
+
 ## Footer statuses
 
 pi prints every extension status on one footer row, joined by a single space. Each extension
@@ -651,3 +657,4 @@ neighbours stay apart:
 | session-signals | `[delegate · architect 1m32s · qa 7s]` |
 | query-pipeline | `[query-pipeline · scoring 24 candidates · 2 batches]` |
 | rtk | `[rtk ⇄proxy · cmd 62% · proxy 18%]` |
+| ai-badger (memory gate) | `[mem 12 75%]` (captured searches · share fetched) |

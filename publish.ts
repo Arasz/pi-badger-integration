@@ -61,6 +61,7 @@ export const ADAPTER_FILES = [
 	"hook-bridge.ts",
 	"bus-prefilter.ts",
 	"bus-store.ts",
+	"mem-status.ts",
 	"package.json",
 	".ai-badger-capability-resources-discover",
 ] as const;
