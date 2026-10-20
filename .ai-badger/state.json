@@ -3,6 +3,13 @@
   "next": null,
   "completedTasks": [
     {
+      "id": "pbi-402-invariants-tests",
+      "title": "The 402 respawn's log, note and card invariants are pinned",
+      "pr": "https://github.com/Arasz/pi-badger-integration/pull/60",
+      "finished": "2026-10-20",
+      "summary": "A delegated review of the 402 arm (the second one, from a tool-using lane) found that the new test block never asserted the invariants the catalog paragraph now claims for the retry: one log header, one exit line, one note. Those assertions existed only for the startup path, and the card clause was tested through a hand-built note. Test-only follow-up: the 402 path now asserts the log header/exit-line/note count, the card verdict carries the cause and the retried model, and a double-402 run settles completed with no answer and the silent reason. Each new assertion is mutation-checked (a second log header, a reason-less card clause, a failed settle, a silent variant that never fires)."
+    },
+    {
       "id": "pbi-runner-retry-402-parent-model",
       "title": "A 402 respawns the delegation on the parent model",
       "pr": "https://github.com/Arasz/pi-badger-integration/pull/59",
