@@ -16,6 +16,9 @@ import {
   resolveSessionId,
   toClaudePayload,
   toClaudePostPayload,
+  takeGateContext,
+  withPreContext,
+  type GateContextStore,
   type GateOutcome,
   type PostOutcome,
 } from "../adjustments/adapter/hook-bridge.ts";
@@ -126,25 +129,13 @@ describe("post matchers also recognize mcp__-prefixed tool names by their bare s
     ]);
   });
 
-  test("the retired pi-mcp-tools single-underscore spelling still fires", () => {
+  test("pi's single-underscore MCP spelling fires too — that is what pi actually delivers", () => {
     expect(postCommandsForTool(commands, "mcp_ai-raccoon_memory_search")).toEqual([
       "python3 marker.py",
     ]);
     expect(postCommandsForTool(commands, "mcp_ai_raccoon_memory_search")).toEqual([
       "python3 marker.py",
     ]);
-  });
-
-  test("pi's built-in MCP spelling (dashes in the server name become `_`) fires the shipped matchers", () => {
-    const shipped = [
-      { matcher: "^(mcp__.+__|.+-)?memory_search$", command: "python3 gate.py" },
-      ...commands,
-    ];
-    expect(postCommandsForTool(shipped, "mcp__ai_raccoon__memory_search")).toEqual([
-      "python3 gate.py",
-      "python3 marker.py",
-    ]);
-    expect(postCommandsForTool(shipped, "mcp__ai_raccoon__memory_search_extra")).toEqual([]);
   });
 
   test("anchored semantics survive: a suffix match is not a substring match", () => {
@@ -803,5 +794,117 @@ describe("matchers follow Claude's documented semantics, judged by the shared Py
     expect(at("*", "Bash")).toBe(true);
     expect(at("web-fetch", "web-fetch")).toBe(true);
     expect(at("web-fetch", "web-fetcher")).toBe(false);
+  });
+});
+
+describe("a hook failure is labeled by its script, never its command", () => {
+  const SCRIPT = ".ai-badger/skills/test-economy/scripts/suite_economy_hook.py";
+  const guarded =
+    `if [ -f "\${CLAUDE_PROJECT_DIR}/.ai-badger/skills/test-economy/scripts/suite_economy_hook.py" ]; ` +
+    `then python3 "\${CLAUDE_PROJECT_DIR}/.ai-badger/skills/test-economy/scripts/suite_economy_hook.py"; ` +
+    `elif [ -f ".ai-badger/skills/test-economy/scripts/suite_economy_hook.py" ]; ` +
+    `then python3 ".ai-badger/skills/test-economy/scripts/suite_economy_hook.py"; ` +
+    `else echo '{"systemMessage": "ai-badger: .ai-badger/skills/test-economy/scripts/suite_economy_hook.py not found - hook skipped"}'; fi`;
+
+  test("the scaffolded guarded command reports its skill script, not the command", () => {
+    const label = bridge.hookLabel(guarded);
+    expect(label).toBe(SCRIPT);
+    expect(label).not.toContain("CLAUDE_PROJECT_DIR");
+    expect(label).not.toContain("if [ -f");
+  });
+
+  test("a vendored framework path reports its script", () => {
+    expect(
+      bridge.hookLabel(
+        `python3 "features/common/skills/prompt-markers/scripts/grounded_feedback_hook.py"`,
+      ),
+    ).toBe("features/common/skills/prompt-markers/scripts/grounded_feedback_hook.py");
+  });
+
+  test("a command with no recognizable script keeps its text minus the anchor", () => {
+    const label = bridge.hookLabel(`python3 "\${CLAUDE_PROJECT_DIR}/tools/custom.py"`);
+    expect(label).toBe(`python3 "tools/custom.py"`);
+    expect(label).not.toContain("CLAUDE_PROJECT_DIR");
+  });
+});
+
+describe("an aborted-before-spawn hook is a silent cancellation", () => {
+  test("a cancelled gate allows the call with no notice", () => {
+    expect(resolve([{ kind: "cancelled" }], { armed: false, hasUI: true })).toEqual({
+      action: "allow",
+      notices: [],
+      autoApproved: false,
+      context: [],
+    });
+  });
+
+  test("a cancelled post hook contributes no notice and no context", () => {
+    expect(resolvePost([{ kind: "cancelled" }])).toEqual({ notices: [], context: [] });
+  });
+
+  test("cancellation does not mask a real failure beside it", () => {
+    const gate = resolve(
+      [{ kind: "cancelled" }, { kind: "error", reason: "memory_gate.py exited 1" }],
+      { armed: false, hasUI: true },
+    );
+    expect(gate.notices).toHaveLength(1);
+    expect(gate.notices[0]).toContain("memory_gate.py exited 1");
+
+    const post = resolvePost([
+      { kind: "cancelled" },
+      { kind: "error", reason: "suite_economy_hook.py exited 1" },
+    ]);
+    expect(post.notices).toHaveLength(1);
+    expect(post.notices[0]).toContain("suite_economy_hook.py exited 1");
+  });
+});
+
+describe("the gate's context waits for its call's result, and only that call's", () => {
+  test("a stashed context is taken once, by its own call", () => {
+    const store: GateContextStore = new Map([["call-1", ["memory for call 1"]]]);
+    expect(takeGateContext(store, "call-1")).toEqual(["memory for call 1"]);
+    expect(store.size).toBe(0);
+    expect(takeGateContext(store, "call-1")).toEqual([]);
+  });
+
+  test("a call's nested calls travel with it", () => {
+    const store: GateContextStore = new Map([
+      ["call-1", ["memory for call 1"]],
+      ["call-1/0", ["memory for a nested call"]],
+      ["call-2", ["memory for call 2"]],
+    ]);
+    expect(takeGateContext(store, "call-1")).toEqual([
+      "memory for call 1",
+      "memory for a nested call",
+    ]);
+    expect(store.get("call-2")).toEqual(["memory for call 2"]);
+  });
+
+  test("a nested call's own result does not take the context — it waits for the parent", () => {
+    // pi DOES report a nested call's result (as a tool_result event), but that result
+    // never reaches the model: it goes to the calling tool. A nested call's context
+    // therefore stays stashed until the parent's result carries it.
+    const store: GateContextStore = new Map([["call-1/0", ["memory for a nested call"]]]);
+    expect(takeGateContext(store, "call-1/0")).toEqual([]);
+    expect(store.get("call-1/0")).toEqual(["memory for a nested call"]);
+    expect(takeGateContext(store, "call-1")).toEqual(["memory for a nested call"]);
+  });
+
+  test("another call's context is not taken", () => {
+    const store: GateContextStore = new Map([["call-1", ["memory for call 1"]]]);
+    expect(takeGateContext(store, "call-2")).toEqual([]);
+    expect(store.size).toBe(1);
+  });
+
+  test("no context leaves the tool's own result untouched", () => {
+    expect(withPreContext([{ type: "text", text: "out" }], [])).toBeUndefined();
+  });
+
+  test("the context is in front of the output it belongs to", () => {
+    const content = withPreContext([{ type: "text", text: "out" }], ["memory"]);
+    expect(content).toEqual([
+      { type: "text", text: "memory" },
+      { type: "text", text: "out" },
+    ]);
   });
 });
