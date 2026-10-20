@@ -254,13 +254,13 @@ folder works too.)
 - `docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/check_citations.py` — re-reads the pinned sources (mlx-lm 0.31.3 from MTPLX's runtime
   venv, mlx-vlm 0.7.9 from a venv, MTPLX `main` unpacked) and verifies that every `file.py:NN`
   citation in the records still points at a real line, with the quoted fragment present there. Set
-  the `SRC` map in `scripts/_paths.py` to wherever those live on your machine, then run:
+  the `SRC` map in `scripts/_kit_paths.py` to wherever those live on your machine, then run:
 
   ```bash
   python3 docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/check_citations.py "docs/work/2026-10-20-*.md"
   ```
 
-- `docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/_paths.py` — the shared path resolution the two
+- `docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/_kit_paths.py` — the shared path resolution the two
   checkers use (and the `SRC` map of pinned source trees)
 - `docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/check_record_refs.py` — prints every `F<n>` pointer in these records next to the finding it
   resolves to **and the record that finding lives in** (so a stale pointer from a renumber is

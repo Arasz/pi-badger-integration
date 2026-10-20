@@ -31,7 +31,7 @@ import sys
 
 sys.dont_write_bytecode = True   # keep the kit free of __pycache__
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _paths import SRC, expand  # noqa: E402
+from _kit_paths import SRC, expand  # noqa: E402
 
 
 CITATION = re.compile(r"([A-Za-z0-9_./]+\.py):(\d+)(?:-(\d+))?")

@@ -23,7 +23,7 @@ import sys
 
 sys.dont_write_bytecode = True   # keep the kit free of __pycache__
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _paths import expand  # noqa: E402
+from _kit_paths import expand  # noqa: E402
 
 HEADING = re.compile(r"^### (F\d+) — (.+?) \[(MEASURED|READ|INFERRED|UNVERIFIED)\]$", re.M)
 # a finding-shaped heading that does not carry a grade is a defect, not a heading to skip
