@@ -121,7 +121,9 @@ persona's `model:` pin (or its `level:`-resolved id) could not **start** the chi
 account is out of credits — which is an API error inside a live child, so it arrives in
 the child's event stream rather than on its stderr. The respawn is never silent: the
 reason (the rejected model, the 402) rides the result note and the card verdict, and the
-retry fires at most once per run.
+retry fires at most once per run. The respawn re-runs the task from the start, so a child
+that had already produced output repeats it on the parent model; the answer a run reports
+is always the respawned attempt's.
 
 Checking on delegations:
 

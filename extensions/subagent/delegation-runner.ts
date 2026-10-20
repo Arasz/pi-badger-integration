@@ -89,12 +89,18 @@ const STATUS_PREFIX = /^\s*(\d{3})\s*:/;
 /** `"<provider> (<status>): <body>"` — the `formatProviderError` prefixed shape. */
 const PROVIDER_STATUS_PREFIX = /^\s*[A-Za-z][\w+.~-]*(?:\s+[A-Za-z][\w+.~-]*)*\s*\((\d{3})\)\s*:/;
 
+/** The status and the body a provider error carries, in either `formatProviderError` shape. */
+function parseProviderError(text: string): { status: number | undefined; body: string } {
+  const provider = PROVIDER_STATUS_PREFIX.exec(text);
+  if (provider) return { status: Number(provider[1]), body: text.slice(provider[0].length).trim() };
+  const bare = STATUS_PREFIX.exec(text);
+  if (bare) return { status: Number(bare[1]), body: text.slice(bare[0].length).trim() };
+  return { status: undefined, body: text.trim() };
+}
+
 /** The status a provider error carries, provider-prefixed shape first. */
 function parseStatusPrefix(text: string): number | undefined {
-  const provider = PROVIDER_STATUS_PREFIX.exec(text);
-  if (provider) return Number(provider[1]);
-  const bare = STATUS_PREFIX.exec(text);
-  return bare ? Number(bare[1]) : undefined;
+  return parseProviderError(text).status;
 }
 
 /**
@@ -106,10 +112,38 @@ function parseStatusPrefix(text: string): number | undefined {
  * auth, a 429 is a throttle — neither is fixed by another model). This mirrors the
  * status-prefix rule of the router-fallback core
  * (`extensions/router-fallback/router-fallback-core.ts`); the copy exists because each
- * extension ships as its own package and cannot import the sibling.
+ * extension ships as its own package and cannot import the sibling. The charset is the
+ * sibling's on purpose — a provider prefix carrying a slash or a colon is not matched by
+ * either rule, so the two stay in step.
  */
 export function isBillingExhaustionFailure(errorMessage: string): boolean {
   return parseStatusPrefix(errorMessage) === 402;
+}
+
+/** The provider's own message inside a JSON error body, when the body carries one. */
+function providerMessage(body: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const record = parsed as { message?: unknown; error?: { message?: unknown } };
+  if (typeof record.message === "string") return record.message;
+  if (typeof record.error?.message === "string") return record.error.message;
+  return undefined;
+}
+
+/**
+ * The reason a billing failure names: the status plus the provider's own words. The raw
+ * JSON body is not a sentence a human reads, so the provider's `message` is preferred when
+ * the body carries one.
+ */
+function billingReasonText(errorMessage: string): string {
+  const { status, body } = parseProviderError(errorMessage);
+  const message = providerMessage(body) ?? body;
+  return `${status ?? "?"}: ${message}`.slice(0, 160);
 }
 
 /** The value a tool-built argv passed as `--model <value>`, or undefined. */
@@ -123,12 +157,22 @@ function firstNonEmptyLine(text: string): string | undefined {
   return text.split("\n").find((line) => line.trim().length > 0);
 }
 
+/** The failure class that arms the respawn — the wording of the recorded reason differs. */
+type RetryClass = "model-startup" | "billing";
+
+/** One respawn decision: the class that armed it and the reason it records. */
+interface RetryFailure {
+  cls: RetryClass;
+  reason: string;
+}
+
 /**
  * The child's LAST assistant turn's provider failure, when that turn ended on a 402.
  *
  * The LAST turn, not any 402 in the stream: with the router-fallback extension loaded in
  * the child, a 402 can be recovered in-child (the child switches model and carries on) —
- * a run that ended on a normal turn has an answer and must not be respawned.
+ * a run that ended on a normal turn has an answer and must not be respawned. A last turn
+ * that failed for another reason (a 500) is not a billing failure either.
  */
 function billingFailureReason(events: ChildEvent[]): string | undefined {
   for (let i = events.length - 1; i >= 0; i--) {
@@ -333,6 +377,9 @@ interface RunState {
   warned: boolean;
   /** Model-pin fallback spent — the retry fires at most once per run (f: 2026-09-02). */
   retried: boolean;
+  /** Where the CURRENT attempt's events start — the respawn appends after it, so the
+   * settled answer is the respawned attempt's, never the failed attempt's. */
+  attemptStart: number;
   deferred: Deferred<DelegationRecord>;
   signal: AbortSignal | undefined;
   onAbort: (() => void) | undefined;
@@ -399,6 +446,7 @@ export class DelegationRunner {
       buffer: "",
       warned: false,
       retried: false,
+      attemptStart: 0,
       deferred,
       signal: request.signal,
       onAbort: undefined,
@@ -554,12 +602,12 @@ export class DelegationRunner {
       this.handleLine(state, tail);
     }
     if (!state.settled) {
-      const reason = this.retryReason(state, code, signal);
-      if (reason !== undefined) {
+      const failure = this.retryFailure(state, code, signal);
+      if (failure !== undefined) {
         // The child failed on its model — the persona's pin could not START it (the d-324
         // class) or the provider ran out of credits (a 402). Respawn once on the fallback
         // argv under the same run id instead of failing the delegation.
-        this.beginFallbackRetry(state, reason);
+        this.beginFallbackRetry(state, failure);
         return;
       }
     }
@@ -585,43 +633,54 @@ export class DelegationRunner {
    *  - a BILLING failure (HTTP 402): the child's LAST assistant turn ended on a provider
    *    402. That is an API error inside a LIVE child — it exits 0 and its stderr says
    *    nothing — so neither the exit code nor a progress event can rule it out, and the
-   *    parent's model may still serve the task.
+   *    parent's model may still serve the task. The respawn re-runs the task from the
+   *    start, so a child that had already produced output repeats it on the parent model.
+   *
+   * The two classes cannot both apply: the startup class demands that NO progress event
+   * was parsed, and a 402 turn is a `message_end` — a progress event. The startup class is
+   * checked first because a child that never reached the provider has no 402 to report.
    *
    * Shared guards: a fallback argv must exist and differ from the primary argv, the retry
    * fires at most once, and a child killed by a signal is never respawned.
    *
-   * Returns the reason text (recorded on `modelFallback`) or undefined for no respawn. */
-  private retryReason(state: RunState, code: number | null, signal: string | null): string | undefined {
+   * Returns the failure (its class and the reason it records) or undefined for no respawn. */
+  private retryFailure(state: RunState, code: number | null, signal: string | null): RetryFailure | undefined {
     const fallbackArgs = state.request.fallbackArgs;
     if (!fallbackArgs || state.retried) return undefined;
     if (JSON.stringify(fallbackArgs) === JSON.stringify(state.request.args)) return undefined;
     if (signal !== null) return undefined;
     if (code === 1 && !state.events.some((event) => isProgressEvent(event)) && isModelStartupFailure(state.rawStderr)) {
-      return (firstNonEmptyLine(state.rawStderr) ?? "model startup failure").slice(0, 160);
+      return { cls: "model-startup", reason: (firstNonEmptyLine(state.rawStderr) ?? "model startup failure").slice(0, 160) };
     }
     const billing = billingFailureReason(state.events);
-    return billing !== undefined ? billing.slice(0, 160) : undefined;
+    if (billing === undefined) return undefined;
+    return { cls: "billing", reason: billingReasonText(billing) };
   }
 
   /** Respawn ONCE on the fallback argv under the same run id: flush attempt-1's output to the
    * tee, reset the per-attempt buffers, record the reason on the record, and re-wire + re-arm.
    * The log keeps ONE run header and gets ONE exit line — the retry is not a second run, so
    * reconstruction and accounting see exactly what they always saw. */
-  private beginFallbackRetry(state: RunState, reason: string): void {
+  private beginFallbackRetry(state: RunState, failure: RetryFailure): void {
     const request = state.request;
     const fallbackArgs = request.fallbackArgs!;
     const pin = modelFlagValue(request.args);
     const target = modelFlagValue(fallbackArgs);
+    const cause = failure.cls === "billing" ? "hit a provider billing failure" : "was rejected";
     state.retried = true;
-    state.record.modelFallback = `--model ${pin ?? "?"} was rejected (${reason}) — retried on ${target ? `--model ${target}` : "the child's default model"}`;
+    state.record.modelFallback = `--model ${pin ?? "?"} ${cause} (${failure.reason}) — retried on ${target ? `--model ${target}` : "the child's default model"}`;
 
     // Attempt-1 output lands in the log first; then the buffers reset so the final flush and
-    // the failure-note tails describe the attempt that actually settled.
+    // the failure-note tails describe the attempt that actually settled. The EVENTS of the
+    // failed attempt stay in the log but not in the answer: the settled answer is the
+    // respawned attempt's, so a failed attempt's partial text is never reported as the
+    // run's answer.
     this.writeTeeStreams(state);
     if (state.tee) state.tee.stderrLines = [];
     state.stdoutAccum = "";
     state.rawStderr = "";
     state.buffer = "";
+    state.attemptStart = state.events.length;
     this.teeAppend(state, JSON.stringify({ type: "stderr", text: `ai-badger: ${state.record.modelFallback}` }));
 
     try {
@@ -802,7 +861,7 @@ export class DelegationRunner {
     if (!this.deps.notifyComplete) return;
     const record = state.record;
     const exitCode = record.exitCode ?? null;
-    const answer = extractAnswer(state.events, exitCode);
+    const answer = extractAnswer(state.events.slice(state.attemptStart), exitCode);
     const note: DelegationNote = {
       id: record.id,
       agent: record.agent,

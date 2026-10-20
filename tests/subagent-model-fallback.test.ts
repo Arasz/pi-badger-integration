@@ -39,6 +39,7 @@ import {
   type SpawnFn,
 } from "../extensions/subagent/delegation-runner.ts";
 import { DelegationRegistry, type StartRequest } from "../extensions/subagent/delegation-registry.ts";
+import { classifyFailure } from "../extensions/router-fallback/router-fallback-core.ts";
 import { fallbackArgsFor, notificationVerdict, type Persona } from "../extensions/subagent/index.ts";
 import { FakeChild } from "./helpers/fake-child.ts";
 
@@ -336,6 +337,26 @@ describe("isBillingExhaustionFailure", () => {
     expect(isBillingExhaustionFailure('500: {"message":"internal error"}')).toBe(false);
     expect(isBillingExhaustionFailure("")).toBe(false);
   });
+
+  test("the status is a PREFIX, not a number anywhere in the text", () => {
+    // Failure mode: the rule loosened to "contains 402". Mutation: drop the anchor → this
+    // test must redden.
+    expect(isBillingExhaustionFailure('{"message":"the 402 quota is gone"}')).toBe(false);
+    expect(isBillingExhaustionFailure('{"error":"upstream said 402: try later"}')).toBe(false);
+    expect(isBillingExhaustionFailure("4021: not a status")).toBe(false);
+    expect(isBillingExhaustionFailure("402")).toBe(false);
+  });
+});
+
+describe("the 402 rule and the router-fallback core's rule agree", () => {
+  // The two extensions ship as separate packages and cannot import each other, so the rule
+  // is copied — this test is what keeps the copy in step with the sibling.
+  test("every 402 this rule fires on, the sibling also calls a billing exhaustion", () => {
+    for (const errorMessage of [PAYMENT_REQUIRED_BODY, PROVIDER_PREFIXED_402, "402: plain text", "402: {…}"]) {
+      if (!isBillingExhaustionFailure(errorMessage)) continue;
+      expect(classifyFailure({ errorMessage }).kind).toBe("billing-exhaustion");
+    }
+  });
 });
 
 describe("DelegationRunner — billing (402) fallback retry", () => {
@@ -498,6 +519,123 @@ describe("DelegationRunner — billing (402) fallback retry", () => {
     const record = await done;
     expect(h.children).toHaveLength(1);
     expect(record.state).toBe("aborted");
+  });
+
+  test("a last turn that failed for ANOTHER reason does not respawn", async () => {
+    // The last assistant turn decides: an earlier 402 followed by a 500 is not a billing
+    // failure. Failure mode: the search skips a non-402 last error and keeps looking
+    // backwards for an earlier 402 → this test must redden.
+    const h = makeRunner();
+    const done = h.runner.run(retryRequest({ fallbackArgs: FALLBACK_ARGS })).done;
+
+    h.children[0]!.emitEvent(failedTurn(PAYMENT_REQUIRED_BODY));
+    h.children[0]!.emitEvent(failedTurn('500: {"message":"internal error"}'));
+    h.children[0]!.exit(0, null);
+
+    await done;
+    expect(h.children).toHaveLength(1);
+  });
+
+  test("a startup failure still records the startup wording", async () => {
+    // The two classes read differently: a model that cannot start was REJECTED; a 402 is a
+    // billing failure, not a rejected model. Failure mode: one wording for both → this
+    // test must redden.
+    const h = makeRunner();
+    const done = h.runner.run(retryRequest({ fallbackArgs: FALLBACK_ARGS })).done;
+
+    h.children[0]!.stderrWrite(MODEL_FAILURE_STDERR);
+    h.children[0]!.exit(1, null);
+    h.children[1]!.emitEvent(assistantEnd("ship it"));
+    h.children[1]!.exit(0, null);
+
+    const record = await done;
+    expect(record.modelFallback).toContain("was rejected");
+    expect(record.modelFallback).not.toContain("billing failure");
+  });
+
+  test("a startup failure and a 402 turn are the billing class", async () => {
+    // The two classes cannot both apply: the startup class demands that no progress event
+    // was parsed, and a 402 turn IS a message_end — a progress event. So a child that
+    // carries a 402 turn is a billing failure, whatever its stderr says.
+    const h = makeRunner();
+    const done = h.runner.run(retryRequest({ fallbackArgs: FALLBACK_ARGS })).done;
+
+    h.children[0]!.stderrWrite(MODEL_FAILURE_STDERR);
+    h.children[0]!.emitEvent(failedTurn(PAYMENT_REQUIRED_BODY));
+    h.children[0]!.exit(1, null);
+
+    expect(h.children).toHaveLength(2);
+    h.children[1]!.emitEvent(assistantEnd("ship it"));
+    h.children[1]!.exit(0, null);
+    const record = await done;
+    expect(record.modelFallback).toContain("hit a provider billing failure");
+  });
+
+  test("the failed attempt's text is never reported as the run's answer", async () => {
+    // The child produced text, then died on a 402; the respawn produced nothing. The
+    // settled answer must come from the respawned attempt (none) — not from the failed
+    // attempt's partial text. Failure mode: the answer walk ignores the attempt boundary
+    // → this test must redden.
+    const h = makeRunner();
+    const done = h.runner.run(retryRequest({ fallbackArgs: FALLBACK_ARGS })).done;
+
+    h.children[0]!.emitEvent(sessionHeader);
+    h.children[0]!.emitEvent(assistantEnd("half an answer from the failed attempt"));
+    h.children[0]!.emitEvent(failedTurn(PAYMENT_REQUIRED_BODY));
+    h.children[0]!.exit(0, null);
+    h.children[1]!.emitEvent(sessionHeader);
+    h.children[1]!.emitEvent(failedTurn(PAYMENT_REQUIRED_BODY));
+    h.children[1]!.exit(0, null);
+
+    const record = await done;
+    expect(record.modelFallback).toContain("hit a provider billing failure");
+    expect(h.notes[0]!.answer).toBe("");
+    expect(h.notes[0]!.silentReason).toBeDefined();
+  });
+
+  test("the recorded reason carries the provider's own words, not the raw JSON", async () => {
+    // Failure mode: the raw provider body is dumped into the reason (a JSON blob is not a
+    // sentence). Mutation: skip the provider-message extraction → this test must redden.
+    const h = makeRunner();
+    const done = h.runner.run(retryRequest({ fallbackArgs: FALLBACK_ARGS })).done;
+
+    h.children[0]!.emitEvent(failedTurn(PAYMENT_REQUIRED_BODY));
+    h.children[0]!.exit(0, null);
+    h.children[1]!.emitEvent(assistantEnd("ship it"));
+    h.children[1]!.exit(0, null);
+
+    const record = await done;
+    expect(record.modelFallback).toContain("requires more credits");
+    expect(record.modelFallback).not.toContain("limit_source");
+  });
+
+  test("a real provider 402 — the shape the child's stream carries — respawns", async () => {
+    // The measured payload (the child's own log, d-83.jsonl): a provider 402 folded into
+    // the assistant turn. Failure mode: the event shape the child really emits is not what
+    // the predicate reads → this test must redden.
+    const h = makeRunner();
+    const done = h.runner.run(retryRequest({ fallbackArgs: FALLBACK_ARGS })).done;
+
+    h.children[0]!.emitEvent({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [],
+        api: "openai-completions",
+        provider: "openrouter",
+        model: "deepseek/deepseek-v4.1-flash",
+        stopReason: "error",
+        errorMessage:
+          '402: {"message":"This request requires more credits, or fewer max_tokens. You requested up to 887478 tokens, but can only afford 1252.","code":402,"metadata":{"limit_source":"openrouter_credits"}}',
+      },
+    });
+    h.children[0]!.exit(0, null);
+
+    expect(h.children).toHaveLength(2);
+    h.children[1]!.emitEvent(assistantEnd("ship it"));
+    h.children[1]!.exit(0, null);
+    const record = await done;
+    expect(record.modelFallback).toContain("requires more credits");
   });
 });
 
