@@ -263,8 +263,9 @@ folder works too.)
 - `docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/check_record_refs.py` — prints every `F<n>` pointer in these records next to the finding it
   resolves to **and the record that finding lives in** (so a stale pointer from a renumber is
   visible, and a cross-record pointer is checked against the right file); lints the grade markers
-  against the closed set {MEASURED, READ, INFERRED, UNVERIFIED}; prints the per-record and total
-  grade mix; flags an empty or missing `## Still open` section (the skill's checklist says an empty
+  against the closed set {MEASURED, READ, INFERRED, UNVERIFIED}, and flags a finding heading that
+  carries no grade at all (which would otherwise make the finding invisible to the checker);
+  prints the per-record and total grade mix; flags an empty or missing `## Still open` section (the skill's checklist says an empty
   one must be defended); and rejects three phrasings that were wrong in earlier drafts and were
   corrected by re-reading the cited source — so those corrections cannot silently come back. It
   exits non-zero on any of those; run it after adding or moving a finding:

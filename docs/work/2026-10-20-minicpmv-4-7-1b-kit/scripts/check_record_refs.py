@@ -22,6 +22,8 @@ import re
 import sys
 
 HEADING = re.compile(r"^### (F\d+) — (.+?) \[(MEASURED|READ|INFERRED|UNVERIFIED)\]$", re.M)
+# a finding-shaped heading that does not carry a grade is a defect, not a heading to skip
+FINDING_SHAPED = re.compile(r"^### F\d+ — .*$", re.M)
 REFERENCE = re.compile(r"(?<!### )\bF(\d+)\b")
 RECORD_PATH = re.compile(r"docs/work/[\w.-]+\.md")
 VALID_GRADES = {"MEASURED", "READ", "INFERRED", "UNVERIFIED"}
@@ -151,6 +153,12 @@ def main(argv: list[str]) -> int:
             if pattern.search(text):
                 broken += 1
                 print(f"\n!! {path}: known-wrong phrasing — {why}")
+        # every finding-shaped heading must carry a grade from the closed set
+        strict = {m.group(0) for m in HEADING.finditer(text)}
+        for heading in FINDING_SHAPED.finditer(text):
+            if heading.group(0) not in strict:
+                broken += 1
+                print(f"\n!! {path}: finding heading without a grade marker — {heading.group(0)[:80]!r}")
         # grade mix, counted from the finding headings only
         counts: dict[str, int] = {}
         for m in HEADING.finditer(text):
