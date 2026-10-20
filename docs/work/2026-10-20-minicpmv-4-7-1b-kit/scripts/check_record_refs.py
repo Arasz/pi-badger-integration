@@ -129,6 +129,24 @@ def main(argv: list[str]) -> int:
                 print(f"        in {where}")
                 print(f"        {line[:104]}")
     mix: dict[str, int] = {}
+    # the kit's README must list exactly the scripts that exist beside it
+    kit_dir = os.path.dirname(os.path.abspath(__file__))
+    kit_readme = os.path.join(os.path.dirname(kit_dir), "README.md")
+    if os.path.isfile(kit_readme):
+        readme = open(kit_readme, encoding="utf-8").read()
+        files_section = re.search(r"^## Files\s*$(.*?)(?=^## |\Z)", readme, re.M | re.S)
+        # only the bullet lines count as "listed" — a mention inside a bullet's prose does not
+        bullets = [ln for ln in (files_section.group(1).splitlines() if files_section else [])
+                   if ln.lstrip().startswith("- ")]
+        listed = {m for ln in bullets for m in re.findall(r"scripts/([A-Za-z0-9_]+\.(?:py|sh))", ln)}
+        on_disk = {f for f in os.listdir(kit_dir) if f.endswith((".py", ".sh"))}
+        for name in sorted(on_disk - listed):
+            broken += 1
+            print(f"\n!! {kit_readme}: scripts/{name} exists but is not listed")
+        for name in sorted(listed - on_disk):
+            broken += 1
+            print(f"\n!! {kit_readme}: scripts/{name} is listed but does not exist")
+
     for path in paths:
         text = open(path, encoding="utf-8").read()
         bad = {m.group(1) for m in GRADE_TOKEN.finditer(text)} - VALID_GRADES
@@ -168,7 +186,7 @@ def main(argv: list[str]) -> int:
         print(
             "\nOK — checked: every finding pointer resolves into the right record; every finding carries a\n"
             "     grade from the closed set {MEASURED, READ, INFERRED, UNVERIFIED}; no grade-like slip;\n"
-            "     every '## Still open' section is non-empty; no known-wrong phrasing present."
+            "     every '## Still open' section is non-empty; no known-wrong phrasing present; the kit's\n     README lists exactly the scripts that exist beside it."
         )
     return 0 if not broken else 1
 
