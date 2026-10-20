@@ -481,12 +481,56 @@ describe("DelegationRunner — billing (402) fallback retry", () => {
 
     h.children[0]!.emitEvent(failedTurn(PAYMENT_REQUIRED_BODY));
     h.children[0]!.exit(0, null);
+    h.children[1]!.emitEvent(sessionHeader);
     h.children[1]!.emitEvent(failedTurn(PAYMENT_REQUIRED_BODY));
     h.children[1]!.exit(0, null);
 
     const record = await done;
     expect(h.children).toHaveLength(2);
     expect(record.modelFallback).toContain("402");
+    // The second attempt also died on a 402: the run settles with no answer, and the note
+    // says so instead of reporting the failed attempt's text.
+    expect(record.state).toBe("completed");
+    expect(h.notes[0]!.answer).toBe("");
+    expect(h.notes[0]!.silentReason).toBeDefined();
+  });
+
+  test("the 402 respawn keeps one log header, one exit line and one note", async () => {
+    // The catalog claims the respawn is not a second delegation. Failure mode: the 402 path
+    // broke the log/note invariants the startup path keeps. Mutation: emit a second header
+    // or exit line on the respawn → this test must redden.
+    const { logs, logSink } = makeLogSink();
+    const h = makeRunner({ logSink });
+    const done = h.runner.run(retryRequest({ fallbackArgs: FALLBACK_ARGS })).done;
+
+    h.children[0]!.emitEvent(failedTurn(PAYMENT_REQUIRED_BODY));
+    h.children[0]!.exit(0, null);
+    h.children[1]!.emitEvent(assistantEnd("ship it"));
+    h.children[1]!.exit(0, null);
+    await done;
+
+    const lines = (logs.get("d-1") ?? []).map((line) => JSON.parse(line) as { type: string });
+    expect(lines.filter((l) => l.type === "run")).toHaveLength(1);
+    expect(lines.filter((l) => l.type === "exit")).toHaveLength(1);
+    expect(h.notes).toHaveLength(1);
+  });
+
+  test("the card verdict names the 402 that forced the respawn", async () => {
+    // The verdict is the card's only line: it must carry the cause, not just the respawn.
+    // Failure mode: the card clause lost its reason → this test must redden.
+    const h = makeRunner();
+    const done = h.runner.run(retryRequest({ fallbackArgs: FALLBACK_ARGS })).done;
+
+    h.children[0]!.emitEvent(failedTurn(PAYMENT_REQUIRED_BODY));
+    h.children[0]!.exit(0, null);
+    h.children[1]!.emitEvent(assistantEnd("ship it"));
+    h.children[1]!.exit(0, null);
+    await done;
+
+    const verdict = notificationVerdict(h.notes[0]!);
+    expect(verdict).toContain("hit a provider billing failure");
+    expect(verdict).toContain("402");
+    expect(verdict).toContain("openrouter/z-ai/glm-5.3-flash");
   });
 
   test("the recorded reason names the pin, the 402 and the retried model", async () => {
