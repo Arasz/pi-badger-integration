@@ -240,6 +240,15 @@ python3 scripts/check_record_refs.py "docs/work/2026-10-20-*.md"
 
 - `scripts/convert_minicpmv47.sh` — every conversion, the export, and the verification pass
 - `scripts/export_mtplx_textonly.py` — the MTPLX text-only export (verbatim in the MTPLX record's F13)
+- `scripts/check_citations.py` — re-reads the pinned sources (mlx-lm 0.31.3 from MTPLX's runtime
+  venv, mlx-vlm 0.7.9 from a venv, MTPLX `main` unpacked) and verifies that every `file.py:NN`
+  citation in the records still points at a real line, with the quoted fragment present there. Set
+  the `SRC` map at the top of the script to wherever those live on your machine, then run:
+
+  ```bash
+  python3 scripts/check_citations.py "docs/work/2026-10-20-*.md"
+  ```
+
 - `scripts/check_record_refs.py` — prints every `F<n>` pointer in these records next to the finding it
   resolves to **and the record that finding lives in** (so a stale pointer from a renumber is
   visible, and a cross-record pointer is checked against the right file); lints the grade markers

@@ -594,7 +594,7 @@ stopped shipping `mlx_lm.models.qwen3_5`, the declared-architecture alias would 
 **Evidence:** upstream `main`, fetched 2026-10-20 —
 `mtplx/backends/registry.py:838-851` (`_compact`, `_alias_matches`, `_support_alias_matches`) and
 `:854-896` (`_detect_arch_id`, including the qwen-first ordering and the `has_explicit_mtp` rule);
-the chain that reaches a user-visible verdict: `registry.py:1476` calls
+the chain that reaches a user-visible verdict: `mtplx/backends/registry.py:1476` calls
 `detected_arch_id = _detect_arch_id(inspection)`, and `mtplx/artifacts.py:656` is where the
 field is published (`"architecture_recognized": self.compatibility.get("recognized", False)`);
 probes built from
