@@ -91,7 +91,7 @@ page state), `https://lmstudio.ai/api/models?search=minicpm` (200, HTML),
 
 The MLX conversion (bf16 / 4-bit / mxfp4 / nvfp4 / mxfp8) is a complete multimodal checkpoint:
 vision tower, resampler and text tower together, generating correct captions from images. Its
-server (`python -m mlx_vlm.server`) speaks the OpenAI API, so it substitutes for LM Studio or
+server (`python3 -m mlx_vlm.server`) speaks the OpenAI API, so it substitutes for LM Studio or
 Ollama on Apple Silicon.
 
 **Evidence:** the sibling record
@@ -127,7 +127,7 @@ package (no MiniCPM entry).
 ### F9 — mlx-vlm's server takes images over the OpenAI API, unlike the MTPLX path [MEASURED]
 
 The vision claim on the MLX side was previously only about the converter; this is the serving
-path. `python -m mlx_vlm.server --model <mlx checkpoint> --port 8200` came up in 3 s and answered
+path. `python3 -m mlx_vlm.server --model <mlx checkpoint> --port 8200` came up in 3 s and answered
 an OpenAI-style request carrying a `data:image/png;base64,…` payload:
 
     POST /v1/chat/completions
@@ -151,7 +151,7 @@ This is the sharpest contrast in the whole comparison: the same checkpoint serve
 the OpenAI API through mlx-vlm, while the MTPLX export of the same model reports
 `supports_vision: false` and can only answer text (F7).
 
-**Evidence:** `python -m mlx_vlm.server --model /tmp/vis-out/MiniCPM-V-4.7-1B-affine4 --port 8200
+**Evidence:** `python3 -m mlx_vlm.server --model /tmp/vis-out/MiniCPM-V-4.7-1B-affine4 --port 8200
 --host 127.0.0.1` (mlx-vlm 0.7.9, Apple M4); the request above over `urllib`; the 404 came from the
 first attempt with `"model": "minicpm"`, the 200 from the retry with the served path. The server was
 stopped afterwards (`pkill -f "mlx_vlm.server --model /tmp/vis-out"`, then the port refused
@@ -177,7 +177,7 @@ So on Apple Silicon, mlx-vlm's server is a drop-in for the OpenAI *and* Anthropi
 dialects with a vision model behind them — the gap that Ollama and LM Studio currently leave open
 for MiniCPM-V 4.7 (F3, F4).
 
-**Evidence:** `python -m mlx_vlm.server --model <4-bit checkpoint> --port 8300 --host 127.0.0.1`;
+**Evidence:** `python3 -m mlx_vlm.server --model <4-bit checkpoint> --port 8300 --host 127.0.0.1`;
 `GET /openapi.json` → the route list quoted above; the three POSTs as tabulated (synthetic 384x384
 images: a yellow circle on red, a white triangle on blue), each answered in under a second. The
 server was stopped afterwards and the port refused connections. — measured on an Apple M4 MacBook Air (macOS 27.0.1, mlx-vlm 0.7.9).

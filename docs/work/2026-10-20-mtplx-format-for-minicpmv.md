@@ -131,12 +131,12 @@ no entry matches "minicpm".
 
 ### F8 — mlx-vlm ships its own OpenAI-compatible server, so a local API does not require MTPLX [MEASURED]
 
-`python -m mlx_vlm.server` exists in mlx-vlm 0.7.9 and takes `--model`, `--host`, `--port`,
+`python3 -m mlx_vlm.server` exists in mlx-vlm 0.7.9 and takes `--model`, `--host`, `--port`,
 `--image-model`, `--vision-cache-size`, `--min-pixels`/`--max-pixels`, `--kv-bits` and the usual
 generation flags. Pointing it at the MLX conversion from the sibling record gives a local
 OpenAI-style endpoint for a vision model.
 
-**Evidence:** `python -m mlx_vlm.server --help` run in the mlx-vlm 0.7.9 venv (Python 3.15, Apple
+**Evidence:** `python3 -m mlx_vlm.server --help` run in the mlx-vlm 0.7.9 venv (Python 3.15, Apple
 M4) — options block printed above.
 
 ### F9 — `mtplx run` on the full MiniCPM-V MLX directory fails, even though `mtplx inspect` says it can run [MEASURED]
