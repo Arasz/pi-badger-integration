@@ -2,7 +2,7 @@
 
 You have OpenRouter already. This note walks through adding the other two keys the fallback chain needs, so a billing or routing failure can move the session to the next provider instead of stopping.
 
-The chain this repo ships is fixed. OpenRouter `:free` models serve first for breadth, Groq comes second as the sustained-load workhorse, Gemini sits last. An entry only serves when its key is present, so a missing key just means a shorter chain. Everything still runs.
+The chain this repo ships is fixed. OpenRouter's **free router** (`openrouter/free` — the provider's own id for "any free model") serves first for breadth, Groq comes second as the sustained-load workhorse, Gemini sits last. An entry only serves when its key is present, so a missing key just means a shorter chain. Everything still runs.
 
 ## What pi and the extension actually check
 
@@ -14,7 +14,7 @@ The three names, and nothing but the names, appear in logs and notices. Values n
 
 | Order | Provider in pi | Variable | Serves |
 | --- | --- | --- | --- |
-| 1 | `openrouter` | `OPENROUTER_API_KEY` | four `:free` models in rotation |
+| 1 | `openrouter` | `OPENROUTER_API_KEY` | the free router (`openrouter/free`), then `inclusionai/ling-3.1-flash` |
 | 2 | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
 | 3 | `google` | `GEMINI_API_KEY` | `gemini-3.1-flash-lite`, then `gemini-3.1-pro-preview` |
 
