@@ -322,8 +322,10 @@ takes no options, so the session-level `{persist:true}` path is structurally unr
 Verification notes: pi 0.84.4 (pin at the time) vs 0.85.1 (installed) shapes re-verified
 identical (`setModel` false-on-missing-auth, `{messages}`-only `agent_end`,
 `model_select{source:"set"}`); the keyless custom-overlay path passes pi's own
-`validateExtensionProvider` offline; the pinned `:free` chain was confirmed present on
-the live OpenRouter roster 2026-09-05. No valid provider key exists in this environment
+`validateExtensionProvider` offline; the chain's head was confirmed present on
+the live OpenRouter roster 2026-09-05 (as `openrouter/free`, the provider's
+"Free Models Router" — the chain's head since 2026-10-20, when it replaced a
+hand-kept list of `:free` ids). No valid provider key exists in this environment
 (the checked-in-shape env placeholders are rejected by all three providers), so live
 generation on a free entitlement stays an explicitly BLOCKED follow-up — the defaults
 above stand flagged, never fabricated.
