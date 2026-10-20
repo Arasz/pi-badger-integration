@@ -3,6 +3,13 @@
   "next": null,
   "completedTasks": [
     {
+      "id": "pbi-runner-retry-402-parent-model",
+      "title": "A 402 respawns the delegation on the parent model",
+      "pr": "https://github.com/Arasz/pi-badger-integration/pull/59",
+      "finished": "2026-10-20",
+      "summary": "A provider 402 is an API error inside a LIVE child: it arrives in the child's stdout event stream as a failed assistant turn (stopReason error, errorMessage \"402: {…}\"), the child exits 0 and its stderr says nothing, so the runner's model-startup retry (stderr signature + exit 1 + no progress event) could never see it and the delegation settled completed with no answer. The runner's ONE retry decision now also fires when the child's LAST assistant turn ended on a 402: respawn once on the parent (session) model, under the same run id, with the reason on the existing modelFallback field (no schema change). The last turn, not any 402 - with router-fallback in the child a 402 can be recovered in-child, and a run that ended on a normal turn has an answer. The 402 rule mirrors the router-fallback core's status-prefix rule (separate packages cannot import each other) and a test pins the two together. A delegated review round fixed: a failed attempt's partial text could be reported as the run's answer (the respawn now marks an attempt boundary), the reason dumped the provider's raw JSON (it now carries the provider's own message), and the two classes read differently (rejected vs billing failure). 14 mutations of the new code each caught by the matching test; CI green. PR #59."
+    },
+    {
       "id": "pbi-quiet-memory-first-gate",
       "title": "The memory-first gate is quiet in pi: the model gets the memory, the user sees no card",
       "pr": "https://github.com/Arasz/pi-badger-integration/pull/58",
