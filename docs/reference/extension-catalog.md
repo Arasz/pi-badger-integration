@@ -115,12 +115,13 @@ settles as `aborted (lost)`.
 
 **One retry, on the parent model.** A child that fails on its model is respawned **once**
 under the same run id on the **parent (session) model** — the retry is not a second
-delegation (one log header, one exit line, one result note). Two failures arm it: the
-persona's `model:` pin (or its `level:`-resolved id) could not **start** the child
-(unknown provider, no API key, ambiguous model), and the provider answered **402** — the
-account is out of credits — which is an API error inside a live child, so it arrives in
-the child's event stream rather than on its stderr. The respawn is never silent: the
-reason (the rejected model, the 402) rides the result note and the card verdict, and the
+delegation (one log header, one exit line, one result note). Three failures arm it: the
+persona's `model:` pin (or its `level:`-resolved id) could not **start** the child — pi's own
+resolution error on stderr (unknown provider, no API key, ambiguous model) **or** the provider
+refusing that id inside the turn (`model_not_supported`, "the requested model is not
+supported") — and the provider answered **402**, which is an API error inside a live child, so
+it arrives in the child's event stream rather than on its stderr. The respawn is never silent:
+the reason (the rejected model, the 402) rides the result note and the card verdict, and the
 retry fires at most once per run. The respawn re-runs the task from the start, so a child
 that had already produced output repeats it on the parent model; the answer a run reports
 is always the respawned attempt's.

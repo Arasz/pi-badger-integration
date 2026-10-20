@@ -3,6 +3,13 @@
   "next": null,
   "completedTasks": [
     {
+      "id": "pbi-model-reject-retry",
+      "title": "A provider that refuses the child's model respawns the delegation on the parent model",
+      "pr": "https://github.com/Arasz/pi-badger-integration/pull/66",
+      "finished": "2026-10-20",
+      "summary": "The startup class arrived through two channels and the runner read one: pi's own resolution error on stderr (exit 1 - caught today) or the PROVIDER refusing the id inside the turn (400 model_not_supported, 404 model_not_found, 'The requested model is not supported' - exit 0, not caught), so a delegation whose model the provider would not serve died silently (measured 2026-10-20 on Copilot, Groq and OpenAI/Codex). The runner's one retry decision now also fires on that class: the child's last assistant turn failed with a model-unavailable error AND the child did no work (no answer, no tool), so the respawn repeats nothing. Detection is a provider machine code where given, else the wording - a provider refusal is not a status the runner can key on (400, 404 or 401 depending on provider and account). Five mutations caught, including dropping the no-work guard, dropping the arm, widening the wording list, ignoring the machine codes and looking past the last turn."
+    },
+    {
       "id": "pbi-router-free-head",
       "title": "The router-fallback's OpenRouter head is an explicit :free id",
       "pr": "https://github.com/Arasz/pi-badger-integration/pull/65",
