@@ -276,6 +276,7 @@ registry ever sees it. `mlx_vlm/utils.py:222-227` computes
 **Evidence:** mlx-vlm 0.7.9 as installed — the two drafters files are byte-identical to upstream
 `main` on 2026-10-20:
 
+- `mlx_vlm/utils.py:197-230` (`get_model_type`), the branch quoted in F12;
 - `mlx_vlm/speculative/drafters/compatibility.py:21-50` — `validate_dflash_target`, the four checks
   quoted above;
 - `mlx_vlm/speculative/drafters/dspark/dspark.py:74-79` — the wrapper and the class, quoted:
@@ -315,7 +316,8 @@ registry ever sees it. `mlx_vlm/utils.py:222-227` computes
 ### F12 — Whether the DSpark draft actually runs end to end on MiniCPM-V 4.7 was not tested [UNVERIFIED]
 
 The compatibility gate passing is necessary, not sufficient. The *selection* is no longer in doubt — it was resolved by reading the loader. In mlx-vlm 0.7.9
-as installed, `mlx_vlm/utils.py:221-227`:
+as installed, inside `get_model_type(config)` (`mlx_vlm/utils.py:197-230`), the branch that decides
+it is at `:221-227`:
 
 ```python
 elif dflash_config is not None:
