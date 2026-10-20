@@ -65,7 +65,9 @@ export const ADAPTER_FILES = [
 	".ai-badger-capability-resources-discover",
 ] as const;
 
-const ADAPTER_SOURCE_DIR = "features/pi/adjustments/adapter";
+export const ADAPTER_SOURCE_DIR = "features/pi/adjustments/adapter";
+/** Where the heal records which ai-badger version the canonical copy mirrors. */
+const ADAPTER_SOURCE_RECORD = "features/pi/adjustments/adapter-source.json";
 /** Entries (directories or loose files) this repo no longer ships but may still be
  * installed at user scope, each with why. pi discovers EVERY entry under
  * ~/.pi/agent/extensions/, so a leftover keeps loading next to its replacement:
@@ -379,6 +381,163 @@ function vendorAdapter(aiBadgerPath: string): void {
  * `runInstall` is injectable so auto-install tests stub `bun install` instead of
  * hitting the network.
  */
+/**
+ * The ai-badger checkout to compare the canonical adapter against.
+ *
+ * `AI_BADGER_ROOT` names it explicitly; otherwise the sibling checkout beside this repo
+ * is the convention that has always held (the two repos live side by side). No checkout
+ * means no comparison — this repo's CI has none, and a missing one must never fail a
+ * check.
+ *
+ * An INJECTED run never looks: the test file's safety contract is that an injected run
+ * touches only temp fixtures, and a developer's real sibling checkout is not one. So the
+ * injection decides, and the default discovery is for a real run.
+ */
+function aiBadgerCheckoutPath(inject?: { targets?: Target[] }): string | null {
+	if (inject?.targets) return null;
+	const candidates = [process.env.AI_BADGER_ROOT, resolve(ROOT, "..", "ai-badger")];
+	for (const candidate of candidates) {
+		if (!candidate) continue;
+		if (existsSync(join(candidate, ADAPTER_SOURCE_DIR, "index.ts"))) return candidate;
+	}
+	return null;
+}
+
+/**
+ * The canonical adapter's drift from an ai-badger checkout's copy of it.
+ *
+ * The adapter this repo installs is the one pi loads, and ai-badger vendors the same
+ * code. When the two drift, the *shipping* side decides what every live pi session
+ * does — and a fix that lives only in ai-badger's copy never reaches the user. That is
+ * not hypothetical: ai-badger 0.210.0 fixed the memory-first gate's delivery in its own
+ * copy, and the fix never shipped, so every live session kept delivering the gate's
+ * result as a user-role message.
+ *
+ * Two severities, because the two drifts are not the same thing:
+ *
+ *   - the checkout is at a NEWER ai-badger VERSION than the one this copy mirrors: a
+ *     release the shipping copy lacks. FATAL — that is the shipping gap, and it is what
+ *     shipped a broken adapter for a whole release cycle.
+ *   - the bytes differ at the SAME version: unmerged work in the checkout. A WARNING —
+ *     the human decides whether that work should ship, and the answer is not the
+ *     check's to make.
+ */
+export function aiBadgerDrift(
+	aiBadgerPath: string,
+	canonicalDir: string = join(ROOT, ADAPTER_SOURCE_DIR),
+	mirroredVersion: string = readMirroredVersion(),
+): { problems: string[]; warnings: string[] } {
+	const checkoutDir = resolve(aiBadgerPath, ADAPTER_SOURCE_DIR);
+	if (!existsSync(checkoutDir)) return { problems: [], warnings: [] };
+	const problems: string[] = [];
+	const warnings: string[] = [];
+	const canonicalDirFiles = ADAPTER_FILES.filter((name) => existsSync(join(canonicalDir, name)));
+	const mirrored = mirroredVersion;
+	const checkoutVersion = readAiBadgerVersion(aiBadgerPath);
+
+	if (mirrored && checkoutVersion && compareVersions(checkoutVersion, mirrored) > 0) {
+		problems.push(
+			`the canonical adapter mirrors ai-badger ${mirrored}, but the checkout is at ` +
+				`${checkoutVersion} — a release the shipping copy lacks. Heal it: ` +
+				`bun publish.ts --from-ai-badger <path>`,
+		);
+	}
+
+	for (const name of canonicalDirFiles) {
+		const canonical = join(canonicalDir, name);
+		const theirs = join(checkoutDir, name);
+		if (!existsSync(theirs)) {
+			warnings.push(
+				`the ai-badger checkout has no ${name} — the canonical copy is ahead; ` +
+					`push it if it should ship: bun publish.ts --ai-badger <path>`,
+			);
+			continue;
+		}
+		if (readFileSync(canonical, "utf-8") !== readFileSync(theirs, "utf-8")) {
+			warnings.push(
+				`the canonical adapter's ${name} differs from the ai-badger checkout's — ` +
+					`pull the checkout's when it should ship: bun publish.ts --from-ai-badger <path>`,
+			);
+		}
+	}
+	return { problems, warnings };
+}
+
+/** The ai-badger version this copy mirrors, as the heal recorded it ("" when never healed). */
+function readMirroredVersion(): string {
+	const path = join(ROOT, ADAPTER_SOURCE_RECORD);
+	if (!existsSync(path)) return "";
+	try {
+		const parsed = JSON.parse(readFileSync(path, "utf-8")) as { aiBadgerVersion?: unknown };
+		return typeof parsed.aiBadgerVersion === "string" ? parsed.aiBadgerVersion : "";
+	} catch {
+		return "";
+	}
+}
+
+/** The VERSION file of an ai-badger checkout ("" when it has none). */
+function readAiBadgerVersion(aiBadgerPath: string): string {
+	const path = resolve(aiBadgerPath, "VERSION");
+	if (!existsSync(path)) return "";
+	return readFileSync(path, "utf-8").trim();
+}
+
+/** Semver-ish comparison: numbers compare numerically, anything else compares as text. */
+function compareVersions(left: string, right: string): number {
+	const parse = (v: string) => v.split(".").map((part) => (/^\d+$/.test(part) ? Number(part) : part));
+	const a = parse(left);
+	const b = parse(right);
+	for (let i = 0; i < Math.max(a.length, b.length); i++) {
+		const x = a[i];
+		const y = b[i];
+		if (x === undefined) return -1;
+		if (y === undefined) return 1;
+		if (typeof x === "number" && typeof y === "number") {
+			if (x !== y) return x < y ? -1 : 1;
+			continue;
+		}
+		const xs = String(x);
+		const ys = String(y);
+		if (xs !== ys) return xs < ys ? -1 : 1;
+	}
+	return 0;
+}
+
+/** Copy an ai-badger checkout's adapter into the canonical copy — the direction that was missing. */
+function healFromAiBadger(aiBadgerPath: string): void {
+	const sourceDir = resolve(aiBadgerPath, ADAPTER_SOURCE_DIR);
+	if (!existsSync(sourceDir)) {
+		console.error(
+			`FATAL: refusing to heal — ${sourceDir} does not exist. ` +
+				`--from-ai-badger only reads an existing ai-badger checkout's adapter.`,
+		);
+		process.exit(1);
+	}
+	const destinationDir = join(ROOT, ADAPTER_SOURCE_DIR);
+	mkdirSync(destinationDir, { recursive: true });
+	const copied: string[] = [];
+	for (const name of ADAPTER_FILES) {
+		const source = join(sourceDir, name);
+		if (!existsSync(source)) continue;
+		const destination = join(destinationDir, name);
+		const body = readFileSync(source);
+		if (existsSync(destination) && readFileSync(destination).equals(body)) continue;
+		writeFileSync(destination, body);
+		copied.push(name);
+	}
+	// Record the version this copy now mirrors: the check compares it with the checkout's
+	// VERSION, so a release the shipping copy lacks is a problem, not a warning.
+	const version = readAiBadgerVersion(aiBadgerPath);
+	const record = { aiBadgerVersion: version, aiBadgerPath: resolve(aiBadgerPath) };
+	writeFileSync(join(ROOT, ADAPTER_SOURCE_RECORD), `${JSON.stringify(record, null, 2)}\n`);
+	console.log(
+		(copied.length === 0
+			? `canonical adapter already matches ${sourceDir}`
+			: `healed ${copied.length} file(s) into ${destinationDir}: ${copied.join(", ")}`) +
+			`; mirrors ai-badger ${version || "(no VERSION)"}`,
+	);
+}
+
 export function main(
 	argv: string[],
 	inject?: { targets?: Target[]; runInstall?: InstallDeps; userExtensionsDir?: string },
@@ -390,10 +549,20 @@ export function main(
 		console.error("FATAL: --ai-badger needs a path to an ai-badger checkout");
 		return 1;
 	}
-	if (check && aiBadgerFlag >= 0) {
+	const fromAiBadgerFlag = argv.indexOf("--from-ai-badger");
+	const fromAiBadgerPath = fromAiBadgerFlag >= 0 ? argv[fromAiBadgerFlag + 1] : undefined;
+	if (fromAiBadgerFlag >= 0 && !fromAiBadgerPath) {
+		console.error("FATAL: --from-ai-badger needs a path to an ai-badger checkout");
+		return 1;
+	}
+	if (check && (aiBadgerFlag >= 0 || fromAiBadgerFlag >= 0)) {
 		// M1 (review): silently dropping the vendoring request would let an operator
 		// believe the durability step happened. Refuse instead.
-		console.error("FATAL: --ai-badger cannot be combined with --check — checking never writes; vendoring always does");
+		console.error("FATAL: --ai-badger and --from-ai-badger cannot be combined with --check — checking never writes; vendoring always does");
+		return 1;
+	}
+	if (aiBadgerFlag >= 0 && fromAiBadgerFlag >= 0) {
+		console.error("FATAL: --ai-badger and --from-ai-badger move the adapter in opposite directions; pick one");
 		return 1;
 	}
 
@@ -414,9 +583,17 @@ export function main(
 		for (const report of reports) {
 			for (const warning of report.warnings) console.warn(`[${report.target.name}] WARNING: ${warning}`);
 		}
+		const checkout = aiBadgerCheckoutPath(inject);
+		const adapter = targets.find((t) => t.name.startsWith("ai-badger adapter"));
+		const canonicalDir = adapter?.pairs[0]
+			? dirname(adapter.pairs[0].source)
+			: join(ROOT, ADAPTER_SOURCE_DIR);
+		const mirror = checkout ? aiBadgerDrift(checkout, canonicalDir) : { problems: [], warnings: [] };
+		for (const warning of mirror.warnings) console.warn(`[adapter] WARNING: ${warning}`);
 		const problems = [
 			...reports.flatMap((report) => report.problems.map((p) => `[${report.target.name}] ${p}`)),
 			...retiredExtensionProblems(userExtensionsDir),
+			...mirror.problems.map((p) => `[adapter] ${p}`),
 		];
 		if (problems.length > 0) {
 			console.error(`OUT OF SYNC (${problems.length}):\n${problems.map((p) => `  - ${p}`).join("\n")}`);
@@ -436,6 +613,13 @@ export function main(
 	if (aiBadgerPath) {
 		vendorAdapter(aiBadgerPath);
 		return 0;
+	}
+
+	// --from-ai-badger HEALS the canonical copy from the checkout, then installs: the
+	// healed adapter is what must reach the user scope, and a heal that stopped at the
+	// canonical copy would leave the next session on the old one.
+	if (fromAiBadgerPath) {
+		healFromAiBadger(fromAiBadgerPath);
 	}
 
 	// Retired extensions are removed before anything ships: pi discovers every
