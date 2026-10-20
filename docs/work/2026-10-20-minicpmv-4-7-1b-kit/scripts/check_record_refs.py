@@ -174,7 +174,14 @@ def main(argv: list[str]) -> int:
             print(f"   grades: {counts}  findings: {sum(counts.values())}")
     if not quiet:
         print(f"\n   total: {mix}  findings: {sum(mix.values())}")
-    print(f"\n{'OK — every reference resolves and every grade marker is in the closed set' if not broken else f'{broken} problem(s)'}")
+    if broken:
+        print(f"\n{broken} problem(s)")
+    else:
+        print(
+            "\nOK — checked: every finding pointer resolves into the right record; every finding carries a\n"
+            "     grade from the closed set {MEASURED, READ, INFERRED, UNVERIFIED}; no grade-like slip;\n"
+            "     every '## Still open' section is non-empty; no known-wrong phrasing present."
+        )
     return 0 if not broken else 1
 
 
