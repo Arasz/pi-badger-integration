@@ -381,7 +381,7 @@ The block above is the script verbatim, and it now lives in the repository at
 `mtplx run --model <dst-dir> --prompt 'hi' --reasoning off`.
 
 **Evidence:** script run as
-`/tmp/mlxenv/bin/python /tmp/export_mtplx_textonly.py /tmp/MiniCPM-V-4.7-1B-4bit
+`/tmp/mlxenv/bin/python3 /tmp/export_mtplx_textonly.py /tmp/MiniCPM-V-4.7-1B-4bit
 /tmp/q35-textonly2` → "tensors: kept 513, dropped 459"; then
 `mtplx run --model /tmp/q35-textonly2 --prompt "Say hello in exactly three words." --max-tokens 48
 --reasoning off` → exit 0, "Hello. I am here to help.", `[mtplx] profile=sustained mode=AR

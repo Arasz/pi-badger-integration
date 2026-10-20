@@ -67,7 +67,7 @@ generate — ran on the released wheel, not on a git checkout. The model card's 
 advice is conservative; the release already contains the support commit.
 
 **Evidence:** `pip install "mlx-vlm==0.7.9"` into a fresh venv on Python 3.15.0; then
-`python -c "import mlx_vlm, os; print([d for d in os.listdir(os.path.join(os.path.dirname(mlx_vlm.__file__),'models')) if 'minicpm' in d])"`
+`python3 -c "import mlx_vlm, os; print([d for d in os.listdir(os.path.join(os.path.dirname(mlx_vlm.__file__),'models')) if 'minicpm' in d])"`
 → `['minicpm', 'minicpm3', 'minicpmo', 'minicpmv4_6', 'minicpmv4_7']`. Versions in the venv:
 mlx 0.32.4, mlx-metal 0.32.4, numpy 2.5.4, pillow 13.0.0, transformers 5.20.2, Python 3.15.0.
 
@@ -388,8 +388,8 @@ Two corrections to the earlier record follow from this, and they are downgrades,
   observation, not an established cost of the mode.
 
 **Evidence:** photos fetched from `https://picsum.photos/id/<id>/800/600`; reference captions from
-`/tmp/refenv/bin/python ref_batch.py` (transformers 5.20.2, torch 2.14.1, bf16, MPS, greedy,
-`max_new_tokens=200`); MLX captions from `/tmp/mlxenv/bin/python mlx_batch.py <ckpt> <16x|4x> <out>`
+`/tmp/refenv/bin/python3 ref_batch.py` (transformers 5.20.2, torch 2.14.1, bf16, MPS, greedy,
+`max_new_tokens=200`); MLX captions from `/tmp/mlxenv/bin/python3 mlx_batch.py <ckpt> <16x|4x> <out>`
 (mlx-vlm 0.7.9, `max_tokens=200`, `temperature=0`, the 4x runs flipping
 `proc.image_processor.downsample_mode`); scores from
 `difflib.SequenceMatcher(None, reference[:1500], caption[:1500]).ratio()`. AWQ build:
