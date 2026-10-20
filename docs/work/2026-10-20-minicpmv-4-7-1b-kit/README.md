@@ -53,7 +53,7 @@ Every row is a failure this investigation actually hit, with the fix that was me
 ## One command for everything
 
 ```bash
-docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh
+bash docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh
 ```
 
 It creates the venv, installs `mlx-vlm==0.7.9`, makes the HF cache writable, converts the model
@@ -63,9 +63,9 @@ reporting success over a checkpoint that was not built. Overrides:
 
 ```bash
 FORMATS="bf16 affine4" OUT_ROOT=~/models/mc47 VENV=~/venvs/mc47 \
-  docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh
-DO_EXPORT=0 DO_VERIFY=0 docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh   # conversions only
-docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh --help
+  bash docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh
+DO_EXPORT=0 DO_VERIFY=0 bash docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh   # conversions only
+bash docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh --help
 ```
 
 ## The conversions, one by one
@@ -230,7 +230,7 @@ All commands are written **from the repository root** and are copy-pasteable as 
 
 ```bash
 # the whole chain: environment, five conversions, the export, one caption per checkpoint
-docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh
+bash docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh
 
 # the MTPLX text-only export on its own
 python3 docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/export_mtplx_textonly.py <src-mlx-dir> <dst-dir>

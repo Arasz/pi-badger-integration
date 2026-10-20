@@ -19,7 +19,7 @@ claim (path:line, a doc URL, a spec section) · `[INFERRED]` = reasoned from the
 memory, macOS 27.0.1; MTPLX 2.12.2 (mlx 0.32.2, mlx-lm 0.31.3, Python 3.14.5) and mlx-vlm 0.7.9
 on Python 3.15.0 (mlx 0.32.4). Each finding quotes its own command.
 
-**Reproduce:** `docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh` (in the kit folder beside the
+**Reproduce:** `bash docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/convert_minicpmv47.sh` (in the kit folder beside the
 records) builds the checkpoints and this export; `docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts/export_mtplx_textonly.py <src> <dst>` does the export on its
 own; F17 is that script re-run from a clean machine state.
 
