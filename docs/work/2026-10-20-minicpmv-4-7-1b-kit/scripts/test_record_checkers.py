@@ -6,7 +6,7 @@ therefore needs its own tests — otherwise "the checker passes" is an assertion
 
 Run them with:
 
-    python3 -m pytest docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts -q
+    PYTHONDONTWRITEBYTECODE=1 python3 -m pytest docs/work/2026-10-20-minicpmv-4-7-1b-kit/scripts -q
 """
 
 from __future__ import annotations
