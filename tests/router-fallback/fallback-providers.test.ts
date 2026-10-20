@@ -52,9 +52,7 @@ const REASONING: Record<string, boolean> = {
 	"google/gemini-3.1-flash-lite": true,
 	"google/gemini-3.1-pro-preview": true,
 	"openrouter/inclusionai/ling-3.1-flash": true,
-	"openrouter/poolside/laguna-s-2.1:free": false,
-	"openrouter/minimax/minimax-m3.1-flash:free": true,
-	"openrouter/thinkingmachines/inkling-small:free": false,
+	"openrouter/openrouter/free": true,
 };
 
 /** Stub registry: `present` lists "provider/model" pairs the catalog still carries. */
@@ -94,7 +92,7 @@ describe("defaults: frozen pinned chain (J3 IDs, H10 tuning)", () => {
 			"google",
 		]);
 		expect(DEFAULT_PROVIDERS.map((entry) => entry.model)).toEqual([
-			"minimax/minimax-m3.1-flash:free",
+			"openrouter/free",
 			"llama-3.3-70b-versatile",
 			"gemini-3.1-flash-lite",
 		]);
@@ -108,9 +106,7 @@ describe("defaults: frozen pinned chain (J3 IDs, H10 tuning)", () => {
 			"gemini-3.1-pro-preview",
 		]);
 		expect(DEFAULT_PROVIDERS.find((entry) => entry.id === "openrouter")?.models).toEqual([
-			"minimax/minimax-m3.1-flash:free",
-			"poolside/laguna-s-2.1:free",
-			"thinkingmachines/inkling-small:free",
+			"openrouter/free",
 			"inclusionai/ling-3.1-flash",
 		]);
 		for (const entry of DEFAULT_PROVIDERS) {
@@ -122,14 +118,16 @@ describe("defaults: frozen pinned chain (J3 IDs, H10 tuning)", () => {
 		}
 	});
 
-	test("the OpenRouter head is an explicit :free id — a paid head 402s on an empty account", () => {
+	test("the OpenRouter head is OpenRouter's free router — a paid head 402s on an empty account", () => {
 		// The head is what a billing failure parks the whole entry for and then serves, so it
 		// must be a model that answers without credits. "Free at its base id" is not a property
 		// OpenRouter guarantees: measured 2026-10-20, the previous head answered 402
 		// ("Insufficient credits") on an account with no credit, so the switch landed on a model
-		// that could not serve either.
+		// that could not serve either. The router is the provider's own id for "any free model"
+		// — one id that always resolves, where a hand-kept list of `:free` ids rots (the chain's
+		// minimax/minimax-m3:free is gone from the catalog).
 		const openrouter = DEFAULT_PROVIDERS.find((entry) => entry.id === "openrouter");
-		expect(openrouter?.model.endsWith(":free")).toBe(true);
+		expect(openrouter?.model).toBe("openrouter/free");
 		expect(openrouter?.models?.[0]).toBe(openrouter?.model);
 	});
 
@@ -143,13 +141,13 @@ describe("defaults: frozen pinned chain (J3 IDs, H10 tuning)", () => {
 describe("F1: cooldown, not disable — expiry re-admits the head", () => {
 	test("billing on openrouter advances to groq; after cooldownMs the head serves again", () => {
 		const targets = resolvedTargets();
-		expect(targets.length).toBe(7);
+		expect(targets.length).toBe(5);
 		let state = initialSelectorState(targets);
 
 		const first = decideNextTarget(state, { kind: "billing-exhaustion", now: NOW });
 		if (!("entry" in first)) throw new Error(`expected first serve, got ${first.reason}`);
 		expect(first.entry.id).toBe("openrouter");
-		expect(first.model).toBe("minimax/minimax-m3.1-flash:free");
+		expect(first.model).toBe("openrouter/free");
 
 		const second = decideNextTarget(first.state, { kind: "billing-exhaustion", now: NOW + 1 });
 		if (!("entry" in second)) throw new Error(`expected advance, got ${second.reason}`);
@@ -162,7 +160,7 @@ describe("F1: cooldown, not disable — expiry re-admits the head", () => {
 		});
 		if (!("entry" in recovered)) throw new Error(`expected re-admit, got ${recovered.reason}`);
 		expect(recovered.entry.id).toBe("openrouter");
-		expect(recovered.model).toBe("minimax/minimax-m3.1-flash:free");
+		expect(recovered.model).toBe("openrouter/free");
 	});
 });
 
@@ -211,14 +209,14 @@ describe("F2: unset-key providers are skipped; keyless custom stays eligible", (
 describe("F3: maxRetries attempts per entry, then advance", () => {
 	test("503 on openrouter head rotates once (default maxRetries 1), next 503 advances", () => {
 		const targets = resolvedTargets();
-		const headIndex = targets.findIndex((t) => t.model === "minimax/minimax-m3.1-flash:free");
+		const headIndex = targets.findIndex((t) => t.model === "openrouter/free");
 		expect(headIndex).toBe(0); // openrouter-first: the free-model head is targets[0]
 		const state = stateWithServing(targets, headIndex);
 
 		const rotated = decideNextTarget(state, { kind: "model-unavailable", now: NOW });
 		if (!("entry" in rotated)) throw new Error(`expected rotate, got ${rotated.reason}`);
 		expect(rotated.entry.id).toBe("openrouter");
-		expect(rotated.model).toBe("poolside/laguna-s-2.1:free");
+		expect(rotated.model).toBe("inclusionai/ling-3.1-flash");
 
 		const advanced = decideNextTarget(rotated.state, { kind: "model-unavailable", now: NOW + 1 });
 		if (!("entry" in advanced)) throw new Error(`expected advance, got ${advanced.reason}`);
@@ -308,7 +306,7 @@ describe("F6: all cooling → exhausted (terminal) with a servedBy record", () =
 			state = result.state;
 		}
 		expect(seen).toEqual([
-			"openrouter/minimax/minimax-m3.1-flash:free",
+			"openrouter/openrouter/free",
 			"groq/llama-3.3-70b-versatile",
 			"gemini/gemini-3.1-flash-lite",
 		]);
@@ -327,7 +325,7 @@ describe("F6: all cooling → exhausted (terminal) with a servedBy record", () =
 		expect(getServingProvider(first.state)).toEqual({
 			id: "openrouter",
 			label: "OpenRouter",
-			model: "minimax/minimax-m3.1-flash:free",
+			model: "openrouter/free",
 		});
 		const second = decideNextTarget(first.state, { kind: "billing-exhaustion", now: NOW + 1 });
 		if (!("entry" in second)) throw new Error("expected advance");
@@ -358,16 +356,16 @@ describe("F7: throttle is cooldown-only — decide returns wait, never a target"
 // ------------------------------------------------------------------ F8 503 → same-provider next model
 
 describe("F8: model-unavailable rotates within the provider before advancing", () => {
-	test("503 on the free head serves laguna-s-2.1 (same entry, next model)", () => {
+	test("503 on the free-router head serves the paid id (same entry, next model)", () => {
 		const targets = resolvedTargets();
-		const headIndex = targets.findIndex((t) => t.model === "minimax/minimax-m3.1-flash:free");
+		const headIndex = targets.findIndex((t) => t.model === "openrouter/free");
 		const result = decideNextTarget(stateWithServing(targets, headIndex), {
 			kind: "model-unavailable",
 			now: NOW,
 		});
 		if (!("entry" in result)) throw new Error(`expected rotate, got ${result.reason}`);
 		expect(result.entry.id).toBe("openrouter");
-		expect(result.model).toBe("poolside/laguna-s-2.1:free");
+		expect(result.model).toBe("inclusionai/ling-3.1-flash");
 	});
 
 	test("503 on the last chain model advances to the next provider", () => {
@@ -406,15 +404,15 @@ describe("F10: stale head model degrades to the next entry (resolve-or-skip, nev
 		const targets = resolvedTargets(FULL_ENV, makeRegistry(withoutGroq));
 		expect(targets.length).toBeGreaterThan(0);
 		expect(targets[0]?.entry.id).toBe("openrouter");
-		expect(targets[0]?.model).toBe("minimax/minimax-m3.1-flash:free");
+		expect(targets[0]?.model).toBe("openrouter/free");
 	});
 
-	test("stale openrouter head degrades within the chain (laguna-s-2.1 next)", () => {
+	test("stale openrouter head degrades within the chain (the paid id next)", () => {
 		const withoutHead = new Set([...ALL_PRESENT]);
-		withoutHead.delete("openrouter/minimax/minimax-m3.1-flash:free");
+		withoutHead.delete("openrouter/openrouter/free");
 		const targets = resolvedTargets(FULL_ENV, makeRegistry(withoutHead));
 		const orTargets = targets.filter((target) => target.entry.id === "openrouter");
-		expect(orTargets[0]?.model).toBe("poolside/laguna-s-2.1:free");
+		expect(orTargets[0]?.model).toBe("inclusionai/ling-3.1-flash");
 	});
 });
 
@@ -442,9 +440,7 @@ describe("resolveTargets: scoped sessions prefer in-scope models, never persist"
 	test("empty scope resolves the full catalog-verified chain (flat, priority order)", () => {
 		const targets = resolvedTargets();
 		expect(targets.map((target) => target.model)).toEqual([
-			"minimax/minimax-m3.1-flash:free",
-			"poolside/laguna-s-2.1:free",
-			"thinkingmachines/inkling-small:free",
+			"openrouter/free",
 			"inclusionai/ling-3.1-flash",
 			"llama-3.3-70b-versatile",
 			"gemini-3.1-flash-lite",

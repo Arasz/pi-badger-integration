@@ -71,18 +71,8 @@ const CATALOG: Record<string, FakeCatalogModel> = {
     api: "openai-completions",
     baseUrl: "https://openrouter.ai/api/v1",
   },
-  "openrouter/poolside/laguna-s-2.1:free": {
-    reasoning: false,
-    api: "openai-completions",
-    baseUrl: "https://openrouter.ai/api/v1",
-  },
-  "openrouter/minimax/minimax-m3.1-flash:free": {
-    reasoning: false,
-    api: "openai-completions",
-    baseUrl: "https://openrouter.ai/api/v1",
-  },
-  "openrouter/thinkingmachines/inkling-small:free": {
-    reasoning: false,
+  "openrouter/openrouter/free": {
+    reasoning: true,
     api: "openai-completions",
     baseUrl: "https://openrouter.ai/api/v1",
   },
