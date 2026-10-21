@@ -281,6 +281,10 @@ folder works too.)
 
 ## Related records
 
+- `docs/work/2026-10-21-minicpmv-4-7-mtplx-format-and-dspark.md` — the MTPLX *runtime contract*
+  (`mtplx_runtime.json`) written by hand and accepted by the installed MTPLX, and the DSpark
+  draft measured end-to-end on MLX and on llama.cpp (it runs, and it is exact, and on this M4 it
+  is slower than plain AR)
 - `docs/work/2026-10-20-mtplx-format-for-minicpmv.md` — what MTPLX's format is, and why the full
   multimodal checkpoint cannot be converted for it
 - `docs/work/2026-10-20-minicpmv-4-7-1b-runtime-formats.md` — which local runtime accepts which
