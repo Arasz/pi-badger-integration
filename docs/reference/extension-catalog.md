@@ -642,8 +642,10 @@ the file itself.
 The adapter also counts the gate's work for the footer: how many text searches the gate
 answered, how many of them it captured raw output for, and how many of those raw results
 the agent fetched back with the `get-raw-text-search` skill. The segment is
-`[mem <searched> <fetched>/<captured>]` — twelve searches, ten captures and nine fetched
-read `[mem 12 9/10]`. A search the gate answered without a capture still counts: the capture
+`[mem <searched> <pct>%]` — twelve searches whose ten captures were fetched back nine times
+read `[mem 12 90%]`. The share is a percentage, not a fraction: a fraction (`9/10`) is a ratio
+the reader has to divide, and a share with no captures (`0/0`) is a division by zero dressed
+up as a number. A search the gate answered without a capture still counts: the capture
 re-runs one literal shell grep, so a native search tool and a compound shell command answer
 the search without one. A session in which the gate searched nothing shows no segment at all.
 
@@ -659,4 +661,4 @@ neighbours stay apart:
 | session-signals | `[delegate · architect 1m32s · qa 7s]` |
 | query-pipeline | `[query-pipeline · scoring 24 candidates · 2 batches]` |
 | rtk | `[rtk ⇄proxy · cmd 62% · proxy 18%]` |
-| ai-badger (memory gate) | `[mem 12 9/10]` (searches · fetched of captures) |
+| ai-badger (memory gate) | `[mem 12 90%]` (searches · fetched share of the captures) |
