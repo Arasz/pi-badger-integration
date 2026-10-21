@@ -1,540 +1,547 @@
 {
-  "lastUpdated": "2026-10-20",
-  "next": null,
-  "completedTasks": [
-    {
-      "id": "pbi-router-free-router",
-      "title": "The router-fallback's OpenRouter head is OpenRouter's free router",
-      "pr": "https://github.com/Arasz/pi-badger-integration/pull/70",
-      "finished": "2026-10-20",
-      "summary": "The chain's head is now openrouter/free - OpenRouter's own 'Free Models Router' id for 'any free model' - and the hand-kept list of `:free` ids is gone. A billing failure parks the whole fallback entry and serves its head, so the head must answer without credits: the paid head answered 402 'Insufficient credits' on an empty account (measured 2026-10-20) and the in-child episode guard held, so the delegation died silently. One router id carries the breadth the list used to and cannot rot the way the chain's minimax/minimax-m3:free did (gone from the catalog). The paid id stays last, reachable on a model-unavailable rotation. A test pins the head as the router id; both mutations - the paid head, and the head missing from the rotation list - turn it red."
-    },
-    {
-      "id": "pbi-model-reject-retry",
-      "title": "A provider that refuses the child's model respawns the delegation on the parent model",
-      "pr": "https://github.com/Arasz/pi-badger-integration/pull/68",
-      "finished": "2026-10-20",
-      "summary": "The startup class arrived through two channels and the runner read one: pi's own resolution error on stderr (exit 1 - caught today) or the PROVIDER refusing the id inside the turn (400 model_not_supported, 404 model_not_found, 'The requested model is not supported' - exit 0, not caught), so a delegation whose model the provider would not serve died silently (measured 2026-10-20 on Copilot, Groq and OpenAI/Codex). The runner's one retry decision now also fires on that class: the child's last assistant turn failed with a model-unavailable error AND the child did no work (no answer, no tool), so the respawn repeats nothing. Detection is a provider machine code where given, else the wording - a provider refusal is not a status the runner can key on (400, 404 or 401 depending on provider and account). Five mutations caught, including dropping the no-work guard, dropping the arm, widening the wording list, ignoring the machine codes and looking past the last turn."
-    },
-    {
-      "id": "pbi-router-free-head",
-      "title": "The router-fallback's OpenRouter head is an explicit :free id",
-      "pr": "https://github.com/Arasz/pi-badger-integration/pull/65",
-      "finished": "2026-10-20",
-      "summary": "A billing failure parks the whole fallback ENTRY and then serves its head, so the OpenRouter head must be a model that answers without credits. The shipped head was inclusionai/ling-3.1-flash, assumed 'free at its base id' (the catalog's note); measured 2026-10-20 it answered 402 'Insufficient credits' on an account with no credit, so the switch landed on a model that could not serve either, and the in-child episode guard held - the delegation died silently. The head is now an explicit :free id (openrouter/minimax/minimax-m3.1-flash:free, measured working) with the paid id last; the stale minimax/minimax-m3:free id (no longer in the catalog) is gone. A new test pins the head as an explicit :free id, so 'free at its base id' can never come back; both mutations (paid head, head missing from the rotation list) turn it red."
-    },
-    {
-      "id": "pbi-402-plan-as-shipped",
-      "title": "The 402 retry plan carries its as-shipped delta",
-      "pr": "https://github.com/Arasz/pi-badger-integration/pull/61",
-      "finished": "2026-10-20",
-      "summary": "Doc-only: the plan for the 402 retry described the pre-review design (the respawn takes the reason alone) and left D1 open, while the shipped code takes the failure class alongside the reason and marks an attempt boundary, and D1 was decided (respawn even when the child had produced output; the duplication of side effects is documented in the catalog). The plan now carries the delta in the same shape the sibling plan uses, so a committed design record matches the code it describes."
-    },
-    {
-      "id": "pbi-402-invariants-tests",
-      "title": "The 402 respawn's log, note and card invariants are pinned",
-      "pr": "https://github.com/Arasz/pi-badger-integration/pull/60",
-      "finished": "2026-10-20",
-      "summary": "A delegated review of the 402 arm (the second one, from a tool-using lane) found that the new test block never asserted the invariants the catalog paragraph now claims for the retry: one log header, one exit line, one note. Those assertions existed only for the startup path, and the card clause was tested through a hand-built note. Test-only follow-up: the 402 path now asserts the log header/exit-line/note count, the card verdict carries the cause and the retried model, and a double-402 run settles completed with no answer and the silent reason. Each new assertion is mutation-checked (a second log header, a reason-less card clause, a failed settle, a silent variant that never fires)."
-    },
-    {
-      "id": "pbi-runner-retry-402-parent-model",
-      "title": "A 402 respawns the delegation on the parent model",
-      "pr": "https://github.com/Arasz/pi-badger-integration/pull/59",
-      "finished": "2026-10-20",
-      "summary": "A provider 402 is an API error inside a LIVE child: it arrives in the child's stdout event stream as a failed assistant turn (stopReason error, errorMessage \"402: {…}\"), the child exits 0 and its stderr says nothing, so the runner's model-startup retry (stderr signature + exit 1 + no progress event) could never see it and the delegation settled completed with no answer. The runner's ONE retry decision now also fires when the child's LAST assistant turn ended on a 402: respawn once on the parent (session) model, under the same run id, with the reason on the existing modelFallback field (no schema change). The last turn, not any 402 - with router-fallback in the child a 402 can be recovered in-child, and a run that ended on a normal turn has an answer. The 402 rule mirrors the router-fallback core's status-prefix rule (separate packages cannot import each other) and a test pins the two together. A delegated review round fixed: a failed attempt's partial text could be reported as the run's answer (the respawn now marks an attempt boundary), the reason dumped the provider's raw JSON (it now carries the provider's own message), and the two classes read differently (rejected vs billing failure). 14 mutations of the new code each caught by the matching test; CI green. PR #59."
-    },
-    {
-      "id": "pbi-quiet-memory-first-gate",
-      "title": "The memory-first gate is quiet in pi: the model gets the memory, the user sees no card",
-      "pr": "https://github.com/Arasz/pi-badger-integration/pull/58",
-      "finished": "2026-10-20",
-      "summary": "The gate allows the search and hands the memory result to the model as additionalContext (framework PR 631, ADR-0017's 2026-10-20 amendment); the adapter delivers it as a custom message with display: false, so the agent gets the data and the terminal renders nothing. A deny still blocks with its reason, for hosts whose tool seam carries no context. The per-prompt memory context of mem-based-rag is injected the same way. The scaffold refresh carries the quiet gate."
-    },
-    {
-      "id": "pbi-vendor-rtk-rewrite-pi-extension",
-      "title": "Ship rtk bash-rewrite extension (adapted from rtk-ai/rtk hooks/pi/rtk.ts)",
-      "pr": "https://github.com/Arasz/pi-badger-integration/pull/54",
-      "finished": "2026-10-17"
-    },
-    {
-      "taskId": "pbi-merge-delegate-delegations-tools",
-      "title": "Merge delegate and delegations into one unified tool",
-      "finishedAt": "2026-10-06T21:41:44Z",
-      "summary": "Merged the `delegations` tool into the single model-facing `delegate` tool via an explicit `action` param (list/log/abort/results/peek/resolve); an absent or empty action takes the existing delegate path unchanged, any populated action routes to management (a persona named 'list' arrives as `agent`, never as a verb -- no loose verb dispatch). `registerDelegationStatus` stopped registering its own tool and returns `{contextWindow, runAction}` for index.ts's one registration seam; a merged call missing both `agent` and `task` gets a loud usage guard where the schema used to reject it; the `/delegations` command, widget and tool-event handlers stayed. The four pin sites moved to the merged identity in sync: child denylist, monitor's nested abort executeTool, poll-guard name, session-signals default. VERSION 1.1.49 -> 1.2.0 and extensions/subagent/package.json 1.3.0 -> 1.4.0; README, extension-catalog and wait-check-loop docs + research record updated. PR #48 squash-merged 168a4f4 (typecheck clean, 1854 pass / 8 skip / 0 fail, /delegations command preserved); follow-up T79 de-flake PR #50 squash-merged 6a60899 (1909 pass / 0 fail) replaced the 1100 ms fixed sleep in tests/delegation-runner.test.ts with a bounded poll, test-only -- extensions/subagent/* byte-identical.",
-      "decisions": [
-        "One `delegate` tool with an explicit `action` param over a second `delegations` registration or a deferred alias: one model-facing identity, strict action-absent -> delegate dispatch, and a bounded grep-auditable diff",
-        "Pin sites re-pointed together (the merge's identity contract): CHILD_EXCLUDED_TOOLS/ASK_CHILD_EXCLUDED_TOOLS `delegate,queue,monitor,wait`; monitor's nested `executeTool(\"delegate\",{action:\"abort\"})`; `POLL_GUARD_TOOL_NAME = \"delegate\"` (still counts only list/log/results via the action test); session-signals default `[\"delegate\"]`",
-        "T79 de-flake kept test-only and bounded: await RunHandle.done (clock-free settle at SIGTERM) then poll up to 5 s for the 0 ms SIGKILL grace; T84 gets the same bounded poll; extensions/subagent/* byte-identical",
-        "Knowledge-log divergence (close-out): `.ai-badger/skills/task/references/file-schemas.md` specifies a three-file split -- state.json lean index + notesRef (status-notes.json) + historyRef (status-history.json) -- which this repo has NOT migrated to; state.json is still the legacy combined shape and status-notes.json does not exist",
-        "Close-out follows the repo's actual convention instead of migrating: one full entry prepended to state.json's completedTasks, mirroring the newest entry's six keys; no status-notes shape invented and no knowledge-log migration attempted"
-      ],
-      "followUps": [
-        "status-history.json already carries a duplicate `pbi-monitor-queue-delegation-rework` entry (full summary at index 0, lean hasNotes:false version at index 4) -- dedupe when the knowledge log is next touched",
-        "Knowledge-log migration decision still open: adopt the doc's three-file split or amend file-schemas.md to the repo's combined shape; until then state.json keeps 35+ full entries (the doc's 8-most-recent trim is unenforced)",
-        "The local branch `task/pbi-deflake-t79-timeout` still points at pre-squash aef4a49; remote `task/pbi-merge-delegate-delegations-tools` was recreated for evidence and both are intentionally not deleted (close-out constraint)"
-      ]
-    },
-    {
-      "taskId": "pbi-pi-v103-changelog-integration-adjust",
-      "title": "Adjust integration for pi 1.0.3",
-      "finishedAt": "2026-10-06T07:20:32Z",
-      "summary": "pi devDependency 1.0.2 -> 1.0.3 after diffing the installed 1.0.3 tree against the pinned 1.0.2 tree and reading the 1.0.3 changelog (low loop). The extension API surface (dist/index.d.ts, core/extensions/types.d.ts) and pi-ai retry.js/overflow.js are byte-identical, so no extension code changed; the azure provider rename, Home/End -> Ctrl+Home/Ctrl+End keybinding move, codemode image temp files, user-only output-file perms and the additive detectInstallChange have no consumer here. Pin + lock refresh + a new docs/howto/update-integrations.md section + research record; typecheck 0, full suite 1824 pass / 8 skip / 0 fail, real pi 1.0.3 print-mode session load with no extension diagnostics, publish/check in sync; CI green on the PR (one transient upstream 404 while pi-agent-core/pi-telemetry 1.0.4 tarballs were mid-publish; rerun green). PR #44 squash-merged b660e505; auto-bump released 1.1.46.",
-      "decisions": [
-        "Global pi install verify-only in the pin-bump lane: the machine already ran 1.0.3, and reinstalling under the running session buys no evidence (1.0.3's own detectInstallChange exists for that hazard)",
-        "Full suite run locally rather than a touched-surface slice: the runtime under test IS the changed dependency, so the whole suite is the touched surface",
-        "VERSION untouched; auto-bump.yml carries the release on merge",
-        "Docs section carries five changelog items plus a re-sync row; the retry.js/overflow.js byte-identity row is a verification, not a release item",
-        "Research record A1 lists the relevant dist changes with an explicit bundle-chunks exclusion and the provider-dir renames after the phase-4 review"
-      ],
-      "followUps": [
-        "pi 1.0.4 landed upstream mid-task (partial publish briefly 404ed pi-agent-core/pi-telemetry 1.0.4 tarballs and failed CI's global install once; rerun green). CI's global install resolves ^1.0.3 ranges, so it now mixes 1.0.3 with 1.0.4 subpackages; the next changelog-integration task must assess 1.0.4",
-        "router-fallback's default-free-model chain has no catalog-parity test, so model rotations are invisible to CI (minimax/minimax-m3:free is already absent and degrades cleanly via resolveTargets)",
-        "The Copilot review round does not run on this repo (zero reviews and inline comments on PRs 40-44); the internal plan, join and phase-4 reviews are the recorded gates",
-        "Phase-6 doc audit F4: the pi instruction files (.github/instructions/pi.instructions.md, .ai-badger/instructions/pi.instructions.md) name pi 0.99.1/0.84.3 as their measurement basis with a re-measure caveat; two upgrades (1.0.0, 1.0.3) have landed since, so re-measuring the MCP and hook lines is due",
-        "Phase-6 doc audit F5: research record D1 says a pin bump switches both CI and local suite runs; locally the harness resolves pi from the user's global install, which a pin bump does not refresh — correct the wording when the record is next touched"
-      ]
-    },
-    {
-      "taskId": "pbi-ling-flash-default-free-model",
-      "title": "Use inclusionai/ling-3.1-flash as default free model in router fallback",
-      "finishedAt": "2026-10-05T21:10:37Z",
-      "summary": "Router-fallback OpenRouter head z-ai/glm-5.2:free (dead: absent from live roster and pi catalog) -> inclusionai/ling-3.1-flash (low loop). Verified live 0/0 pricing at base id (no :free variant), tools+tool_choice, in pi catalog reasoning:true, zero registration. 3 commits: source head-swap + 13 test re-pins (F10 delete retargeted, mutation-proven) + catalog row sync + comment fix. Gates: tests/router-fallback 149 pass, typecheck clean, cross-package 10 pass. Implementation review SHIP. PR #43 squash-merged 27d060b, CI test check passed; copilot review loop skipped per owner.",
-      "decisions": [
-        "No pruning of minimax-m3:free (resolve-or-skip + F10 cover it)",
-        "No join step (low loop, disjoint files, CI is the join)",
-        "No RED-first split (single green run proves more)"
-      ],
-      "followUps": [
-        "Base-id zero pricing is not the :free contract; watch for silent price changes (fallback: ling-3.0-flash-sante:free)",
-        "Two code-reviewer lanes timed out on open-ended briefs; tight time-boxed briefs complete in ~1-2 min"
-      ]
-    },
-    {
-      "taskId": "pbi-pi-v1-changelog-integration-adjust",
-      "title": "Adjust integration for pi 1.0.0",
-      "finishedAt": "2026-10-02T17:30:00Z",
-      "summary": "pi devDependency 0.84.4 -> 1.0.0 after reading the 0.85.0-1.0.0 changelog (low loop). Typecheck clean, full suite green, all 14 installed extensions load under pi 1.0.0 with no warnings. One real defect, found by review not by tsc: decision-router's readCatalogue passed every registered tool (incl. codemode/deferred/hidden MCP tools, pi 0.99 exposure model) to the classifier and setActiveTools could declare them directly; now keeps only direct/model-only/no exposure (red-first test). New hook-bridge test pins pi's mcp__ai_raccoon__memory_search spelling (mutation-proven). Stale 0.84.4 / pi-mcp-tools spelling claims refreshed; docs/howto/update-integrations.md gains 'Moving to pi 1.0.0'. PR #40 squash-merged 06bdfbe, CI green.",
-      "decisions": [
-        "No code change for 0.86/0.87 breaking items: no context/user_bash handlers, turn_end handler returns undefined, no custom provider stream",
-        "/ask child keeps --no-extensions; losing built-in llama.cpp provider is documented rather than re-added with -e builtin:llama.cpp"
-      ],
-      "followUps": [
-        "Interactive fullscreen-TUI behaviour (now default) of shift-enter-newline and footer widgets not verified",
-        "hook-bridge MCP-spelling test inlines the shipped matcher regex; authoritative hooks.json is not in this mirror"
-      ]
-    },
-    {
-      "taskId": "aib-adjust-mcp-native-capability-gate",
-      "title": "Replace pi-mcp-tools marker gate with native-capability check in ai-badger pi adjustments",
-      "finishedAt": "2026-09-30T14:25:09Z",
-      "summary": "Framework follow-up to the fork retirement (low loop, cross-repo in $AI_BADGER). adjust_mcp.py's removal gate now keys on the project's native .pi/mcp.json (exists AND parses as a JSON object; absent/malformed/non-object/no-target all conservative warn-and-leave, never raises, no version probe). Fork's name retired from adjustment.json, pi_settings/adjust_skills docstrings, support.json mechanism+scaffoldedBy (honesty pins moved to the native contract, 'parseable JSON object' pinned, mutation-proven), mcp_tools comments (comment-only; companion owns the MERGE path), plus an ADR-0023 amendment. Red-first: s1 suite failed 9 tests against unchanged code before s2 greened it; s5 adversarial review (mutation-based) found 2 blocking gaps, fixed in 2fa2a5ec. Released as ai-badger 0.183.0 via PR #546 (squash-merged 2a8a2c10, all CI green). Join: companion PR #545 (scaffold .pi/mcp.json) rebases onto main, honesty pins extend-don't-drop; they renumbered to 0.184.0. Plan: task-graph rev 13, 6/6 steps, 32/32 ACs."
-    },
-    {
-      "taskId": "pbi-retire-pi-mcp-tools-native",
-      "title": "Retire pi-mcp-tools; pi's built-in MCP takes over (native MCP migration)",
-      "finishedAt": "2026-09-30T09:33:38Z",
-      "summary": "Complete retirement of the pi-mcp-tools fork in favor of pi 0.99.1's built-in MCP (owner scope: item 1 only, low-effort loop). Deleted extensions/pi-mcp-tools + tests/pi-mcp-tools (15 + 9 tracked files; the fork-canonical parity gate and the prettier byte-parity twin landed the same morning are retired with it). publish.ts: EXTENSION_DIRS drops pi-mcp-tools; new RETIRED_EXTENSION_DIRS drives --check fatal-on-stale (read-only, names the fix) and install remove-and-announce, behind an injected userExtensionsDir seam (5 new cases; independent break-test with emptied RETIRED_EXTENSION_DIRS reddens exactly them). Deleting the fork also cleared the repo's 10 TS2307 tsc baseline (tsc now exit 0). Config: kept .mcp.json for Claude Code and added tracked .pi/mcp.json with the five servers converted per pi's dist/extensions/mcp/runtime.js (expandHome-only on command/args/cwd; ${NAME}/!command in env/headers only): ${HOME}->~, ${CLAUDE_PROJECT_DIR} -> task-graph script path relative to the session cwd, fork tools arrays dropped; migration note covers the command/tool-name mapping, trust gating (headless ask/never + --approve), and the codemode default exposure. Docs: README row/intro, catalog tombstone naming pi-mcp-tools, publish-flow ownership rule with the retired-dir exception, CI comment, both pi.instructions.md MCP bullets rewritten byte-identically (mcp__<server>__<tool>, 'no MCP support' claim gone, provenance header now 'pi 0.99.1 for the MCP bullet'), 8 always-loaded summary copies, VERSION 1.1.34. Evidence: task-graph plan revision 1 after GO-WITH-FOLDS plan review (BSD wc padding fix + hardened join check); 6-step DAG all criteria passed; wave-1 lanes + summary/version lanes each in their own worktree; integration on the merged tree; real machine: check exited 1 naming the stale ~/.pi/agent/extensions/pi-mcp-tools -> publish removed+announced -> check 0 -> dir gone; widened touched surface 385 pass/0 fail + tsc 0; release.yml ran on main for 1.1.34. PR #39 squash-merged 57bdcf9 at head 94b9edd; qa review's F1 MUST (cwd missing from the ${…} scan) plus F2/F3 were cherry-picked to main as 7ed8a1c after the merge.",
-      "decisions": [
-        "Complete retirement, no version-gated fork and no card-renderer port: human cards, mcp_list_servers, the mcp-* commands, --mcp-debug and settings-persisted disabled tools are replaced by /mcp, pi mcp CLI, ~/.pi/agent/mcp.log and exposure/toolExposure in mcp.json",
-        "publish cleanup is name-gated (only RETIRED_EXTENSION_DIRS entries may be removed), --check never writes (it flags), install removes and announces; removal is mandatory because pi discovers every ~/.pi/agent/extensions/<name>/index.ts and a stale fork would stay armed",
-        "The three generic dotfile publish cases were kept (fixture renamed pi-mcp-tools -> session-signals); only the marker fixtures were incidental",
-        "Instruction files were hand-edited past the generated-file guard because the ai-badger framework sources are stale and a scaffold refresh would clobber both rewrites and resurrect the 'no MCP support' claim",
-        "Plan review (GO-WITH-FOLDS) folded via plan_replace at revision 1: BSD wc pads counts so three gates would never go green; the integration check now enforces stale-present -> check red -> publish -> check green -> dir gone",
-        "qa review F1/F2/F3 (cwd in the ${…} scan, task-graph script existence, non-empty server guard) applied post-merge by cherry-pick on main; the CI failure that drove the loose-probe fix (RETIRED_EXTENSION_DIRS substring collision with two EXTENSION_DIRS = source probes) was fixed in be4f143, green on CI"
-      ],
-      "followUps": [
-        "ai-badger: replace the .ai-badger-capability-project-scope-mcp marker gate (features/pi/adjustments/*) with a native-capability check; the framework copy features/pi/instructions/pi.instructions.md still asserts 'pi core has no MCP support' and would resurrect the claim on refresh",
-        "The Copilot review round never ran (PR merged early by the owner); the code-reviewer (APPROVE-WITH-CHANGES, all folded) and qa (sound with one MUST, folded) reviews are the recorded gates",
-        "Optional and uncommitted: a standalone card-renderer extension for native MCP results (out of scope)",
-        "pi devDependency stays pinned 0.84.4 in CI while the native-MCP facts are 0.99.1 - separate item flagged in the plan context"
-      ]
-    },
-    {
-      "taskId": "pbi-project-local-ids-console-hygiene",
-      "title": "Project-local delegation ids + global GUID v7, completion fix, extension console capture",
-      "finishedAt": "2026-09-22T22:47:16Z",
-      "summary": "Three user items plus one feedback hotfix. (1) Delegation ids are project-local: logs moved to ~/.pi/agent/subagent-logs/projects/<projectKey>/d-N.jsonl (key = AI_BADGER_PROJECT_ID env, else .ai-badger/project-id, else sha256 of the nearest .ai-badger/.git root, else cwd), allocation/reconstruction/prune scoped per project, legacy flat logs left untouched and unread. Every run also mints a UUID v7 globalId (record, run header, receipt) indexed at log-sink creation into ~/.pi/agent/subagent-logs/index.jsonl (append-only, compacted above 1000 to newest 500, atomic rename); delegations resolve <d-N|guid> bridges local<->global (live registry first, then the index). (2) The autocomplete provider splices an argument completion's value over the WHOLE argument, so /delegations log|abort|peek and /monitors cancel id items now return '<verb> <id>' — Tab no longer deletes the verb. (3) New extensions/console-capture: wraps console.log|info|warn|error|debug while the TUI owns the terminal, appending to ~/.pi/agent/badger-console.log (1 MiB rotation), armed at factory, disarmed when session_start is not TUI, flushed to the original stderr on a pre-session exit, permanently disarmed by uncaughtExceptionMonitor, kill-switch PI_BADGER_CONSOLE_CAPTURE=0; composes with the session-signals vertex filter in either order. Hotfix (f: feedback): pi-tui 0.87.1 renamed the darwin prebuild to darwin-platform.node and the shift-enter loader's local candidate had a doubled path segment, so Shift+Enter degraded to follow-up in JetBrains terminals; both names are now tried from the resolved package dir. Evidence: plan review GO-WITH-FOLDS (M1-M4, S1-S6 folded), 852 pass/0 fail on the touched surface, 5-test integration suite, tsc only the 10 baseline pi-mcp-tools TS2307s, publish + --check in sync (14 extensions incl. console-capture), PR #30 squash-merged 5606f4c (release 1.1.19).",
-      "decisions": [
-        "Project key: AI_BADGER_PROJECT_ID wins, then .ai-badger/project-id, then a stable hash of the nearest .ai-badger/.git root, then cwd; sanitized to [A-Za-z0-9._-]",
-        "Log layout: projects/<key>/ under the existing log root; the SubagentDeps.logDir seam stays the base dir; allocateRunId and reconstructFromLogDir are reused unchanged",
-        "Global index entry is written at log-sink creation (not allocation), so queue-cap-rejected and queued-aborted runs get none while aborted-at-spawn is indexed (openTee precedes the pre-aborted check)",
-        "Global id is a local UUID v7 mint (48-bit ms + randomBytes) with no Node-version dependency; explicit-id runs mint one after the fact via allocationOf normalization at both registry call sites",
-        "resolve semantics: local id answers from the live registry then the run header; a foreign GUID answers from the index with source 'index'; unknown input is loud",
-        "Dedicated console-capture extension over hosting in session-signals: console hygiene must not disappear when an unrelated feature is disabled; disabled = leak returns by design (documented)",
-        "Capture wraps log|info|warn|error|debug only (dir/trace/table documented as outside); a throwing sink falls back to the original method once and never throws into the caller",
-        "Completion tests keep direct exact-value assertions; the apply-completion helper is a drift guard only — the independent witness is the manual TUI check"
-      ],
-      "followUps": [
-        "Manual TUI confirmation of /delegations log <Tab> in a live session (automated evidence applies the provider algorithm exactly)",
-        "Phase-4 reviews d-1551 (implementation) and d-1552 (test quality) were still running at merge; triage findings into a follow-up PR if any MUST/blocker lands",
-        "console-capture is a new publish target: users must /reload or restart pi to load it",
-        "decision-router node_modules warning from publish --check is pre-existing (derived state)"
-      ]
-    },
-    {
-      "taskId": "pbi-multi-query-rag-pipeline-v1",
-      "title": "Multi-query RAG pipeline v1: query-pipeline extension, Jev preload, document-aware merge",
-      "finishedAt": "2026-09-22T22:35:52Z",
-      "summary": "Shipped extensions/query-pipeline (group: delegator-persona direct ctx.modelRegistry.complete call -> split: one memory_search per planned query, sequential through mem-based-rag's single-flight searchCall -> rank: Jev score client copied by contract, batched <=12, own 15s attempt timeout -> merge: 5 slots total, best chunk per distinct document first, backfill only from already-included documents -> the bank's memory_search envelope). mem-based-rag auto-enrichment routes through it with PI_BADGER_QUERY_PIPELINE=0 falling back to today's single search; a search-error rethrow preserves the existing bank-error/timed-out diagnostics; progress paints via ctx.ui.setStatus/setWidget with a per-run token and clears in finally; one gated session-scoped fail-open Jev warm call at session_start; publish.ts EXTENSION_DIRS + export. Evidence: full suite 1870 pass/6 skip/4 fail (the 4 pre-existing pi-mcp-tools fork-parity + native-helper failures, identical on main); typecheck clean; publish --check in sync; per-package mutation ledgers pasted (PKG-1..PKG-5); MG-2 direct planner N=10 p50 4.2s/p95 5.6s ~$0.0003/call; MG-3 real MCP end-to-end 5 queries -> 29 candidates in 19.0s -> Jev 1.7s -> 5 distinct docs, 3 absent from the baseline top-5; MG-1 render mechanism verified from installed pi source (setStatus -> interactive-mode.setExtensionStatus -> footerDataProvider + ui.requestRender -> TUI.requestRender -> process.nextTick(scheduleRender)). PR #29 squash-merged ee5f1c6.",
-      "decisions": [
-        "Planner seam is ctx.modelRegistry.complete (pi 0.84.4 ModelRegistry has no streamSimple); text extracted inline from AssistantMessage.content, no pi-ai dependency",
-        "MG-2 amendment: parsePlan normalizes instead of rejecting - drops malformed concepts/queries, ignores unknown keys, truncates to 6 total / 4 per concept; strict shape rejection discarded 5/10 measured plans (the model reliably emits 4 concepts / 7-9 queries)",
-        "Merge budget is 5 slots total across mem+code (not per section); null-scored distinct documents take pass-1 slots (document-first); droppable ?/empty hits are dropped before selection (pruneHits parity, per kind)",
-        "Budget defaults 90s total / 15s planner / 15s search / 8s score; the planner cap is min(plannerMs, total-search-score) so it can never eat the search window; a single search timeout does not abort the shared controller",
-        "v1 routes auto-enrichment only (/ask unchanged) and has no HTTP planner fallback - any planner failure degrades to the single-query path",
-        "Jev scoring is a copy-by-contract client (the frozen decision-router client cannot express type:score); same env names/error vocabulary, own 15s per-attempt timeout, no backoff",
-        "A dead bank surfaces through the pipeline's search-error reason, which mem-based-rag rethrows into its existing bank-error skip path, so both pre-existing wiring tests pass unchanged",
-        "Progress uses ctx.ui.setStatus + setWidget with a monotonic per-run token; an earlier finisher never clears a later run's status"
-      ],
-      "followUps": [
-        "Live pixel confirmation of MG-1 progress visibility (mechanism verified from source; not yet observed in a live TUI)",
-        "Parallelize the N searches without breaking searchCall single-flight (owner-deferred optimization pass)",
-        "Route /ask through the pipeline; direct HTTP planner fallback; mechanical-chunking baseline (may cut the planner); planner stability/recall repeats; independent relevance labels",
-        "Tune the default planner model (env PI_BADGER_QUERY_PIPELINE_PLANNER_MODEL unset -> ctx.model) from measured cost/latency"
-      ]
-    },
-    {
-      "taskId": "pbi-jev-routing-tool-model-selection",
-      "title": "Jev 1.13 decision-router: tool selection, model selection, shadow prompt routing",
-      "finishedAt": "2026-09-21T22:33:53Z",
-      "summary": "Measured TypeSafe Jev 1.13 through OpenRouter (/api/alpha/decisions: 0.47-0.89 s, ~$0.00002/call, typed answers with per-option probabilities) and shipped extensions/decision-router/ as one pre-flight before_agent_start fan-out: additive confidence-gated tool selection, asymmetric model-tier pre-flight, shadow-only prompt routing. PR #27 squash-merged (CI test pass); 206 decision-router tests, typecheck clean; full suite has only the 4 pre-existing environment failures. Internal review MoE (code/qa/delegator) plus a 47-mutation ledger and an independent 19/19 re-verify; the tier setModel MUST (bare {provider,id} stub corrupting session.model) was fixed by resolving through ctx.modelRegistry.",
-      "decisions": [
-        "Session cache key (promptHash, catalogueHash, modelId), no TTL, LRU 50; no general inter-call cooldown; 429 arms a Retry-After cooldown only",
-        "Tool apply is additive: floor 0.2, confidence gate 0.7; never removes tools; a failed getActiveTools read holds instead of narrowing",
-        "Tier asymmetry: upgrade 'high' at conf >= 0.60, demote 'low' at >= 0.85, 'medium' always holds; already-on-target holds; upgrades latched while router-fallback switched",
-        "setModel must receive a full registry model (ctx.modelRegistry.find); a {provider,id} stub silently corrupts session.model on pinned pi 0.84.4",
-        "Thresholds are code constants, not env; env surface is kill switches (PI_BADGER_DECISION_ROUTER*), key, endpoint/model, timeout, and tier model refs",
-        "Prompt routing is shadow-only (record {question, choice, confidence, promptHash}); enforcement deferred until a labelled corpus exists",
-        "Pure client/policy modules with injected fetch/scheduler/env; alpha endpoint behind a classify() seam with a deterministic fallback"
-      ],
-      "followUps": [
-        "Labelled 100+ prompt corpus before trusting/profiling demotion tuning (ADR follow-up)",
-        "Tool narrowing mode (deactivate non-selected tools) deferred; additive apply only in v1",
-        "Routing enforcement path and its confidence threshold",
-        "Live 255-option catalogue probe and its real token cost",
-        "Bounded 429/402 endpoint probe (rate-limit shapes were stipulated, not measured) and data-retention terms"
-      ]
-    },
-    {
-      "taskId": "pbi-deepseek-v41-flash-delegation-default",
-      "title": "DeepSeek V4.1 Flash as the medium+high delegation default (framework + pbi)",
-      "finishedAt": "2026-09-21T21:17:27Z",
-      "summary": "Rotated openrouter/deepseek/deepseek-v4.1-flash (0.15/0.60 per M) to the medium and high preferred tier durably in the ai-badger canonical and immediately in this repo. Framework: 0.172.0 (#492) medium rotation with the displaced muse-spark-1.3-contributor demoted to a revisionWatch tail (high was already rotated in 0.168.0); 0.172.1 (#493) fixed the full-price-twin evidence and published the registryVersion erratum. pbi: FROZEN_MODEL_GROUPS medium+high re-pinned, ADR provenance rewritten, exact-bullet join-7a tripwire added, queue/model-level tests updated (#26); den-refresh to 0.172.1 with the live .ai-badger/model-groups.json now resolving deepseek and the ADR frozen-flag truth fix (#28). Runtime probes with source asserted: frozen (empty cwd), project (refreshed registry frameworkVersion 0.172.1), fresh scaffold from the tag tree; the pre-refresh registry reds the same probe. Published to pi user scope; the installed frozen probe passes. High-effort loop: 3-lane plan MoE, plan-review MoE (2 MUST + 5 SHOULD folded), impl-review MoE, QA GATE-WITH-NITS (all changed assertions mutation-proven).",
-      "decisions": [
-        "Preferred rotation, not a new tier: medium===high is legal (per-group invariants only); deepseek already ships in high, so registryVersion stays 1 and the 0.172.1 erratum corrects 0.172.0's inaccurate 'no member was added or removed' wording",
-        "The frozen fallback is pbi's shipped default for registry-less projects; a scaffolded project's own registry wins, so live activation required den-refresh, not just the frozen edit",
-        "Refresh ran from an immutable checkout --detach worktree at the ai-badger--v0.172.1 tag, then was redone from the canonical /Users/arasz/RiderProjects/ai-badger checkout so the committed manifest.frameworkRoot stays canonical",
-        "Exact-bullet ADR assertions replaced the id-presence loop: with medium==high the old loop was blind to a half-edit (QA confirmed the exact-bullet form is the only test that catches it)",
-        "Publish ran from the task worktree reset to post-merge origin/main, never the dirty main checkout; the sibling session's session-signals extra destination file was left untouched (bus-notified)"
-      ],
-      "followUps": [
-        "Optional: rename the fixture-shaped L0-5 test (sonnet-5 last in medium)",
-        "Deliberately not added: a durable frozen-vs-canonical tripwire (would red between a framework release and a consumer refresh; needs a decided cadence)",
-        "Sibling session must re-publish session-signals when its silence-vertex-debug work lands (bun run check currently OUT OF SYNC on that extension's extra destination file)"
-      ]
-    },
-    {
-      "taskId": "pbi-google-vertex-adc-support",
-      "title": "Enable Google Vertex API support with ADC in Pi",
-      "finishedAt": "2026-09-16T21:15:00Z",
-      "summary": "Enabled native Google Vertex API support with Application Default Credentials (ADC) in Pi, mirroring Hermes Agent patterns. Configured ~/.pi/agent/auth.json with google-vertex provider (env GOOGLE_CLOUD_PROJECT='job-search-ai-assistant-503814', GOOGLE_CLOUD_LOCATION='global', key omitted for ADC resolution). Configured ~/.pi/agent/models.json with Hermes-style model aliases (google/gemini-3.8-flash, google/gemini-2.5-flash, etc.) eliminating custom-model warnings. Added persistent exports to ~/.zshrc. Verified end-to-end live generation on gemini-2.5-flash and gemini-3.8-flash with real tool execution. Authored docs/howto/configure-google-vertex.md and updated configure-provider-keys.md. PR #24 squash-merged.",
-      "decisions": [
-        "In ~/.pi/agent/auth.json, omitting the 'key' property allows pi-ai google-vertex resolve to forward credential.env to the client; setting a dummy key incorrectly short-circuits env forwarding",
-        "Configuring Hermes-style prefixed model IDs in models.json allows users to use both bare (gemini-3.8-flash) and prefixed (google/gemini-3.8-flash) IDs cleanly without warnings",
-        "Set GOOGLE_CLOUD_LOCATION='global' as recommended for Gemini 3.x preview models"
-      ]
-    },
-    {
-      "taskId": "pbi-bus-identity-whoami-prose-guard",
-      "title": "Bus identity: full-id whoami pull, session env sync, prose-beats-wire mandates",
-      "finishedAt": "2026-09-09T23:10:00Z",
-      "summary": "Closed the truncated-only + prose-beats-wire gap behind F2 (stale prose-copied ids stranded 1:1 mail at dead ids). Delivered: message-bus whoami echoes FULL session+project ids in content (explicit pull; list/check headers stay truncated, F7 stays closed); session_start pins PI_SESSION_ID to the live manager id and clears stale foreign CLAUDE/HERMES vars (fail-open, single-resolve, trim guard); tool description carries the whoami-before-first-send rule for immediate effect; whoami-first mandates staged scaffold-safe in multi-agent-communication + task project-local.md; framework-source halves (skill SKILL.md text, task_tracker.py stale-binding warning) recorded as docs/work/2026-09-09-bus-identity-framework-followup.md for a feed-badger draft PR (generated-file guard forbids in-repo edits). 115/115 message-bus tests green (4 new), CI tests 1514 pass 0 fail with only the pre-existing monitor/mem-based-rag typecheck red (identical on main). code-reviewer SHIP-WITH-FIXES, 0 MUST 4 SHOULD all folded. PR #21 squash-merged 945a661. Low-effort, in-session plan, delegated review. User must /reload running sessions.",
-      "decisions": [
-        "whoami (explicit pull) is the one surface echoing full ids; list/check stay truncated — full ids never enter broadcasts, acks, or quoted bodies",
-        "Foreign harness env vars are pi-session-stale by construction when they differ from the live id; clearing them in-process is safe (parent env unaffected)",
-        "Generated skill/tracker files change only at their framework source: project-local.md stages the mandate, feed-badger PR delivers it upstream",
-        "Pre-existing CI typecheck red (monitor ExtensionContext mismatch, identical on main) does not gate this merge; documented, not fixed here"
-      ]
-    },
-    {
-      "taskId": "pbi-wait-mail-text-list-fallback",
-      "title": "Live-test findings: mail text list-fallback and record",
-      "finishedAt": "2026-09-09T21:20:00Z",
-      "summary": "Ack-gated live retest (fresh session 01a087f3): W1 mail@44s SAW WAKE-A, W2 mail@43s SAW WAKE-B (no re-fire), W3 timeout@40s silence; protocol cost ~5-9s/round vs 150s+ blind leads. Delivered: mail result text names message-bus list fallback (their post-wake checks read empty while list showed the WAKEs), pinned by /message-bus list/i (RED-first, qa nit tightened); research record F10 + method note, renderer clean. 287 touched tests green, tsc clean outside pre-existing pi-mcp-tools gap, full suite only pre-existing reds; code-reviewer SHIP clean + qa GATE-WITH-NITS (1 nit folded). Merged FF, published. Also repaired state.json brace dropped by sibling footer-task commit. Low-effort, in-session plan/review. User must /reload running sessions.",
-      "decisions": [
-        "Ack-gated protocol (READY per window) over blind leads for future live tests; my-side sub-60s timing imprecise, keep 30s+ margins with READY labels",
-        "Text-only change: no live retest needed beyond the run that motivated it; unit pins suffice",
-        "Merged locally, not via PR: github extension activated mid-task after work was reviewed; next task runs full PR flow from branch start"
-      ]
-    },
-    {
-      "taskId": "pbi-footer-shows-all-cron-jobs",
-      "title": "Footer reflects all cron jobs, not just cron.json",
-      "finishedAt": "2026-09-09T21:00:00Z",
-      "summary": "Footer cron status + cron-status now reflect pi-cron (cron.json) + system crontab (crontab -l), fail-open. NEW extensions/pi-cron/crontab.ts (parseCrontab, readSystemCrontab, formatCronStatus, truncateCommand); footer matrix (both->'N jobs (A pi + B crontab)', pi-only/system-unavailable->legacy byte-identical, system-only->new (s) form); cron-status gains system section + launchd non-pi out-of-scope note. 45 pass (22 new + 23 existing), tsc clean pi-cron (only pre-existing pi-mcp-tools reds), merged FF 1a7bd91. Low-effort: architect plan + code-reviewer READY-WITH-FOLDS (5 MUSTs folded) + api-engineer impl + code-reviewer SHIP (4 SHOULD follow-ups, non-blocking). User must /reload running sessions.",
-      "decisions": [
-        "Read-only scope: count + display only, no manage-system-crontab (would push to standard effort)",
-        "System 0/unavailable -> legacy strings byte-identical (no suffix); launchd non-pi daemons explicitly out of scope (documented)",
-        "Sync execFileSync with 2s timeout inside handlers only (never top-level); injected exec in tests, never real binary"
-      ]
-    },
-    {
-      "taskId": "pbi-wait-tick-shared-cursor-race",
-      "title": "Fix wait mail-tick losing shared-cursor race with adapter",
-      "finishedAt": "2026-09-09T20:35:00Z",
-      "summary": "Live test (2nd session) proved the cursor-based tick slept through R1 (WAKE deliverable 90s, timeout) while R3 hit in 251ms: the adapter poll consumes at sighting, displays at turn boundary, sharing one cursor. Fix: per-wait private high-water mark (readMailMark at start, defaultBusMailSince wakes on ids above mark, cursor-independent) + optional indexed hasNewSince seam (list fallback) + guarded mark read. 287 touched tests green incl. two-consumer regression (RED pre-fix) + mark-window/null-mark/stranger/fallback pins (2 lethal-verified live); tsc clean outside pre-existing pi-mcp-tools gap; full suite only pre-existing pi-mcp-tools reds; merged FF, published. Research record gains MEASURED F7/F8 + READ F9 + repaired Still-open closure. Low-effort: in-session plan + code-reviewer SHIP (1 fold: guarded mark read) + qa GATE-WITH-NITS (3 should-fix folded). User must /reload running sessions.",
-      "decisions": [
-        "Private mark over shared cursor: adapter cadence no longer matters to wake reliability; peek helper replaced (not kept alongside)",
-        "Undelivered-at-start mail no longer wakes (mark=max); accepted + disclosed (check-then-wait contract), snapshot deferred as 15-line follow-up",
-        "Deferred: MAX pushdown (wait-start cost only), probe regrouping (N~1), timer-handle naming (order loudly pinned), bus-store module split"
-      ]
-    },
-    {
-      "taskId": "pbi-wait-check-loop-bus-mail",
-      "title": "Short wait plus message-bus check loop, close wake research still-open",
-      "finishedAt": "2026-09-09T19:45:00Z",
-      "summary": "Owner feedback moved F6 inside the tool: wait now wakes on bus mail via an internal fixed 1 s tick (BUS_MAIL_TICK_MS, defaultBusMailProbe read-only peek, observed mail) — from the agent's perspective wait just works, no check loop. Fail-open (missing/locked DB, no identity, bus-off all read as no mail), per-ctx probe groups, tick disarms with last wait + on shutdown, mail beats idleness in W-A4 re-check. Wait + bus tool descriptions name it; docs/howto/wait-check-loop.md + catalog pointers; catalog stale wait default fixed (120 s -> 5 min code truth); research Still-open closed wont-continue, F6 marked superseded. 279 touched-surface tests green (15 new incl. live re-arm/kill-switch/cross-session mutation pins), tsc clean outside pre-existing pi-mcp-tools worktree gap, full suite only pre-existing pi-mcp-tools parity reds, merged FF, published (2 coordinator-revert extras remain, not this task). Low-effort: in-session plan/review + code-reviewer SHIP (7 SHOULDs, 3 folded) + qa BLOCKED->fixed (2 blockers + 4 nits, re-arm mutation verified lethal live). User must /reload running sessions.",
-      "decisions": [
-        "Internal tick over agent-side loop: no push path reaches a wait-held turn cross-process, so the waiter checks itself; agent contract unchanged (wait just resolves mail)",
-        "Fixed 1 s cadence, no ms knob (owner order); one shared timer, one probe per distinct ctx per tick",
-        "Peek-never-advance keeps exactly-once delivery through the turn_start hook; kill switch PI_BADGER_MESSAGE_BUS=0 honored",
-        "Deferred with reasons: bus-store module split (pure-core pollution risk), contention measurement (measure-first), tick-skip micro-opt (probe returns pre-fs), timer-handle naming (order loudly pinned)"
-      ]
-    },
-    {
-      "taskId": "pbi-ask-child-budget-mcp-strip",
-      "title": "Strip /ask child boot stack + raise child budget",
-      "finishedAt": "2026-09-09T18:59:07Z",
-      "summary": "Measured /ask child boot 62.7s (5 project MCP incl. failing hermes + full extension stack incl. coordinator ticks) vs 1.8s stripped. Child argv gains --no-tools/--no-skills/--no-extensions/--no-prompt-templates (denylist kept, --model/--thinking/--offline/--no-context-files rejected); NEW PI_BADGER_MEM_RAG_ASK_CHILD_TIMEOUT_MS default 90s (500-600000) as askChildTimeoutMs, search budget untouched; ack/status name child budget (old substrings kept). RED-first: argv/tail pins (4 sites → slice(-12)), default/override/fallback, exact repoint split (spawn→NEW, search/get/poison/bank stay), status/ack pins, RAG_KEYS hygiene. Review SHIP + 1 comment fix. 131 mem-based-rag green, tsc clean touched files, merged --no-ff (main had moved: #20 + 1.1.4), published + --check in sync, LIVE probe answers PONG in 1.7s. Low-effort: architect plan + code-reviewer READY-WITH-FOLDS (5 MUSTs) + api-engineer + code-reviewer SHIP. User must /reload running sessions.",
-      "decisions": [
-        "Strip flags implement the original tool-less-child design (only 5 tools were excluded before); denylist kept redundantly (pin + defense-in-depth)",
-        "Separate child env restores pre-P1 90s headroom without touching search fail-fast; P1 spawn-bound REDs repointed exactly (M2 split)",
-        "--no-context-files/--offline/--thinking rejected (unneeded for the win; quality/risk)",
-        "append-only card + triggerTurn:false from prior task unchanged and compatible"
-      ]
-    },
-    {
-      "taskId": "pbi-centralized-message-delivery-coordinator-rebuild",
-      "title": "Refactor message delivery extension to centralized coordinator",
-      "finishedAt": "2026-09-09T18:30:00Z",
-      "summary": "Waker-only central coordinator (D1=A 3/3 consensus; full delivery + 5s/3x + no-hooks deferred as evidenced). PKG-1 registry heartbeat (readRegistrySnapshot, REGISTRY_TTL_S=300 read-side, TTL/4 touch, listIdentities seam), PKG-2 pure grouping+channel cache (flat channels, version hash), PKG-3 read-only tick (zero deliver/send, fail-open, single-flight, MAX_TICK_SESSIONS=25), PKG-4A piggyback wire-in (new turn_start block, 0 hook-body deletions), INT 7 join gates. 161 message-bus tests green, tsc clean outside pre-existing pi-mcp-tools, CI pass, PR #18 squash-merged 6cff3d5 (--admin over REVIEW_REQUIRED per away-mode order). Spikes MEASURED: no durable-tick host in pi (TUI exits, pi -p settles) → piggyback only; RPC follow_up proven external seam; JSONL-append pickup DISPROVEN; delivery_state DDL named for 4B. User scope: message-bus published ours; mem-based-rag clobber by bare publish probe repaired + bus #811. High-effort: MoE plan + plan-review MoE + MoE impl-review (SHIP-WITH-FIXES folded) + QA GATE-WITH-NITS (F1-F7 backfilled). Follow-ups: 4B mailbox (S2 transcripts exist), D4 hook removal, durable host (launchd-class), main-checkout reconcile (sibling ahead-9) + scoped-publish flag.",
-      "decisions": [
-        "Waker-only (A) over mailbox-now (B): acks are stub broadcasts with no per-target identity (F4), no cross-session inject primitive (F5), ack numbers unevidenced (F8) — 3/3 reviewer consensus; user-ordered no-hooks/5s-3x documented as deferred divergence, not refusal",
-        "CoordinatorStore structural subset (write paths unnameable by type) over reusing BusStore; single-sourced TTL/type/version in message-bus-core.ts (pi-import-free kept); single-flight keyed by version:budget; lazy channel-summary peek",
-        "touchRegistry kill-switch early-return (tool-check leak fixed); INT vii smoke-with-retry incl. heartbeat writes; rotation-churn pinned as limitation with MEASUREMENT-TODO, not prevented",
-        "Merge via --admin over REVIEW_REQUIRED (away-mode owner order); in-task MoE reviews + QA stand as review record; publish probe lesson: publish.ts has no --help — unknown flags run full publish; sibling file restored + bus-notified"
-      ]
-    },
-    {
-      "taskId": "pbi-ask-silent-failure-repro-fix",
-      "title": "Fix /ask silent failure + input lock",
-      "finishedAt": "2026-09-09T17:42:43Z",
-      "summary": "/ask went mute (notify-only output + discarded return + swallowing wrapper) and wedged input (unbounded awaits). P1: askSettle race bounds on all 4 /ask awaits (searchCall, fetchFull, getClient call-site, spawnAsk race); 6 RED-first repro tests incl. poisoned-searchFlight next-turn + silent abort-race. P2: durable append-only card ({triggerTurn:false}, AskCardKind answer/skip/failure) + ack notify pre-first-await; thin/mode-off/no-id skips notify-only; /rag bare notify wrapped. Review SHIP + 3 SHOULD fixes (stray-emission waits, notifySafely dedupe, outer-catch comment). 125 mem-based-rag tests green, tsc zero touched-file errors, published + --check in sync. Low-effort: architect plan + code-reviewer READY-WITH-FOLDS (5 MUSTs) + 2 api-engineer lanes + code-reviewer SHIP. Follow-ups: none structural; user must /reload to load fix in running sessions.",
-      "decisions": [
-        "Per-seam askSettle bounds over one overall deadline (preserves snippet-fallback + bank-vs-child notify shapes; flight self-heals)",
-        "Durable card append-only {triggerTurn:false}: subagent triggerTurn:true precedent rejected (idle branch would spawn a fresh LLM turn per answer)",
-        "Thin-skip + abort-race stay notify-only/silent; answers/failures = card+notify; ack precedes everything accepted",
-        "Poisoned searchFlight + hung seams proven by RED (4 lock paths); init-hang leg dropped per hatch (createClient sync, prod init already 15s-bounded)"
-      ]
-    },
-    {
-      "taskId": "pbi-delegation-session-peek-output",
-      "title": "Delegation surfaces: session id + peek output",
-      "finishedAt": "2026-09-09T16:25:08Z",
-      "summary": "P1 conditional session <id> trailing segment on list/widget/panel/receipt/card (absent→byte-identical; DelegationStatusRun.sessionId? additive) + P2 delegations peek <id> [--lines N] (default 20, 1-100) + /delegations peek twin with cache→live→queued→unknownIdError precedence + runner live answerPreview (PEEK_PREVIEW_MAX_CHARS 3000, text_delta+message_end only, stamped before onUpdate) + tailLines/clampPeekLines pure + catalog docs + tailLines(<1)→'' guard. 293 pass touched surfaces, full suite 1350 pass + 5 pre-existing pi-mcp-tools parity fails (main also fails), tsc zero subagent errors. Merged FF a3c16b8+950d22f+8f55e16. Low-effort: architect plan + code-reviewer READY-WITH-FOLDS (6 MUSTs folded) + 2 api-engineer lanes + code-reviewer SHIP-WITH-FIXES (4 SHOULDs, 2 applied). Follow-ups: ring-evicted wording disambiguation, empty-string sessionId airtight gate.",
-      "decisions": [
-        "Live peek rides in-memory record.answerPreview, not log parse (tee close-only verified); settled peek reuses result-cache byId output",
-        "Double-miss (registry+cache) single behavior unknownIdError covering never-existed + evicted (documented); queue-tool receipt sessionId deferred with reason",
-        "Session segment trailing conditional on !==undefined across all five surfaces; receipt/ card meta [usage?,session?,logFile?]; footer (session-signals) deferred (no registry wire)",
-        "PEEK_PREVIEW_MAX_CHARS 3000 tail-kept; sources text_delta+message_end assistant only, never thinking/toolcall; DelegationProgress/onUpdate unchanged; serial P1→P2→fixes"
-      ]
-    },
-    {
-      "taskId": "pbi-monitor-register-bash-predicate",
-      "title": "Monitor register accepts bash predicates alongside JS expressions",
-      "finishedAt": "2026-09-08T20:30:00Z",
-      "summary": "predicateKind js|bash (default js) reusing predicate string; bash reads snapshot JSON on stdin, exit 0->fired (stdout head-capped 1KB, empty->true) / 1->idle / >=2-signal-timeout-spawn->error+disarm; 5s timeout SIGTERM->SIGKILL 500ms group kill + in-flight set; async drain (JS sync first, bash Promise.all one frozen snapshot, idle re-drain once); expiry/shutdown/cancel kills + suppression; wait-timer pinned js; ADR docs/work/2026-09-08-monitor-bash-predicate-adr.md + catalog. 153 monitor tests green, tsc clean, CI green. PR #16 squash-merged as 37ce04f (--admin over branch policy per owner order). Low-effort: architect plan + code-reviewer plan-review READY-WITH-FOLDS (8 MUSTs) + api-engineer impl + code-reviewer impl-review SHIP-WITH-FIXES + qa review-tests BLOCKED->fixed (escalation/error-disarm/group-orphan pins) + in-session CI-only M6 portability fix (bash3.2 exits 1 vs bash5 >=2 on bare return). Tracker skipped (stale claude-source cwd-fallback claims foreign session). Follow-ups: bashExecutable wiring seam (C-3), epoch-bump observability (#4), wall-clock margins (#8).",
-      "decisions": [
-        "stdin over env (ARG_MAX/ps-leak; jq-native); 0/1/other exit mapping (jq -e dialect, loud-disarm typos); predicateKind discriminator over second field (one string/cap/receipt path)",
-        "Coalescing fix (i) re-drain-once over documented-drop: preserves evaluates-on-every-transition receipt promise",
-        "M6 return-0 probe asserts registration-verbatim only; exit-1->idle stays pinned by stable exit-1 probe (shell-version landmine documented in-test)",
-        "JS fired cards carry no value (keeps JS renders byte-identical); no VERSION touch (auto-bump owns it)"
-      ]
-    },
-    {
-      "taskId": "pbi-rag-skill-precondition-ask-command",
-      "title": "RAG skill-gated precondition + /ask isolated command",
-      "finishedAt": "2026-09-08T20:24:00Z",
-      "summary": "PKG-1 skill-only auto-enrich (non-skill turns skip as non-skill-call, zero searches; bare calls keep bare-skill-call) + PKG-2 /ask isolated RAG command (floors + memory_search limit 5 + tool-less pi child, 90s kill, 8KB cap, fail-open, shutdown kills in-flight). 104 mem-based-rag tests green, full suite + tsc only pre-existing pi-mcp-tools reds, CI green. PR #17 squash-merged as 76ac786 (--admin over REVIEW_REQUIRED per owner order). Low-effort: code-reviewer impl-review SHIP (stripped-Question + stderr-log + pure-function folds applied) + qa review-tests GATE (no-hits + counter pins added). Follow-up: default-spawn-seam integration test (known blind spot).",
-      "decisions": [
-        "Stripped decision.query (not raw args) in both bank search and child Question: — bank-query/child-prompt contract parity",
-        "isSkillCall stays exported+tested contract helper (prefix vs body presence); wiring intentionally keys on hasSkillPrefix so bare calls keep their reason — no production churn",
-        "Single-slot askAbort race under concurrent /ask documented as known edge (commands sequential in practice)",
-        "Default real-spawn seam untested (all /ask tests inject the seam) — filed as follow-up, not a gate-blocker"
-      ]
-    },
-    {
-      "taskId": "pbi-delivery-cursor-duplicate-missing-fix",
-      "title": "Delivery late-card + missing-cursor anomalies",
-      "finishedAt": "2026-09-08T18:54:39Z",
-      "summary": "A1 late card → IMPL-BUG fixed: hook-path peek-then-post-then-advance (optional peek seam, reject-holds-redeliver, old stores byte-identical) + 11-row visibility suite, all mutant-proven. A2 missing cursor → NO-FAULT-FOUND (write path proven 15/15 white-box; disappearance has no in-repo cause). 154 tests green, tsc clean outside pre-existing pi-mcp-tools, impl-review SHIP, review-tests unblocked (confirm-yes/no, empty-preview, broadcasts/empty settle rows). PR #11 squash-merged; manual bump PR #12 (auto-bump bot still PR-blocked) cut v1.1.1; published, check in sync. Low-effort: architect plan + code-reviewer review (READY-WITH-FOLDS) + api-engineer investigation + api-engineer fix + code-reviewer gate (SHIP) + qa review-tests (BLOCKED→fixed).",
-      "decisions": [
-        "Peek-then-post-then-advance over await-card (sendMessage returns void, hooks return void — acceptance ordering is the only implementable shape); reject-holds-redeliver gives hook-path at-least-once",
-        "Targeted cursor-write rejected as bigger shape; peek-settle micro-race documented in-code as bounded synchronous window, intentionally untested (no deterministic cross-process row possible)",
-        "A2 filed NO-FAULT-FOUND not exonerated-lightly: 15/15 repro + zero DELETE paths + twin control correct; per-process DB-path/external-surgery stay hypotheses with named boundary",
-        "QA confirm/empty/broadcasts rows added post-BLOCKED with per-mutant kills; old-store row passes pre/post by design as preservation pin",
-        "House repeats: manual bump PR again (default ruleset still has zero bot bypass); VERSION owned by release chain, never hand-shaped beyond the bump"
-      ]
-    },
-    {
-      "taskId": "pbi-bus-identity-delegation-skip-fix",
-      "title": "Bus identity and delegation-skip fixes P1-P5 + F7 ack stub",
-      "finishedAt": "2026-09-08T15:37:11Z",
-      "summary": "P1 reply-by-id, P2 whoami+identity header, P3 bus_identities fail-open validation (shape/self/unknown) incl /messages send-to parity, P4 startup consumed-counts, P5 advisory pi-spawn guard, INT-6 cross-package rows, F7 metadata-only ack stub, catalog+README docs. 141 tests (message-bus+subagent) green, tsc clean outside pre-existing pi-mcp-tools, QA GATE. Branch task/pbi-bus-identity-delegation-skip-fix-impl pushed (15 commits), NOT merged — owner merges (F7 parenthetical deviation needs ratification). High-effort: MoE plan (3) + plan-review MoE (READY-WITH-FOLDS/NOT-READY→folds) + impl + P5 spike (IMPLEMENTABLE) + INT-6 + impl-review MoE (SHIP/SHIP/SHIP-WITH-FIXES→fixed) + QA GATE + F7 stub lane.",
-      "decisions": [
-        "Ack stub metadata-only `ack: #id — terminal, no reply expected`, dropped owner (<title prefix>) parenthetical: leading excerpts can open with the imperative (please review…) so any body bytes reintroduce F7; correlation by #id via list; one-liner to restore, needs owner ratification",
-        "Reply-to-ack stays refused (reviewers MUST) despite collaborator note that reply-with-content to ack is legitimate: behavior change mid-gate rejected; filed as follow-up now that stub acks are contentless",
-        "/messages send-to routed through P3 gate (api-engineer MUST over code-reviewer SHOULD): receipt claimed success for never-deliverable self-send, same #672 class; 3 MUST rows RED-first",
-        "P3 3A+3B folded single package (delegator MUST: 3A alone unshippable); S-labels re-anchored to real lines; gates re-scoped to green baseline (full tsc/test red in pi-mcp-tools pre-existing, exempted)",
-        "P5 kept (spike IMPLEMENTABLE 33/33, real emitToolCall payload) instead of folded out; file+registration per spike (subagent factory line, no publish.ts change, --check confirms auto-ship)",
-        "No echo-acks for #702/#706 (principled protocol deviation): acking with known-harmful echo format re-emits F7-banned bodies; receipt folded into #707 broadcast + stub remedy; exactly-once purpose served explicitly",
-        "VERSION untouched (auto-bump owns it) despite collaborator docs-package note asking a bump; docs package (catalog+README) done, publish --check verified via P5 lane",
-        "bus_identities prune story + reply-to-ack relaxation + QA F1-F8 hardening nits + F4 re-probe x2 + Phase 6 doc-audit filed as post-merge follow-ups"
-      ]
-    },
-    {
-      "taskId": "pbi-mem-based-rag-implementation",
-      "title": "mem-based-rag full implementation to v1 spec",
-      "finishedAt": "2026-09-07T00:05:00Z",
-      "summary": "mem-based-rag live at user scope (default-on): v1 filter (any-/ skip, minWords 6, noise-dict >=3, no-hits skip), trust-header blocks, session-keyed FIFO capture, stdio client fixes (re-init, reject-all, shared-deadline expanded gets), fail-open hardening. 61 tests (core 32 + wiring 29), tsc clean, red-proofs on trust-header + no-hits, 10/10 live acceptance vs real bank, PR #6 squash-merged (557f957), publish --check in sync. Low-effort: MoE spec review + architect plan + plan review (READY-WITH-FOLDS) + 2 api-engineer lanes + test-engineer P6 + code-reviewer gate (SHIP-WITH-FIXES).",
-      "decisions": [
-        "AND + >=3 + noise-dict over OR-floors/>2-counting (precision first; recall ladder documented)",
-        "minWords 8→6 (calibrated jsaa probes); owner veto recorded",
-        "Inject-don't-rewrite + stdio child + automatic (MoE-unanimous; HTTP/LLM-tool deferred)",
-        "Timeout stays 8000 (covers first-search warm-up); display:true with documented history cost",
-        "Live-found onData handshake bug fixed (non-envelope results resolve raw)"
-      ]
-    },
-    {
-      "taskId": "pbi-remove-delegate-background-param-compat",
-      "title": "Remove delegate background param, mode alone decides",
-      "finishedAt": "2026-09-06T09:51:41Z",
-      "summary": "Deleted background from DelegateParams; prepareArguments strips stale keys (old-session compat, SDK-cited); dropped B-A1 rejection + degraded flag/branch; wantsBackground = mode === tui. Tests 69 green (schema-absence proof, shim unit + joined keys-subset tests, mode-only matrix incl. rpc stale-key row; aids: Static retype, Value-absence workaround, catalog dedupe). PR #4 squash-merged over moved main (model-tiers #3): 3-hunk conflict resolved compositionally, join gate 232/0 over 7 suites. No manual VERSION (auto-bump owns it). Published, --check in sync. Low-effort: in-session draft + plan review (READY-WITH-FOLDS) + impl + impl review (SHIP-WITH-FIXES) + qa review-tests (GATE).",
-      "decisions": [
-        "Delete vs keep-as-ignored: an ignored-but-present field still advertises background:false to the model and silently converts explicit blocking into background; deletion + prepareArguments shim is the SDK-documented shape",
-        "No in-branch VERSION bump: auto-bump cuts releases on cadence and any in-branch number collides (1.0.10 taken mid-task); orchestrator leaves versioning to the chain",
-        "typebox@1 exports no Value: joined shim test asserts keys-subset-of-schema + preservation instead of Value.Check",
-        "Merge-conflict rule vs active lanes: keep their additive plumbing (levelOverride), let removal win on shared lines, verify with residue grep + full related suites"
-      ]
-    },
-    {
-      "taskId": "pbi-ai-raccoon-tool-cards-ui",
-      "title": "UI cards for ai-raccoon tool results",
-      "finishedAt": "2026-09-05T23:30:49Z",
-      "summary": "Human cards for all 29 ai-raccoon MCP tool results + mcp_list_servers ledger card (no more raw JSON dumps): new extensions/pi-mcp-tools/McpCardRenderers.ts (bare-name descriptor table + shared shape helpers, collapsed never-JSON, expanded trimmed ~4KB, fail-open incl. adapter non-envelope strings), attach-only wiring in McpToolAdapter.ts + index.ts, TDD 59 tests (RED-first, indexed->indexedd mutation, F1/H1/H5 + QA folds), docs section + VERSION 1.0.7. PR #2 squash-merged, CI green, published to user scope (--check in sync). Low-effort: architect plan + plan-review (READY-WITH-FOLDS) + api-engineer impl + impl review (SHIP-WITH-FIXES) + qa review-tests (GATE).",
-      "decisions": [
-        "Descriptor table + shared helpers over 29 bespoke renderers: per-tool path entries keep mutation sensitivity, one harness enforces collapsed/expanded/fail-open once",
-        "Bare-name keying (never prefixed pi name): toolPrefix is configurable per server; adapter closes over bare name at registration",
-        "F1: memory_search data:null envelope falls back (unknown) instead of claiming no hits; only present-but-empty arrays report no hits",
-        "Card text stays in renderCall/renderResult (UI-only); execute/content/details byte-identical so the LLM payload never changes",
-        "QA SHOULD folds applied pre-PR (sweep-deleted/absorbed/refused pins, fallback-text oracle, custom-prefix + expanded:true); expectNoJson [ ] hardening deferred as narrow-hole follow-up"
-      ]
-    },
-    {
-      "taskId": "pbi-bus-lock-busy-timeout-fix",
-      "title": "message-bus busy_timeout hardening + CI/release-chain fixes",
-      "finishedAt": "2026-09-05T21:55:00Z",
-      "summary": "Fixed database-is-locked (SQLITE_BUSY_SNAPSHOT on DDL write): openBusDb helper applies PRAGMA busy_timeout=5000 (python parity), pinned by read-back test. Full suite 1029 pass, tsc clean, published. Also stood up CI/release (VERSION 1.0.1, ci/auto-bump/release workflows): fixed fresh-clone ext-deps gap, global-pi gap (reproduced with empty HOME), token-push trigger gap (tag+release in bump job), GH_TOKEN env gap. Chain proven: ci green, auto-bump cut v1.0.4 tag+release. Low-effort, in-session plan/review — reduced rigor noted; read-only opens deferred as follow-up.",
-      "decisions": [
-        "busy_timeout over retry loops: SQLite serialises waiters itself; 5s matches python store",
-        "Deterministic pragma read-back test instead of flaky contention test",
-        "Read-only opens deferred: deliver path stays RW anyway; avoids tableless-DB behavior change",
-        "Tag+release inside auto-bump (not dispatch): GITHUB_TOKEN pushes trigger no workflows",
-        "Manual VERSION pushes always win over automation; bump's own VERSION-only commit terminates the chain"
-      ]
-    },
-    {
-      "taskId": "pbi-message-bus-send-check-list",
-      "title": "Message-bus pi extension (send/check/list + ack + cards)",
-      "finishedAt": "2026-09-05T20:20:10Z",
-      "summary": "New message-bus pi extension (extensions/message-bus/: pure core + sqlite wiring + manifest; publish.ts one-liner; README + catalog): message-bus tool (send/list/check/ack), /messages command (list|check|ack/send/send-to), session_start+turn_start delivery hooks, message-bus-event card renderer, all on ai-badger user-DB backend (D3/C2/R2 parity, 30min/16-cap first read). 36 extension tests (RED-first incl. node:sqlite null-vs-undefined fix + ack-inbox-membership), full suite 1004 pass/6 skip, tsc clean, published to user scope, check in sync. Low-effort: 3 delegations went off-track (ran publish, no plan/review) — in-session plan+review, reduced rigor noted.",
-      "decisions": [
-        "node:sqlite direct over pi.exec python: self-contained, no python dep; missing DB never created (ENOENT rule)",
-        "No new push timer: idle wake stays with adapter poll; hooks are turn-boundary seam only",
-        "Ack restricted to inbox membership + never-ack-an-ack, project-broadcast shape",
-        "L1/R1a leg-scoped landing simplified to global landing, declared in header"
-      ]
-    },
-    {
-      "taskId": "pbi-pi-update-integration-checker",
-      "title": "Update-check extension hooking pi update to integration releases",
-      "finishedAt": "2026-09-05T20:10:00Z",
-      "summary": "New update-check extension (core matrix + session_start wiring + /update-check status|check, TDD 24 tests; full suite 973: 967 pass/6 skip). Honest scope: pi exposes no update lifecycle event, so no hook into pi update exists; notify-only release check instead (never auto-installs), pi version unchecked by doc. publish.ts ships the dir + writes atomic installed marker outside owned dirs. v1.0.0 tagged+released; published to user scope, check in sync; live API matrix verified (stale->update, current->silent, no-marker->guidance, offline->silent). Landed via branch:main push to avoid clobbering another session's uncommitted chain-reorder on the main checkout.",
-      "decisions": [
-        "Notify-only over auto-install: update mutates user scope, needs a human",
-        "Marker outside owned extension dir: --check exact-set equality must never see per-install state",
-        "Scheduled handler returns (not floats) the check promise: fixes test/shutdown race, real timers ignore it",
-        "In-session plan+implementation review, reduced rigor noted: evidence-led design, TDD RED-first, gates green"
-      ]
-    },
-    {
-      "taskId": "pbi-homepage-pi-article-integrations",
-      "title": "Home-page article about pi usage and integrations",
-      "finishedAt": "2026-09-05T20:00:00Z",
-      "summary": "Separate PR Arasz/arasz-home-page#261 (draft): article pi-agent-and-integrations (id 17, published) + LinkedIn note + regenerated data. Verified: converter clean, ng build green, 563 tests pass, lint clean, sitemap+RSS carry slug. Workspace care: home-page checkout sat on another task's branch with dirty .ai-badger files; work isolated via rebase --onto origin/main, their files left uncommitted, checkout restored.",
-      "decisions": [
-        "Direct implementation over subagent: article prose + pipeline verification is single-threaded work; humanizer + ARTICLE-PIPELINE applied in-session"
-      ]
-    },
-    {
-      "taskId": "pbi-ai-badger-readme-pi-harness",
-      "title": "ai-badger README pi harness entries",
-      "finishedAt": "2026-09-05T19:45:00Z",
-      "summary": "Separate PR Arasz/ai-badger#472 (draft): pi row in Supported agents (Scaffolded), pi added to agent-specific stacks, new Are-you-using-pi pointer to public pi-badger-integration. Done directly in ai-badger checkout (docs-only, in-session review); pre-push gates green. PR left draft for owner review/merge.",
-      "decisions": [
-        "Direct edit over subagent delegation: 6-line docs change, delegation overhead unjustified; noted as reduced rigor"
-      ]
-    },
-    {
-      "taskId": "pbi-docs-readme-install-visual-refresh",
-      "title": "Docs, README, install guide refresh from ai-badger template",
-      "finishedAt": "2026-09-05T19:30:00Z",
-      "summary": "Visual-first README (mermaid publish-flow diagram, install block, extension table, docs links; 17KB deep content moved verbatim to docs/reference/extension-catalog.md + docs/explanation/publish-flow.md), new docs/howto/install-extensions.md, docs/howto/configure-provider-keys.md (moved), docs/README.md index, CONTRIBUTING.md, SECURITY.md (pi-extension threat model), MIT LICENSE (closes task-1 gap). Gates: 943 pass/6 skip, tsc clean, publish --check in sync, links resolve, style scan clean.",
-      "decisions": [
-        "No badges: repo has no CI, badges would be decoration",
-        "In-session review, reduced rigor noted: docs-only, content moved verbatim (byte-counts logged), gates green",
-        "Worktree needed pi-mcp-tools bun install for tsc (nested node_modules is gitignored derived state, absent in fresh worktrees)"
-      ]
-    },
-    {
-      "taskId": "pbi-publish-repo-public-release-flow",
-      "title": "Publish pi-badger-integration repo public",
-      "finishedAt": "2026-09-05T19:00:00Z",
-      "summary": "Flipped Arasz/pi-badger-integration PRIVATE->PUBLIC (gh repo edit with visibility-consequences accept), set description + 6 topics (pi-coding-agent, ai-badger, ai-agents, bun, typescript, coding-assistant). Pre-gate: source + full-history secret scan clean (only I3 guard patterns and truncated ... placeholders). No code changed; last suite 949 green stands. Gap for chain task 2: no LICENSE file (defaults to all-rights-reserved until added).",
-      "decisions": [
-        "LICENSE deferred to docs-refresh task (task 2) rather than blocking publish",
-        "In-session plan review (reduced rigor, noted) instead of review subagent: no code changed, change is account-level and verified via gh repo view"
-      ]
-    },
-    {
-      "taskId": "pbi-router-failure-free-model-fallback",
-      "title": "Router-failure free-model fallback extension with configurable providers",
-      "finishedAt": "2026-09-05T18:30:00Z",
-      "summary": "New router-fallback pi extension (extensions/router-fallback/: core matcher + provider registry + wiring + manifest; publish.ts one-liner; README; /fallback command): detects billing/auth/model-unavailable failures via folded errorMessage (substring+status-prefix, never exact JSON) and session-only switches Groq llama-3.3-70b-versatile -> Gemini gemini-3.1-flash-lite -> OpenRouter :free chain (glm-5.2/laguna-s-2.1/m3/inkling-small), once per episode + cooldowns, configurable ordered providers, S-cut (no live /models fetch, pinned+find-filter). 138 extension tests (RED-first incl. J5 stub-fetch probe fixtures), full suite 949 green, tsc clean, published to user scope, check exit 0. High-effort: 3-lane research, MoE plan, MoE plan-review (J1-J8 + M1-M12 folds), 4 implementation lanes (A,B,C,E), MoE impl-review + QA GATE, 1 fix lane. H8 closed (0.84.4 shapes identical); H7/H9 live-generation BLOCKED (no valid key), flagged.",
-      "decisions": [
-        "Throttle holds SILENTLY (F7): plan F2/M2 specifies hold, so reviewer-demanded live selector routing was declined in favor of docs honesty + pinning test; wait branch stays unit-tested policy, not a live path",
-        "No registerProvider for built-in defaults (groq/google/openrouter all KnownProvider) — registration reserved for custom/keyless overlays; Gemini via native built-in, zero knobs",
-        "W9 503-substitution: literal-500 classifies throttle (never switches), so the hold-then-switch twin uses 503 (model-unavailable) + literal-500-holds-both twin; spec text amended, not the code",
-        "Token ledger convention: run-cumulative agent_end usage, cache-excluded; subagent-log tee-elision can orphan usage (d-488/d-489 listed lost) — reports survive via results cache; delegation token lookup refuses honestly, manual log-backed recording it is",
-        "Full-suite count reconciled by scratch-worktree rerun at base (947, not E-reported 941) +2 fix-lane tests = 949 — E number was stale, not a ghost"
-      ]
-    },
-    {
-      "taskId": "pbi-queue-admission-monitors-results-cache",
-      "title": "Queue-only admission, /monitors command, structured delegation results + result cache",
-      "finishedAt": "2026-09-02T11:06:46Z",
-      "summary": "Delegate admission repaired to the ruled run-now rule (registry.start -> admitRequest: one-element serial group in the ONE queue; admits iff a slot is free and the queue head is not slot-blocked — cap full, mid-flight serial heads, unfittable parallel heads queue; delegations wait tool action REMOVED, the monitor wait tool is the only waiting surface; stale wait-verb text driven to zero incl. grep-invisible docstring). Monitor: /monitors command (armed panel id/name/excerpt/age/time-left, cancel <id> via gate-skipping internals, headless silent no-op, completions) and the poll guard now counts the delegations results action (list|log|results). Subagent: in-memory result cache (ring of last 8, dual-indexed by delegation_id and parent_id, eviction/duplicate/parent-omission hygiene, injected-clock timestamps, char caps 120/2000/6000 with head/tail markers) wired at the deliverNote entry before the 2s batch window; structured results ride every card (details.result single, details.notes[i].result batched); delegations results [id] action with registry-disambiguated misses. Versions subagent 1.2.0, monitor 1.1.0. High-effort: plan-review MoE (2 experts, READY-WITH-FOLDS, 9 musts folded), two disjoint lanes (A subagent / B monitor) merged clean, implementation MoE (3 experts, triple SHIP, zero musts), QA review-tests GATE: BLOCKED cleared (mutation-proven aborted-note wiring row + rejection-redirect pins). 771 tests green (765 pass, 6 gated skips), typecheck clean."
-    }
-  ]
+    "lastUpdated": "2026-10-21",
+    "next": null,
+    "completedTasks": [
+        {
+            "id": "mdl-minicpmv-4-7-mtplx-35b-artifact",
+            "title": "The MiniCPM-V 4.7 research moves to its own repository, and the 35B-A3B joins it as an MTPLX artifact",
+            "pr": "https://github.com/Arasz/pi-badger-integration/pull/88",
+            "finished": "2026-10-21",
+            "summary": "The MiniCPM-V 4.7 records and their runnable scripts moved to /Users/arasz/RiderProjects/Models, a new git repository, and the 35B-A3B was built there as an MTPLX artifact: the text tower of mlx-community/MiniCPM-V-4.7-35B-A3B-4bit, exported text-only (1453 tensors kept, 459 dropped) in 9 shards, 20.88 GiB, with a hand-written AR-only mtplx_runtime.json. MTPLX 2.12.2 recognizes the architecture (Qwen3_5MoeTextForCausalLM) and loads the trunk natively in 42.5s - but the 4-bit weights are 20.9 GiB against an 18.0 GiB engine budget, so MTPLX's own plan says MODEL DOES NOT FIT and refuses the request with a 507 before prefill; with --allow-swap the 16-token warmup was still running at 970s. The exporter streams the shards (the 23.5 GB source is never resident) and its mlx calls sit behind an injected store, so 20 unit tests run without mlx. The moved kit's citation checker had never run (a stray paren, then an undefined name); fixed, it now verifies 51 citations against the installed mlx-lm and MTPLX, 15 of them quoted fragments, where it verified 4. The delegation lanes in this repository still need a provider fix - see the Models repo's docs/reference/delegation-providers.md."
+        },
+        {
+            "id": "pbi-router-free-router",
+            "title": "The router-fallback's OpenRouter head is OpenRouter's free router",
+            "pr": "https://github.com/Arasz/pi-badger-integration/pull/70",
+            "finished": "2026-10-20",
+            "summary": "The chain's head is now openrouter/free - OpenRouter's own 'Free Models Router' id for 'any free model' - and the hand-kept list of `:free` ids is gone. A billing failure parks the whole fallback entry and serves its head, so the head must answer without credits: the paid head answered 402 'Insufficient credits' on an empty account (measured 2026-10-20) and the in-child episode guard held, so the delegation died silently. One router id carries the breadth the list used to and cannot rot the way the chain's minimax/minimax-m3:free did (gone from the catalog). The paid id stays last, reachable on a model-unavailable rotation. A test pins the head as the router id; both mutations - the paid head, and the head missing from the rotation list - turn it red."
+        },
+        {
+            "id": "pbi-model-reject-retry",
+            "title": "A provider that refuses the child's model respawns the delegation on the parent model",
+            "pr": "https://github.com/Arasz/pi-badger-integration/pull/68",
+            "finished": "2026-10-20",
+            "summary": "The startup class arrived through two channels and the runner read one: pi's own resolution error on stderr (exit 1 - caught today) or the PROVIDER refusing the id inside the turn (400 model_not_supported, 404 model_not_found, 'The requested model is not supported' - exit 0, not caught), so a delegation whose model the provider would not serve died silently (measured 2026-10-20 on Copilot, Groq and OpenAI/Codex). The runner's one retry decision now also fires on that class: the child's last assistant turn failed with a model-unavailable error AND the child did no work (no answer, no tool), so the respawn repeats nothing. Detection is a provider machine code where given, else the wording - a provider refusal is not a status the runner can key on (400, 404 or 401 depending on provider and account). Five mutations caught, including dropping the no-work guard, dropping the arm, widening the wording list, ignoring the machine codes and looking past the last turn."
+        },
+        {
+            "id": "pbi-router-free-head",
+            "title": "The router-fallback's OpenRouter head is an explicit :free id",
+            "pr": "https://github.com/Arasz/pi-badger-integration/pull/65",
+            "finished": "2026-10-20",
+            "summary": "A billing failure parks the whole fallback ENTRY and then serves its head, so the OpenRouter head must be a model that answers without credits. The shipped head was inclusionai/ling-3.1-flash, assumed 'free at its base id' (the catalog's note); measured 2026-10-20 it answered 402 'Insufficient credits' on an account with no credit, so the switch landed on a model that could not serve either, and the in-child episode guard held - the delegation died silently. The head is now an explicit :free id (openrouter/minimax/minimax-m3.1-flash:free, measured working) with the paid id last; the stale minimax/minimax-m3:free id (no longer in the catalog) is gone. A new test pins the head as an explicit :free id, so 'free at its base id' can never come back; both mutations (paid head, head missing from the rotation list) turn it red."
+        },
+        {
+            "id": "pbi-402-plan-as-shipped",
+            "title": "The 402 retry plan carries its as-shipped delta",
+            "pr": "https://github.com/Arasz/pi-badger-integration/pull/61",
+            "finished": "2026-10-20",
+            "summary": "Doc-only: the plan for the 402 retry described the pre-review design (the respawn takes the reason alone) and left D1 open, while the shipped code takes the failure class alongside the reason and marks an attempt boundary, and D1 was decided (respawn even when the child had produced output; the duplication of side effects is documented in the catalog). The plan now carries the delta in the same shape the sibling plan uses, so a committed design record matches the code it describes."
+        },
+        {
+            "id": "pbi-402-invariants-tests",
+            "title": "The 402 respawn's log, note and card invariants are pinned",
+            "pr": "https://github.com/Arasz/pi-badger-integration/pull/60",
+            "finished": "2026-10-20",
+            "summary": "A delegated review of the 402 arm (the second one, from a tool-using lane) found that the new test block never asserted the invariants the catalog paragraph now claims for the retry: one log header, one exit line, one note. Those assertions existed only for the startup path, and the card clause was tested through a hand-built note. Test-only follow-up: the 402 path now asserts the log header/exit-line/note count, the card verdict carries the cause and the retried model, and a double-402 run settles completed with no answer and the silent reason. Each new assertion is mutation-checked (a second log header, a reason-less card clause, a failed settle, a silent variant that never fires)."
+        },
+        {
+            "id": "pbi-runner-retry-402-parent-model",
+            "title": "A 402 respawns the delegation on the parent model",
+            "pr": "https://github.com/Arasz/pi-badger-integration/pull/59",
+            "finished": "2026-10-20",
+            "summary": "A provider 402 is an API error inside a LIVE child: it arrives in the child's stdout event stream as a failed assistant turn (stopReason error, errorMessage \"402: {…}\"), the child exits 0 and its stderr says nothing, so the runner's model-startup retry (stderr signature + exit 1 + no progress event) could never see it and the delegation settled completed with no answer. The runner's ONE retry decision now also fires when the child's LAST assistant turn ended on a 402: respawn once on the parent (session) model, under the same run id, with the reason on the existing modelFallback field (no schema change). The last turn, not any 402 - with router-fallback in the child a 402 can be recovered in-child, and a run that ended on a normal turn has an answer. The 402 rule mirrors the router-fallback core's status-prefix rule (separate packages cannot import each other) and a test pins the two together. A delegated review round fixed: a failed attempt's partial text could be reported as the run's answer (the respawn now marks an attempt boundary), the reason dumped the provider's raw JSON (it now carries the provider's own message), and the two classes read differently (rejected vs billing failure). 14 mutations of the new code each caught by the matching test; CI green. PR #59."
+        },
+        {
+            "id": "pbi-quiet-memory-first-gate",
+            "title": "The memory-first gate is quiet in pi: the model gets the memory, the user sees no card",
+            "pr": "https://github.com/Arasz/pi-badger-integration/pull/58",
+            "finished": "2026-10-20",
+            "summary": "The gate allows the search and hands the memory result to the model as additionalContext (framework PR 631, ADR-0017's 2026-10-20 amendment); the adapter delivers it as a custom message with display: false, so the agent gets the data and the terminal renders nothing. A deny still blocks with its reason, for hosts whose tool seam carries no context. The per-prompt memory context of mem-based-rag is injected the same way. The scaffold refresh carries the quiet gate."
+        },
+        {
+            "id": "pbi-vendor-rtk-rewrite-pi-extension",
+            "title": "Ship rtk bash-rewrite extension (adapted from rtk-ai/rtk hooks/pi/rtk.ts)",
+            "pr": "https://github.com/Arasz/pi-badger-integration/pull/54",
+            "finished": "2026-10-17"
+        },
+        {
+            "taskId": "pbi-merge-delegate-delegations-tools",
+            "title": "Merge delegate and delegations into one unified tool",
+            "finishedAt": "2026-10-06T21:41:44Z",
+            "summary": "Merged the `delegations` tool into the single model-facing `delegate` tool via an explicit `action` param (list/log/abort/results/peek/resolve); an absent or empty action takes the existing delegate path unchanged, any populated action routes to management (a persona named 'list' arrives as `agent`, never as a verb -- no loose verb dispatch). `registerDelegationStatus` stopped registering its own tool and returns `{contextWindow, runAction}` for index.ts's one registration seam; a merged call missing both `agent` and `task` gets a loud usage guard where the schema used to reject it; the `/delegations` command, widget and tool-event handlers stayed. The four pin sites moved to the merged identity in sync: child denylist, monitor's nested abort executeTool, poll-guard name, session-signals default. VERSION 1.1.49 -> 1.2.0 and extensions/subagent/package.json 1.3.0 -> 1.4.0; README, extension-catalog and wait-check-loop docs + research record updated. PR #48 squash-merged 168a4f4 (typecheck clean, 1854 pass / 8 skip / 0 fail, /delegations command preserved); follow-up T79 de-flake PR #50 squash-merged 6a60899 (1909 pass / 0 fail) replaced the 1100 ms fixed sleep in tests/delegation-runner.test.ts with a bounded poll, test-only -- extensions/subagent/* byte-identical.",
+            "decisions": [
+                "One `delegate` tool with an explicit `action` param over a second `delegations` registration or a deferred alias: one model-facing identity, strict action-absent -> delegate dispatch, and a bounded grep-auditable diff",
+                "Pin sites re-pointed together (the merge's identity contract): CHILD_EXCLUDED_TOOLS/ASK_CHILD_EXCLUDED_TOOLS `delegate,queue,monitor,wait`; monitor's nested `executeTool(\"delegate\",{action:\"abort\"})`; `POLL_GUARD_TOOL_NAME = \"delegate\"` (still counts only list/log/results via the action test); session-signals default `[\"delegate\"]`",
+                "T79 de-flake kept test-only and bounded: await RunHandle.done (clock-free settle at SIGTERM) then poll up to 5 s for the 0 ms SIGKILL grace; T84 gets the same bounded poll; extensions/subagent/* byte-identical",
+                "Knowledge-log divergence (close-out): `.ai-badger/skills/task/references/file-schemas.md` specifies a three-file split -- state.json lean index + notesRef (status-notes.json) + historyRef (status-history.json) -- which this repo has NOT migrated to; state.json is still the legacy combined shape and status-notes.json does not exist",
+                "Close-out follows the repo's actual convention instead of migrating: one full entry prepended to state.json's completedTasks, mirroring the newest entry's six keys; no status-notes shape invented and no knowledge-log migration attempted"
+            ],
+            "followUps": [
+                "status-history.json already carries a duplicate `pbi-monitor-queue-delegation-rework` entry (full summary at index 0, lean hasNotes:false version at index 4) -- dedupe when the knowledge log is next touched",
+                "Knowledge-log migration decision still open: adopt the doc's three-file split or amend file-schemas.md to the repo's combined shape; until then state.json keeps 35+ full entries (the doc's 8-most-recent trim is unenforced)",
+                "The local branch `task/pbi-deflake-t79-timeout` still points at pre-squash aef4a49; remote `task/pbi-merge-delegate-delegations-tools` was recreated for evidence and both are intentionally not deleted (close-out constraint)"
+            ]
+        },
+        {
+            "taskId": "pbi-pi-v103-changelog-integration-adjust",
+            "title": "Adjust integration for pi 1.0.3",
+            "finishedAt": "2026-10-06T07:20:32Z",
+            "summary": "pi devDependency 1.0.2 -> 1.0.3 after diffing the installed 1.0.3 tree against the pinned 1.0.2 tree and reading the 1.0.3 changelog (low loop). The extension API surface (dist/index.d.ts, core/extensions/types.d.ts) and pi-ai retry.js/overflow.js are byte-identical, so no extension code changed; the azure provider rename, Home/End -> Ctrl+Home/Ctrl+End keybinding move, codemode image temp files, user-only output-file perms and the additive detectInstallChange have no consumer here. Pin + lock refresh + a new docs/howto/update-integrations.md section + research record; typecheck 0, full suite 1824 pass / 8 skip / 0 fail, real pi 1.0.3 print-mode session load with no extension diagnostics, publish/check in sync; CI green on the PR (one transient upstream 404 while pi-agent-core/pi-telemetry 1.0.4 tarballs were mid-publish; rerun green). PR #44 squash-merged b660e505; auto-bump released 1.1.46.",
+            "decisions": [
+                "Global pi install verify-only in the pin-bump lane: the machine already ran 1.0.3, and reinstalling under the running session buys no evidence (1.0.3's own detectInstallChange exists for that hazard)",
+                "Full suite run locally rather than a touched-surface slice: the runtime under test IS the changed dependency, so the whole suite is the touched surface",
+                "VERSION untouched; auto-bump.yml carries the release on merge",
+                "Docs section carries five changelog items plus a re-sync row; the retry.js/overflow.js byte-identity row is a verification, not a release item",
+                "Research record A1 lists the relevant dist changes with an explicit bundle-chunks exclusion and the provider-dir renames after the phase-4 review"
+            ],
+            "followUps": [
+                "pi 1.0.4 landed upstream mid-task (partial publish briefly 404ed pi-agent-core/pi-telemetry 1.0.4 tarballs and failed CI's global install once; rerun green). CI's global install resolves ^1.0.3 ranges, so it now mixes 1.0.3 with 1.0.4 subpackages; the next changelog-integration task must assess 1.0.4",
+                "router-fallback's default-free-model chain has no catalog-parity test, so model rotations are invisible to CI (minimax/minimax-m3:free is already absent and degrades cleanly via resolveTargets)",
+                "The Copilot review round does not run on this repo (zero reviews and inline comments on PRs 40-44); the internal plan, join and phase-4 reviews are the recorded gates",
+                "Phase-6 doc audit F4: the pi instruction files (.github/instructions/pi.instructions.md, .ai-badger/instructions/pi.instructions.md) name pi 0.99.1/0.84.3 as their measurement basis with a re-measure caveat; two upgrades (1.0.0, 1.0.3) have landed since, so re-measuring the MCP and hook lines is due",
+                "Phase-6 doc audit F5: research record D1 says a pin bump switches both CI and local suite runs; locally the harness resolves pi from the user's global install, which a pin bump does not refresh — correct the wording when the record is next touched"
+            ]
+        },
+        {
+            "taskId": "pbi-ling-flash-default-free-model",
+            "title": "Use inclusionai/ling-3.1-flash as default free model in router fallback",
+            "finishedAt": "2026-10-05T21:10:37Z",
+            "summary": "Router-fallback OpenRouter head z-ai/glm-5.2:free (dead: absent from live roster and pi catalog) -> inclusionai/ling-3.1-flash (low loop). Verified live 0/0 pricing at base id (no :free variant), tools+tool_choice, in pi catalog reasoning:true, zero registration. 3 commits: source head-swap + 13 test re-pins (F10 delete retargeted, mutation-proven) + catalog row sync + comment fix. Gates: tests/router-fallback 149 pass, typecheck clean, cross-package 10 pass. Implementation review SHIP. PR #43 squash-merged 27d060b, CI test check passed; copilot review loop skipped per owner.",
+            "decisions": [
+                "No pruning of minimax-m3:free (resolve-or-skip + F10 cover it)",
+                "No join step (low loop, disjoint files, CI is the join)",
+                "No RED-first split (single green run proves more)"
+            ],
+            "followUps": [
+                "Base-id zero pricing is not the :free contract; watch for silent price changes (fallback: ling-3.0-flash-sante:free)",
+                "Two code-reviewer lanes timed out on open-ended briefs; tight time-boxed briefs complete in ~1-2 min"
+            ]
+        },
+        {
+            "taskId": "pbi-pi-v1-changelog-integration-adjust",
+            "title": "Adjust integration for pi 1.0.0",
+            "finishedAt": "2026-10-02T17:30:00Z",
+            "summary": "pi devDependency 0.84.4 -> 1.0.0 after reading the 0.85.0-1.0.0 changelog (low loop). Typecheck clean, full suite green, all 14 installed extensions load under pi 1.0.0 with no warnings. One real defect, found by review not by tsc: decision-router's readCatalogue passed every registered tool (incl. codemode/deferred/hidden MCP tools, pi 0.99 exposure model) to the classifier and setActiveTools could declare them directly; now keeps only direct/model-only/no exposure (red-first test). New hook-bridge test pins pi's mcp__ai_raccoon__memory_search spelling (mutation-proven). Stale 0.84.4 / pi-mcp-tools spelling claims refreshed; docs/howto/update-integrations.md gains 'Moving to pi 1.0.0'. PR #40 squash-merged 06bdfbe, CI green.",
+            "decisions": [
+                "No code change for 0.86/0.87 breaking items: no context/user_bash handlers, turn_end handler returns undefined, no custom provider stream",
+                "/ask child keeps --no-extensions; losing built-in llama.cpp provider is documented rather than re-added with -e builtin:llama.cpp"
+            ],
+            "followUps": [
+                "Interactive fullscreen-TUI behaviour (now default) of shift-enter-newline and footer widgets not verified",
+                "hook-bridge MCP-spelling test inlines the shipped matcher regex; authoritative hooks.json is not in this mirror"
+            ]
+        },
+        {
+            "taskId": "aib-adjust-mcp-native-capability-gate",
+            "title": "Replace pi-mcp-tools marker gate with native-capability check in ai-badger pi adjustments",
+            "finishedAt": "2026-09-30T14:25:09Z",
+            "summary": "Framework follow-up to the fork retirement (low loop, cross-repo in $AI_BADGER). adjust_mcp.py's removal gate now keys on the project's native .pi/mcp.json (exists AND parses as a JSON object; absent/malformed/non-object/no-target all conservative warn-and-leave, never raises, no version probe). Fork's name retired from adjustment.json, pi_settings/adjust_skills docstrings, support.json mechanism+scaffoldedBy (honesty pins moved to the native contract, 'parseable JSON object' pinned, mutation-proven), mcp_tools comments (comment-only; companion owns the MERGE path), plus an ADR-0023 amendment. Red-first: s1 suite failed 9 tests against unchanged code before s2 greened it; s5 adversarial review (mutation-based) found 2 blocking gaps, fixed in 2fa2a5ec. Released as ai-badger 0.183.0 via PR #546 (squash-merged 2a8a2c10, all CI green). Join: companion PR #545 (scaffold .pi/mcp.json) rebases onto main, honesty pins extend-don't-drop; they renumbered to 0.184.0. Plan: task-graph rev 13, 6/6 steps, 32/32 ACs."
+        },
+        {
+            "taskId": "pbi-retire-pi-mcp-tools-native",
+            "title": "Retire pi-mcp-tools; pi's built-in MCP takes over (native MCP migration)",
+            "finishedAt": "2026-09-30T09:33:38Z",
+            "summary": "Complete retirement of the pi-mcp-tools fork in favor of pi 0.99.1's built-in MCP (owner scope: item 1 only, low-effort loop). Deleted extensions/pi-mcp-tools + tests/pi-mcp-tools (15 + 9 tracked files; the fork-canonical parity gate and the prettier byte-parity twin landed the same morning are retired with it). publish.ts: EXTENSION_DIRS drops pi-mcp-tools; new RETIRED_EXTENSION_DIRS drives --check fatal-on-stale (read-only, names the fix) and install remove-and-announce, behind an injected userExtensionsDir seam (5 new cases; independent break-test with emptied RETIRED_EXTENSION_DIRS reddens exactly them). Deleting the fork also cleared the repo's 10 TS2307 tsc baseline (tsc now exit 0). Config: kept .mcp.json for Claude Code and added tracked .pi/mcp.json with the five servers converted per pi's dist/extensions/mcp/runtime.js (expandHome-only on command/args/cwd; ${NAME}/!command in env/headers only): ${HOME}->~, ${CLAUDE_PROJECT_DIR} -> task-graph script path relative to the session cwd, fork tools arrays dropped; migration note covers the command/tool-name mapping, trust gating (headless ask/never + --approve), and the codemode default exposure. Docs: README row/intro, catalog tombstone naming pi-mcp-tools, publish-flow ownership rule with the retired-dir exception, CI comment, both pi.instructions.md MCP bullets rewritten byte-identically (mcp__<server>__<tool>, 'no MCP support' claim gone, provenance header now 'pi 0.99.1 for the MCP bullet'), 8 always-loaded summary copies, VERSION 1.1.34. Evidence: task-graph plan revision 1 after GO-WITH-FOLDS plan review (BSD wc padding fix + hardened join check); 6-step DAG all criteria passed; wave-1 lanes + summary/version lanes each in their own worktree; integration on the merged tree; real machine: check exited 1 naming the stale ~/.pi/agent/extensions/pi-mcp-tools -> publish removed+announced -> check 0 -> dir gone; widened touched surface 385 pass/0 fail + tsc 0; release.yml ran on main for 1.1.34. PR #39 squash-merged 57bdcf9 at head 94b9edd; qa review's F1 MUST (cwd missing from the ${…} scan) plus F2/F3 were cherry-picked to main as 7ed8a1c after the merge.",
+            "decisions": [
+                "Complete retirement, no version-gated fork and no card-renderer port: human cards, mcp_list_servers, the mcp-* commands, --mcp-debug and settings-persisted disabled tools are replaced by /mcp, pi mcp CLI, ~/.pi/agent/mcp.log and exposure/toolExposure in mcp.json",
+                "publish cleanup is name-gated (only RETIRED_EXTENSION_DIRS entries may be removed), --check never writes (it flags), install removes and announces; removal is mandatory because pi discovers every ~/.pi/agent/extensions/<name>/index.ts and a stale fork would stay armed",
+                "The three generic dotfile publish cases were kept (fixture renamed pi-mcp-tools -> session-signals); only the marker fixtures were incidental",
+                "Instruction files were hand-edited past the generated-file guard because the ai-badger framework sources are stale and a scaffold refresh would clobber both rewrites and resurrect the 'no MCP support' claim",
+                "Plan review (GO-WITH-FOLDS) folded via plan_replace at revision 1: BSD wc pads counts so three gates would never go green; the integration check now enforces stale-present -> check red -> publish -> check green -> dir gone",
+                "qa review F1/F2/F3 (cwd in the ${…} scan, task-graph script existence, non-empty server guard) applied post-merge by cherry-pick on main; the CI failure that drove the loose-probe fix (RETIRED_EXTENSION_DIRS substring collision with two EXTENSION_DIRS = source probes) was fixed in be4f143, green on CI"
+            ],
+            "followUps": [
+                "ai-badger: replace the .ai-badger-capability-project-scope-mcp marker gate (features/pi/adjustments/*) with a native-capability check; the framework copy features/pi/instructions/pi.instructions.md still asserts 'pi core has no MCP support' and would resurrect the claim on refresh",
+                "The Copilot review round never ran (PR merged early by the owner); the code-reviewer (APPROVE-WITH-CHANGES, all folded) and qa (sound with one MUST, folded) reviews are the recorded gates",
+                "Optional and uncommitted: a standalone card-renderer extension for native MCP results (out of scope)",
+                "pi devDependency stays pinned 0.84.4 in CI while the native-MCP facts are 0.99.1 - separate item flagged in the plan context"
+            ]
+        },
+        {
+            "taskId": "pbi-project-local-ids-console-hygiene",
+            "title": "Project-local delegation ids + global GUID v7, completion fix, extension console capture",
+            "finishedAt": "2026-09-22T22:47:16Z",
+            "summary": "Three user items plus one feedback hotfix. (1) Delegation ids are project-local: logs moved to ~/.pi/agent/subagent-logs/projects/<projectKey>/d-N.jsonl (key = AI_BADGER_PROJECT_ID env, else .ai-badger/project-id, else sha256 of the nearest .ai-badger/.git root, else cwd), allocation/reconstruction/prune scoped per project, legacy flat logs left untouched and unread. Every run also mints a UUID v7 globalId (record, run header, receipt) indexed at log-sink creation into ~/.pi/agent/subagent-logs/index.jsonl (append-only, compacted above 1000 to newest 500, atomic rename); delegations resolve <d-N|guid> bridges local<->global (live registry first, then the index). (2) The autocomplete provider splices an argument completion's value over the WHOLE argument, so /delegations log|abort|peek and /monitors cancel id items now return '<verb> <id>' — Tab no longer deletes the verb. (3) New extensions/console-capture: wraps console.log|info|warn|error|debug while the TUI owns the terminal, appending to ~/.pi/agent/badger-console.log (1 MiB rotation), armed at factory, disarmed when session_start is not TUI, flushed to the original stderr on a pre-session exit, permanently disarmed by uncaughtExceptionMonitor, kill-switch PI_BADGER_CONSOLE_CAPTURE=0; composes with the session-signals vertex filter in either order. Hotfix (f: feedback): pi-tui 0.87.1 renamed the darwin prebuild to darwin-platform.node and the shift-enter loader's local candidate had a doubled path segment, so Shift+Enter degraded to follow-up in JetBrains terminals; both names are now tried from the resolved package dir. Evidence: plan review GO-WITH-FOLDS (M1-M4, S1-S6 folded), 852 pass/0 fail on the touched surface, 5-test integration suite, tsc only the 10 baseline pi-mcp-tools TS2307s, publish + --check in sync (14 extensions incl. console-capture), PR #30 squash-merged 5606f4c (release 1.1.19).",
+            "decisions": [
+                "Project key: AI_BADGER_PROJECT_ID wins, then .ai-badger/project-id, then a stable hash of the nearest .ai-badger/.git root, then cwd; sanitized to [A-Za-z0-9._-]",
+                "Log layout: projects/<key>/ under the existing log root; the SubagentDeps.logDir seam stays the base dir; allocateRunId and reconstructFromLogDir are reused unchanged",
+                "Global index entry is written at log-sink creation (not allocation), so queue-cap-rejected and queued-aborted runs get none while aborted-at-spawn is indexed (openTee precedes the pre-aborted check)",
+                "Global id is a local UUID v7 mint (48-bit ms + randomBytes) with no Node-version dependency; explicit-id runs mint one after the fact via allocationOf normalization at both registry call sites",
+                "resolve semantics: local id answers from the live registry then the run header; a foreign GUID answers from the index with source 'index'; unknown input is loud",
+                "Dedicated console-capture extension over hosting in session-signals: console hygiene must not disappear when an unrelated feature is disabled; disabled = leak returns by design (documented)",
+                "Capture wraps log|info|warn|error|debug only (dir/trace/table documented as outside); a throwing sink falls back to the original method once and never throws into the caller",
+                "Completion tests keep direct exact-value assertions; the apply-completion helper is a drift guard only — the independent witness is the manual TUI check"
+            ],
+            "followUps": [
+                "Manual TUI confirmation of /delegations log <Tab> in a live session (automated evidence applies the provider algorithm exactly)",
+                "Phase-4 reviews d-1551 (implementation) and d-1552 (test quality) were still running at merge; triage findings into a follow-up PR if any MUST/blocker lands",
+                "console-capture is a new publish target: users must /reload or restart pi to load it",
+                "decision-router node_modules warning from publish --check is pre-existing (derived state)"
+            ]
+        },
+        {
+            "taskId": "pbi-multi-query-rag-pipeline-v1",
+            "title": "Multi-query RAG pipeline v1: query-pipeline extension, Jev preload, document-aware merge",
+            "finishedAt": "2026-09-22T22:35:52Z",
+            "summary": "Shipped extensions/query-pipeline (group: delegator-persona direct ctx.modelRegistry.complete call -> split: one memory_search per planned query, sequential through mem-based-rag's single-flight searchCall -> rank: Jev score client copied by contract, batched <=12, own 15s attempt timeout -> merge: 5 slots total, best chunk per distinct document first, backfill only from already-included documents -> the bank's memory_search envelope). mem-based-rag auto-enrichment routes through it with PI_BADGER_QUERY_PIPELINE=0 falling back to today's single search; a search-error rethrow preserves the existing bank-error/timed-out diagnostics; progress paints via ctx.ui.setStatus/setWidget with a per-run token and clears in finally; one gated session-scoped fail-open Jev warm call at session_start; publish.ts EXTENSION_DIRS + export. Evidence: full suite 1870 pass/6 skip/4 fail (the 4 pre-existing pi-mcp-tools fork-parity + native-helper failures, identical on main); typecheck clean; publish --check in sync; per-package mutation ledgers pasted (PKG-1..PKG-5); MG-2 direct planner N=10 p50 4.2s/p95 5.6s ~$0.0003/call; MG-3 real MCP end-to-end 5 queries -> 29 candidates in 19.0s -> Jev 1.7s -> 5 distinct docs, 3 absent from the baseline top-5; MG-1 render mechanism verified from installed pi source (setStatus -> interactive-mode.setExtensionStatus -> footerDataProvider + ui.requestRender -> TUI.requestRender -> process.nextTick(scheduleRender)). PR #29 squash-merged ee5f1c6.",
+            "decisions": [
+                "Planner seam is ctx.modelRegistry.complete (pi 0.84.4 ModelRegistry has no streamSimple); text extracted inline from AssistantMessage.content, no pi-ai dependency",
+                "MG-2 amendment: parsePlan normalizes instead of rejecting - drops malformed concepts/queries, ignores unknown keys, truncates to 6 total / 4 per concept; strict shape rejection discarded 5/10 measured plans (the model reliably emits 4 concepts / 7-9 queries)",
+                "Merge budget is 5 slots total across mem+code (not per section); null-scored distinct documents take pass-1 slots (document-first); droppable ?/empty hits are dropped before selection (pruneHits parity, per kind)",
+                "Budget defaults 90s total / 15s planner / 15s search / 8s score; the planner cap is min(plannerMs, total-search-score) so it can never eat the search window; a single search timeout does not abort the shared controller",
+                "v1 routes auto-enrichment only (/ask unchanged) and has no HTTP planner fallback - any planner failure degrades to the single-query path",
+                "Jev scoring is a copy-by-contract client (the frozen decision-router client cannot express type:score); same env names/error vocabulary, own 15s per-attempt timeout, no backoff",
+                "A dead bank surfaces through the pipeline's search-error reason, which mem-based-rag rethrows into its existing bank-error skip path, so both pre-existing wiring tests pass unchanged",
+                "Progress uses ctx.ui.setStatus + setWidget with a monotonic per-run token; an earlier finisher never clears a later run's status"
+            ],
+            "followUps": [
+                "Live pixel confirmation of MG-1 progress visibility (mechanism verified from source; not yet observed in a live TUI)",
+                "Parallelize the N searches without breaking searchCall single-flight (owner-deferred optimization pass)",
+                "Route /ask through the pipeline; direct HTTP planner fallback; mechanical-chunking baseline (may cut the planner); planner stability/recall repeats; independent relevance labels",
+                "Tune the default planner model (env PI_BADGER_QUERY_PIPELINE_PLANNER_MODEL unset -> ctx.model) from measured cost/latency"
+            ]
+        },
+        {
+            "taskId": "pbi-jev-routing-tool-model-selection",
+            "title": "Jev 1.13 decision-router: tool selection, model selection, shadow prompt routing",
+            "finishedAt": "2026-09-21T22:33:53Z",
+            "summary": "Measured TypeSafe Jev 1.13 through OpenRouter (/api/alpha/decisions: 0.47-0.89 s, ~$0.00002/call, typed answers with per-option probabilities) and shipped extensions/decision-router/ as one pre-flight before_agent_start fan-out: additive confidence-gated tool selection, asymmetric model-tier pre-flight, shadow-only prompt routing. PR #27 squash-merged (CI test pass); 206 decision-router tests, typecheck clean; full suite has only the 4 pre-existing environment failures. Internal review MoE (code/qa/delegator) plus a 47-mutation ledger and an independent 19/19 re-verify; the tier setModel MUST (bare {provider,id} stub corrupting session.model) was fixed by resolving through ctx.modelRegistry.",
+            "decisions": [
+                "Session cache key (promptHash, catalogueHash, modelId), no TTL, LRU 50; no general inter-call cooldown; 429 arms a Retry-After cooldown only",
+                "Tool apply is additive: floor 0.2, confidence gate 0.7; never removes tools; a failed getActiveTools read holds instead of narrowing",
+                "Tier asymmetry: upgrade 'high' at conf >= 0.60, demote 'low' at >= 0.85, 'medium' always holds; already-on-target holds; upgrades latched while router-fallback switched",
+                "setModel must receive a full registry model (ctx.modelRegistry.find); a {provider,id} stub silently corrupts session.model on pinned pi 0.84.4",
+                "Thresholds are code constants, not env; env surface is kill switches (PI_BADGER_DECISION_ROUTER*), key, endpoint/model, timeout, and tier model refs",
+                "Prompt routing is shadow-only (record {question, choice, confidence, promptHash}); enforcement deferred until a labelled corpus exists",
+                "Pure client/policy modules with injected fetch/scheduler/env; alpha endpoint behind a classify() seam with a deterministic fallback"
+            ],
+            "followUps": [
+                "Labelled 100+ prompt corpus before trusting/profiling demotion tuning (ADR follow-up)",
+                "Tool narrowing mode (deactivate non-selected tools) deferred; additive apply only in v1",
+                "Routing enforcement path and its confidence threshold",
+                "Live 255-option catalogue probe and its real token cost",
+                "Bounded 429/402 endpoint probe (rate-limit shapes were stipulated, not measured) and data-retention terms"
+            ]
+        },
+        {
+            "taskId": "pbi-deepseek-v41-flash-delegation-default",
+            "title": "DeepSeek V4.1 Flash as the medium+high delegation default (framework + pbi)",
+            "finishedAt": "2026-09-21T21:17:27Z",
+            "summary": "Rotated openrouter/deepseek/deepseek-v4.1-flash (0.15/0.60 per M) to the medium and high preferred tier durably in the ai-badger canonical and immediately in this repo. Framework: 0.172.0 (#492) medium rotation with the displaced muse-spark-1.3-contributor demoted to a revisionWatch tail (high was already rotated in 0.168.0); 0.172.1 (#493) fixed the full-price-twin evidence and published the registryVersion erratum. pbi: FROZEN_MODEL_GROUPS medium+high re-pinned, ADR provenance rewritten, exact-bullet join-7a tripwire added, queue/model-level tests updated (#26); den-refresh to 0.172.1 with the live .ai-badger/model-groups.json now resolving deepseek and the ADR frozen-flag truth fix (#28). Runtime probes with source asserted: frozen (empty cwd), project (refreshed registry frameworkVersion 0.172.1), fresh scaffold from the tag tree; the pre-refresh registry reds the same probe. Published to pi user scope; the installed frozen probe passes. High-effort loop: 3-lane plan MoE, plan-review MoE (2 MUST + 5 SHOULD folded), impl-review MoE, QA GATE-WITH-NITS (all changed assertions mutation-proven).",
+            "decisions": [
+                "Preferred rotation, not a new tier: medium===high is legal (per-group invariants only); deepseek already ships in high, so registryVersion stays 1 and the 0.172.1 erratum corrects 0.172.0's inaccurate 'no member was added or removed' wording",
+                "The frozen fallback is pbi's shipped default for registry-less projects; a scaffolded project's own registry wins, so live activation required den-refresh, not just the frozen edit",
+                "Refresh ran from an immutable checkout --detach worktree at the ai-badger--v0.172.1 tag, then was redone from the canonical /Users/arasz/RiderProjects/ai-badger checkout so the committed manifest.frameworkRoot stays canonical",
+                "Exact-bullet ADR assertions replaced the id-presence loop: with medium==high the old loop was blind to a half-edit (QA confirmed the exact-bullet form is the only test that catches it)",
+                "Publish ran from the task worktree reset to post-merge origin/main, never the dirty main checkout; the sibling session's session-signals extra destination file was left untouched (bus-notified)"
+            ],
+            "followUps": [
+                "Optional: rename the fixture-shaped L0-5 test (sonnet-5 last in medium)",
+                "Deliberately not added: a durable frozen-vs-canonical tripwire (would red between a framework release and a consumer refresh; needs a decided cadence)",
+                "Sibling session must re-publish session-signals when its silence-vertex-debug work lands (bun run check currently OUT OF SYNC on that extension's extra destination file)"
+            ]
+        },
+        {
+            "taskId": "pbi-google-vertex-adc-support",
+            "title": "Enable Google Vertex API support with ADC in Pi",
+            "finishedAt": "2026-09-16T21:15:00Z",
+            "summary": "Enabled native Google Vertex API support with Application Default Credentials (ADC) in Pi, mirroring Hermes Agent patterns. Configured ~/.pi/agent/auth.json with google-vertex provider (env GOOGLE_CLOUD_PROJECT='job-search-ai-assistant-503814', GOOGLE_CLOUD_LOCATION='global', key omitted for ADC resolution). Configured ~/.pi/agent/models.json with Hermes-style model aliases (google/gemini-3.8-flash, google/gemini-2.5-flash, etc.) eliminating custom-model warnings. Added persistent exports to ~/.zshrc. Verified end-to-end live generation on gemini-2.5-flash and gemini-3.8-flash with real tool execution. Authored docs/howto/configure-google-vertex.md and updated configure-provider-keys.md. PR #24 squash-merged.",
+            "decisions": [
+                "In ~/.pi/agent/auth.json, omitting the 'key' property allows pi-ai google-vertex resolve to forward credential.env to the client; setting a dummy key incorrectly short-circuits env forwarding",
+                "Configuring Hermes-style prefixed model IDs in models.json allows users to use both bare (gemini-3.8-flash) and prefixed (google/gemini-3.8-flash) IDs cleanly without warnings",
+                "Set GOOGLE_CLOUD_LOCATION='global' as recommended for Gemini 3.x preview models"
+            ]
+        },
+        {
+            "taskId": "pbi-bus-identity-whoami-prose-guard",
+            "title": "Bus identity: full-id whoami pull, session env sync, prose-beats-wire mandates",
+            "finishedAt": "2026-09-09T23:10:00Z",
+            "summary": "Closed the truncated-only + prose-beats-wire gap behind F2 (stale prose-copied ids stranded 1:1 mail at dead ids). Delivered: message-bus whoami echoes FULL session+project ids in content (explicit pull; list/check headers stay truncated, F7 stays closed); session_start pins PI_SESSION_ID to the live manager id and clears stale foreign CLAUDE/HERMES vars (fail-open, single-resolve, trim guard); tool description carries the whoami-before-first-send rule for immediate effect; whoami-first mandates staged scaffold-safe in multi-agent-communication + task project-local.md; framework-source halves (skill SKILL.md text, task_tracker.py stale-binding warning) recorded as docs/work/2026-09-09-bus-identity-framework-followup.md for a feed-badger draft PR (generated-file guard forbids in-repo edits). 115/115 message-bus tests green (4 new), CI tests 1514 pass 0 fail with only the pre-existing monitor/mem-based-rag typecheck red (identical on main). code-reviewer SHIP-WITH-FIXES, 0 MUST 4 SHOULD all folded. PR #21 squash-merged 945a661. Low-effort, in-session plan, delegated review. User must /reload running sessions.",
+            "decisions": [
+                "whoami (explicit pull) is the one surface echoing full ids; list/check stay truncated — full ids never enter broadcasts, acks, or quoted bodies",
+                "Foreign harness env vars are pi-session-stale by construction when they differ from the live id; clearing them in-process is safe (parent env unaffected)",
+                "Generated skill/tracker files change only at their framework source: project-local.md stages the mandate, feed-badger PR delivers it upstream",
+                "Pre-existing CI typecheck red (monitor ExtensionContext mismatch, identical on main) does not gate this merge; documented, not fixed here"
+            ]
+        },
+        {
+            "taskId": "pbi-wait-mail-text-list-fallback",
+            "title": "Live-test findings: mail text list-fallback and record",
+            "finishedAt": "2026-09-09T21:20:00Z",
+            "summary": "Ack-gated live retest (fresh session 01a087f3): W1 mail@44s SAW WAKE-A, W2 mail@43s SAW WAKE-B (no re-fire), W3 timeout@40s silence; protocol cost ~5-9s/round vs 150s+ blind leads. Delivered: mail result text names message-bus list fallback (their post-wake checks read empty while list showed the WAKEs), pinned by /message-bus list/i (RED-first, qa nit tightened); research record F10 + method note, renderer clean. 287 touched tests green, tsc clean outside pre-existing pi-mcp-tools gap, full suite only pre-existing reds; code-reviewer SHIP clean + qa GATE-WITH-NITS (1 nit folded). Merged FF, published. Also repaired state.json brace dropped by sibling footer-task commit. Low-effort, in-session plan/review. User must /reload running sessions.",
+            "decisions": [
+                "Ack-gated protocol (READY per window) over blind leads for future live tests; my-side sub-60s timing imprecise, keep 30s+ margins with READY labels",
+                "Text-only change: no live retest needed beyond the run that motivated it; unit pins suffice",
+                "Merged locally, not via PR: github extension activated mid-task after work was reviewed; next task runs full PR flow from branch start"
+            ]
+        },
+        {
+            "taskId": "pbi-footer-shows-all-cron-jobs",
+            "title": "Footer reflects all cron jobs, not just cron.json",
+            "finishedAt": "2026-09-09T21:00:00Z",
+            "summary": "Footer cron status + cron-status now reflect pi-cron (cron.json) + system crontab (crontab -l), fail-open. NEW extensions/pi-cron/crontab.ts (parseCrontab, readSystemCrontab, formatCronStatus, truncateCommand); footer matrix (both->'N jobs (A pi + B crontab)', pi-only/system-unavailable->legacy byte-identical, system-only->new (s) form); cron-status gains system section + launchd non-pi out-of-scope note. 45 pass (22 new + 23 existing), tsc clean pi-cron (only pre-existing pi-mcp-tools reds), merged FF 1a7bd91. Low-effort: architect plan + code-reviewer READY-WITH-FOLDS (5 MUSTs folded) + api-engineer impl + code-reviewer SHIP (4 SHOULD follow-ups, non-blocking). User must /reload running sessions.",
+            "decisions": [
+                "Read-only scope: count + display only, no manage-system-crontab (would push to standard effort)",
+                "System 0/unavailable -> legacy strings byte-identical (no suffix); launchd non-pi daemons explicitly out of scope (documented)",
+                "Sync execFileSync with 2s timeout inside handlers only (never top-level); injected exec in tests, never real binary"
+            ]
+        },
+        {
+            "taskId": "pbi-wait-tick-shared-cursor-race",
+            "title": "Fix wait mail-tick losing shared-cursor race with adapter",
+            "finishedAt": "2026-09-09T20:35:00Z",
+            "summary": "Live test (2nd session) proved the cursor-based tick slept through R1 (WAKE deliverable 90s, timeout) while R3 hit in 251ms: the adapter poll consumes at sighting, displays at turn boundary, sharing one cursor. Fix: per-wait private high-water mark (readMailMark at start, defaultBusMailSince wakes on ids above mark, cursor-independent) + optional indexed hasNewSince seam (list fallback) + guarded mark read. 287 touched tests green incl. two-consumer regression (RED pre-fix) + mark-window/null-mark/stranger/fallback pins (2 lethal-verified live); tsc clean outside pre-existing pi-mcp-tools gap; full suite only pre-existing pi-mcp-tools reds; merged FF, published. Research record gains MEASURED F7/F8 + READ F9 + repaired Still-open closure. Low-effort: in-session plan + code-reviewer SHIP (1 fold: guarded mark read) + qa GATE-WITH-NITS (3 should-fix folded). User must /reload running sessions.",
+            "decisions": [
+                "Private mark over shared cursor: adapter cadence no longer matters to wake reliability; peek helper replaced (not kept alongside)",
+                "Undelivered-at-start mail no longer wakes (mark=max); accepted + disclosed (check-then-wait contract), snapshot deferred as 15-line follow-up",
+                "Deferred: MAX pushdown (wait-start cost only), probe regrouping (N~1), timer-handle naming (order loudly pinned), bus-store module split"
+            ]
+        },
+        {
+            "taskId": "pbi-wait-check-loop-bus-mail",
+            "title": "Short wait plus message-bus check loop, close wake research still-open",
+            "finishedAt": "2026-09-09T19:45:00Z",
+            "summary": "Owner feedback moved F6 inside the tool: wait now wakes on bus mail via an internal fixed 1 s tick (BUS_MAIL_TICK_MS, defaultBusMailProbe read-only peek, observed mail) — from the agent's perspective wait just works, no check loop. Fail-open (missing/locked DB, no identity, bus-off all read as no mail), per-ctx probe groups, tick disarms with last wait + on shutdown, mail beats idleness in W-A4 re-check. Wait + bus tool descriptions name it; docs/howto/wait-check-loop.md + catalog pointers; catalog stale wait default fixed (120 s -> 5 min code truth); research Still-open closed wont-continue, F6 marked superseded. 279 touched-surface tests green (15 new incl. live re-arm/kill-switch/cross-session mutation pins), tsc clean outside pre-existing pi-mcp-tools worktree gap, full suite only pre-existing pi-mcp-tools parity reds, merged FF, published (2 coordinator-revert extras remain, not this task). Low-effort: in-session plan/review + code-reviewer SHIP (7 SHOULDs, 3 folded) + qa BLOCKED->fixed (2 blockers + 4 nits, re-arm mutation verified lethal live). User must /reload running sessions.",
+            "decisions": [
+                "Internal tick over agent-side loop: no push path reaches a wait-held turn cross-process, so the waiter checks itself; agent contract unchanged (wait just resolves mail)",
+                "Fixed 1 s cadence, no ms knob (owner order); one shared timer, one probe per distinct ctx per tick",
+                "Peek-never-advance keeps exactly-once delivery through the turn_start hook; kill switch PI_BADGER_MESSAGE_BUS=0 honored",
+                "Deferred with reasons: bus-store module split (pure-core pollution risk), contention measurement (measure-first), tick-skip micro-opt (probe returns pre-fs), timer-handle naming (order loudly pinned)"
+            ]
+        },
+        {
+            "taskId": "pbi-ask-child-budget-mcp-strip",
+            "title": "Strip /ask child boot stack + raise child budget",
+            "finishedAt": "2026-09-09T18:59:07Z",
+            "summary": "Measured /ask child boot 62.7s (5 project MCP incl. failing hermes + full extension stack incl. coordinator ticks) vs 1.8s stripped. Child argv gains --no-tools/--no-skills/--no-extensions/--no-prompt-templates (denylist kept, --model/--thinking/--offline/--no-context-files rejected); NEW PI_BADGER_MEM_RAG_ASK_CHILD_TIMEOUT_MS default 90s (500-600000) as askChildTimeoutMs, search budget untouched; ack/status name child budget (old substrings kept). RED-first: argv/tail pins (4 sites → slice(-12)), default/override/fallback, exact repoint split (spawn→NEW, search/get/poison/bank stay), status/ack pins, RAG_KEYS hygiene. Review SHIP + 1 comment fix. 131 mem-based-rag green, tsc clean touched files, merged --no-ff (main had moved: #20 + 1.1.4), published + --check in sync, LIVE probe answers PONG in 1.7s. Low-effort: architect plan + code-reviewer READY-WITH-FOLDS (5 MUSTs) + api-engineer + code-reviewer SHIP. User must /reload running sessions.",
+            "decisions": [
+                "Strip flags implement the original tool-less-child design (only 5 tools were excluded before); denylist kept redundantly (pin + defense-in-depth)",
+                "Separate child env restores pre-P1 90s headroom without touching search fail-fast; P1 spawn-bound REDs repointed exactly (M2 split)",
+                "--no-context-files/--offline/--thinking rejected (unneeded for the win; quality/risk)",
+                "append-only card + triggerTurn:false from prior task unchanged and compatible"
+            ]
+        },
+        {
+            "taskId": "pbi-centralized-message-delivery-coordinator-rebuild",
+            "title": "Refactor message delivery extension to centralized coordinator",
+            "finishedAt": "2026-09-09T18:30:00Z",
+            "summary": "Waker-only central coordinator (D1=A 3/3 consensus; full delivery + 5s/3x + no-hooks deferred as evidenced). PKG-1 registry heartbeat (readRegistrySnapshot, REGISTRY_TTL_S=300 read-side, TTL/4 touch, listIdentities seam), PKG-2 pure grouping+channel cache (flat channels, version hash), PKG-3 read-only tick (zero deliver/send, fail-open, single-flight, MAX_TICK_SESSIONS=25), PKG-4A piggyback wire-in (new turn_start block, 0 hook-body deletions), INT 7 join gates. 161 message-bus tests green, tsc clean outside pre-existing pi-mcp-tools, CI pass, PR #18 squash-merged 6cff3d5 (--admin over REVIEW_REQUIRED per away-mode order). Spikes MEASURED: no durable-tick host in pi (TUI exits, pi -p settles) → piggyback only; RPC follow_up proven external seam; JSONL-append pickup DISPROVEN; delivery_state DDL named for 4B. User scope: message-bus published ours; mem-based-rag clobber by bare publish probe repaired + bus #811. High-effort: MoE plan + plan-review MoE + MoE impl-review (SHIP-WITH-FIXES folded) + QA GATE-WITH-NITS (F1-F7 backfilled). Follow-ups: 4B mailbox (S2 transcripts exist), D4 hook removal, durable host (launchd-class), main-checkout reconcile (sibling ahead-9) + scoped-publish flag.",
+            "decisions": [
+                "Waker-only (A) over mailbox-now (B): acks are stub broadcasts with no per-target identity (F4), no cross-session inject primitive (F5), ack numbers unevidenced (F8) — 3/3 reviewer consensus; user-ordered no-hooks/5s-3x documented as deferred divergence, not refusal",
+                "CoordinatorStore structural subset (write paths unnameable by type) over reusing BusStore; single-sourced TTL/type/version in message-bus-core.ts (pi-import-free kept); single-flight keyed by version:budget; lazy channel-summary peek",
+                "touchRegistry kill-switch early-return (tool-check leak fixed); INT vii smoke-with-retry incl. heartbeat writes; rotation-churn pinned as limitation with MEASUREMENT-TODO, not prevented",
+                "Merge via --admin over REVIEW_REQUIRED (away-mode owner order); in-task MoE reviews + QA stand as review record; publish probe lesson: publish.ts has no --help — unknown flags run full publish; sibling file restored + bus-notified"
+            ]
+        },
+        {
+            "taskId": "pbi-ask-silent-failure-repro-fix",
+            "title": "Fix /ask silent failure + input lock",
+            "finishedAt": "2026-09-09T17:42:43Z",
+            "summary": "/ask went mute (notify-only output + discarded return + swallowing wrapper) and wedged input (unbounded awaits). P1: askSettle race bounds on all 4 /ask awaits (searchCall, fetchFull, getClient call-site, spawnAsk race); 6 RED-first repro tests incl. poisoned-searchFlight next-turn + silent abort-race. P2: durable append-only card ({triggerTurn:false}, AskCardKind answer/skip/failure) + ack notify pre-first-await; thin/mode-off/no-id skips notify-only; /rag bare notify wrapped. Review SHIP + 3 SHOULD fixes (stray-emission waits, notifySafely dedupe, outer-catch comment). 125 mem-based-rag tests green, tsc zero touched-file errors, published + --check in sync. Low-effort: architect plan + code-reviewer READY-WITH-FOLDS (5 MUSTs) + 2 api-engineer lanes + code-reviewer SHIP. Follow-ups: none structural; user must /reload to load fix in running sessions.",
+            "decisions": [
+                "Per-seam askSettle bounds over one overall deadline (preserves snippet-fallback + bank-vs-child notify shapes; flight self-heals)",
+                "Durable card append-only {triggerTurn:false}: subagent triggerTurn:true precedent rejected (idle branch would spawn a fresh LLM turn per answer)",
+                "Thin-skip + abort-race stay notify-only/silent; answers/failures = card+notify; ack precedes everything accepted",
+                "Poisoned searchFlight + hung seams proven by RED (4 lock paths); init-hang leg dropped per hatch (createClient sync, prod init already 15s-bounded)"
+            ]
+        },
+        {
+            "taskId": "pbi-delegation-session-peek-output",
+            "title": "Delegation surfaces: session id + peek output",
+            "finishedAt": "2026-09-09T16:25:08Z",
+            "summary": "P1 conditional session <id> trailing segment on list/widget/panel/receipt/card (absent→byte-identical; DelegationStatusRun.sessionId? additive) + P2 delegations peek <id> [--lines N] (default 20, 1-100) + /delegations peek twin with cache→live→queued→unknownIdError precedence + runner live answerPreview (PEEK_PREVIEW_MAX_CHARS 3000, text_delta+message_end only, stamped before onUpdate) + tailLines/clampPeekLines pure + catalog docs + tailLines(<1)→'' guard. 293 pass touched surfaces, full suite 1350 pass + 5 pre-existing pi-mcp-tools parity fails (main also fails), tsc zero subagent errors. Merged FF a3c16b8+950d22f+8f55e16. Low-effort: architect plan + code-reviewer READY-WITH-FOLDS (6 MUSTs folded) + 2 api-engineer lanes + code-reviewer SHIP-WITH-FIXES (4 SHOULDs, 2 applied). Follow-ups: ring-evicted wording disambiguation, empty-string sessionId airtight gate.",
+            "decisions": [
+                "Live peek rides in-memory record.answerPreview, not log parse (tee close-only verified); settled peek reuses result-cache byId output",
+                "Double-miss (registry+cache) single behavior unknownIdError covering never-existed + evicted (documented); queue-tool receipt sessionId deferred with reason",
+                "Session segment trailing conditional on !==undefined across all five surfaces; receipt/ card meta [usage?,session?,logFile?]; footer (session-signals) deferred (no registry wire)",
+                "PEEK_PREVIEW_MAX_CHARS 3000 tail-kept; sources text_delta+message_end assistant only, never thinking/toolcall; DelegationProgress/onUpdate unchanged; serial P1→P2→fixes"
+            ]
+        },
+        {
+            "taskId": "pbi-monitor-register-bash-predicate",
+            "title": "Monitor register accepts bash predicates alongside JS expressions",
+            "finishedAt": "2026-09-08T20:30:00Z",
+            "summary": "predicateKind js|bash (default js) reusing predicate string; bash reads snapshot JSON on stdin, exit 0->fired (stdout head-capped 1KB, empty->true) / 1->idle / >=2-signal-timeout-spawn->error+disarm; 5s timeout SIGTERM->SIGKILL 500ms group kill + in-flight set; async drain (JS sync first, bash Promise.all one frozen snapshot, idle re-drain once); expiry/shutdown/cancel kills + suppression; wait-timer pinned js; ADR docs/work/2026-09-08-monitor-bash-predicate-adr.md + catalog. 153 monitor tests green, tsc clean, CI green. PR #16 squash-merged as 37ce04f (--admin over branch policy per owner order). Low-effort: architect plan + code-reviewer plan-review READY-WITH-FOLDS (8 MUSTs) + api-engineer impl + code-reviewer impl-review SHIP-WITH-FIXES + qa review-tests BLOCKED->fixed (escalation/error-disarm/group-orphan pins) + in-session CI-only M6 portability fix (bash3.2 exits 1 vs bash5 >=2 on bare return). Tracker skipped (stale claude-source cwd-fallback claims foreign session). Follow-ups: bashExecutable wiring seam (C-3), epoch-bump observability (#4), wall-clock margins (#8).",
+            "decisions": [
+                "stdin over env (ARG_MAX/ps-leak; jq-native); 0/1/other exit mapping (jq -e dialect, loud-disarm typos); predicateKind discriminator over second field (one string/cap/receipt path)",
+                "Coalescing fix (i) re-drain-once over documented-drop: preserves evaluates-on-every-transition receipt promise",
+                "M6 return-0 probe asserts registration-verbatim only; exit-1->idle stays pinned by stable exit-1 probe (shell-version landmine documented in-test)",
+                "JS fired cards carry no value (keeps JS renders byte-identical); no VERSION touch (auto-bump owns it)"
+            ]
+        },
+        {
+            "taskId": "pbi-rag-skill-precondition-ask-command",
+            "title": "RAG skill-gated precondition + /ask isolated command",
+            "finishedAt": "2026-09-08T20:24:00Z",
+            "summary": "PKG-1 skill-only auto-enrich (non-skill turns skip as non-skill-call, zero searches; bare calls keep bare-skill-call) + PKG-2 /ask isolated RAG command (floors + memory_search limit 5 + tool-less pi child, 90s kill, 8KB cap, fail-open, shutdown kills in-flight). 104 mem-based-rag tests green, full suite + tsc only pre-existing pi-mcp-tools reds, CI green. PR #17 squash-merged as 76ac786 (--admin over REVIEW_REQUIRED per owner order). Low-effort: code-reviewer impl-review SHIP (stripped-Question + stderr-log + pure-function folds applied) + qa review-tests GATE (no-hits + counter pins added). Follow-up: default-spawn-seam integration test (known blind spot).",
+            "decisions": [
+                "Stripped decision.query (not raw args) in both bank search and child Question: — bank-query/child-prompt contract parity",
+                "isSkillCall stays exported+tested contract helper (prefix vs body presence); wiring intentionally keys on hasSkillPrefix so bare calls keep their reason — no production churn",
+                "Single-slot askAbort race under concurrent /ask documented as known edge (commands sequential in practice)",
+                "Default real-spawn seam untested (all /ask tests inject the seam) — filed as follow-up, not a gate-blocker"
+            ]
+        },
+        {
+            "taskId": "pbi-delivery-cursor-duplicate-missing-fix",
+            "title": "Delivery late-card + missing-cursor anomalies",
+            "finishedAt": "2026-09-08T18:54:39Z",
+            "summary": "A1 late card → IMPL-BUG fixed: hook-path peek-then-post-then-advance (optional peek seam, reject-holds-redeliver, old stores byte-identical) + 11-row visibility suite, all mutant-proven. A2 missing cursor → NO-FAULT-FOUND (write path proven 15/15 white-box; disappearance has no in-repo cause). 154 tests green, tsc clean outside pre-existing pi-mcp-tools, impl-review SHIP, review-tests unblocked (confirm-yes/no, empty-preview, broadcasts/empty settle rows). PR #11 squash-merged; manual bump PR #12 (auto-bump bot still PR-blocked) cut v1.1.1; published, check in sync. Low-effort: architect plan + code-reviewer review (READY-WITH-FOLDS) + api-engineer investigation + api-engineer fix + code-reviewer gate (SHIP) + qa review-tests (BLOCKED→fixed).",
+            "decisions": [
+                "Peek-then-post-then-advance over await-card (sendMessage returns void, hooks return void — acceptance ordering is the only implementable shape); reject-holds-redeliver gives hook-path at-least-once",
+                "Targeted cursor-write rejected as bigger shape; peek-settle micro-race documented in-code as bounded synchronous window, intentionally untested (no deterministic cross-process row possible)",
+                "A2 filed NO-FAULT-FOUND not exonerated-lightly: 15/15 repro + zero DELETE paths + twin control correct; per-process DB-path/external-surgery stay hypotheses with named boundary",
+                "QA confirm/empty/broadcasts rows added post-BLOCKED with per-mutant kills; old-store row passes pre/post by design as preservation pin",
+                "House repeats: manual bump PR again (default ruleset still has zero bot bypass); VERSION owned by release chain, never hand-shaped beyond the bump"
+            ]
+        },
+        {
+            "taskId": "pbi-bus-identity-delegation-skip-fix",
+            "title": "Bus identity and delegation-skip fixes P1-P5 + F7 ack stub",
+            "finishedAt": "2026-09-08T15:37:11Z",
+            "summary": "P1 reply-by-id, P2 whoami+identity header, P3 bus_identities fail-open validation (shape/self/unknown) incl /messages send-to parity, P4 startup consumed-counts, P5 advisory pi-spawn guard, INT-6 cross-package rows, F7 metadata-only ack stub, catalog+README docs. 141 tests (message-bus+subagent) green, tsc clean outside pre-existing pi-mcp-tools, QA GATE. Branch task/pbi-bus-identity-delegation-skip-fix-impl pushed (15 commits), NOT merged — owner merges (F7 parenthetical deviation needs ratification). High-effort: MoE plan (3) + plan-review MoE (READY-WITH-FOLDS/NOT-READY→folds) + impl + P5 spike (IMPLEMENTABLE) + INT-6 + impl-review MoE (SHIP/SHIP/SHIP-WITH-FIXES→fixed) + QA GATE + F7 stub lane.",
+            "decisions": [
+                "Ack stub metadata-only `ack: #id — terminal, no reply expected`, dropped owner (<title prefix>) parenthetical: leading excerpts can open with the imperative (please review…) so any body bytes reintroduce F7; correlation by #id via list; one-liner to restore, needs owner ratification",
+                "Reply-to-ack stays refused (reviewers MUST) despite collaborator note that reply-with-content to ack is legitimate: behavior change mid-gate rejected; filed as follow-up now that stub acks are contentless",
+                "/messages send-to routed through P3 gate (api-engineer MUST over code-reviewer SHOULD): receipt claimed success for never-deliverable self-send, same #672 class; 3 MUST rows RED-first",
+                "P3 3A+3B folded single package (delegator MUST: 3A alone unshippable); S-labels re-anchored to real lines; gates re-scoped to green baseline (full tsc/test red in pi-mcp-tools pre-existing, exempted)",
+                "P5 kept (spike IMPLEMENTABLE 33/33, real emitToolCall payload) instead of folded out; file+registration per spike (subagent factory line, no publish.ts change, --check confirms auto-ship)",
+                "No echo-acks for #702/#706 (principled protocol deviation): acking with known-harmful echo format re-emits F7-banned bodies; receipt folded into #707 broadcast + stub remedy; exactly-once purpose served explicitly",
+                "VERSION untouched (auto-bump owns it) despite collaborator docs-package note asking a bump; docs package (catalog+README) done, publish --check verified via P5 lane",
+                "bus_identities prune story + reply-to-ack relaxation + QA F1-F8 hardening nits + F4 re-probe x2 + Phase 6 doc-audit filed as post-merge follow-ups"
+            ]
+        },
+        {
+            "taskId": "pbi-mem-based-rag-implementation",
+            "title": "mem-based-rag full implementation to v1 spec",
+            "finishedAt": "2026-09-07T00:05:00Z",
+            "summary": "mem-based-rag live at user scope (default-on): v1 filter (any-/ skip, minWords 6, noise-dict >=3, no-hits skip), trust-header blocks, session-keyed FIFO capture, stdio client fixes (re-init, reject-all, shared-deadline expanded gets), fail-open hardening. 61 tests (core 32 + wiring 29), tsc clean, red-proofs on trust-header + no-hits, 10/10 live acceptance vs real bank, PR #6 squash-merged (557f957), publish --check in sync. Low-effort: MoE spec review + architect plan + plan review (READY-WITH-FOLDS) + 2 api-engineer lanes + test-engineer P6 + code-reviewer gate (SHIP-WITH-FIXES).",
+            "decisions": [
+                "AND + >=3 + noise-dict over OR-floors/>2-counting (precision first; recall ladder documented)",
+                "minWords 8→6 (calibrated jsaa probes); owner veto recorded",
+                "Inject-don't-rewrite + stdio child + automatic (MoE-unanimous; HTTP/LLM-tool deferred)",
+                "Timeout stays 8000 (covers first-search warm-up); display:true with documented history cost",
+                "Live-found onData handshake bug fixed (non-envelope results resolve raw)"
+            ]
+        },
+        {
+            "taskId": "pbi-remove-delegate-background-param-compat",
+            "title": "Remove delegate background param, mode alone decides",
+            "finishedAt": "2026-09-06T09:51:41Z",
+            "summary": "Deleted background from DelegateParams; prepareArguments strips stale keys (old-session compat, SDK-cited); dropped B-A1 rejection + degraded flag/branch; wantsBackground = mode === tui. Tests 69 green (schema-absence proof, shim unit + joined keys-subset tests, mode-only matrix incl. rpc stale-key row; aids: Static retype, Value-absence workaround, catalog dedupe). PR #4 squash-merged over moved main (model-tiers #3): 3-hunk conflict resolved compositionally, join gate 232/0 over 7 suites. No manual VERSION (auto-bump owns it). Published, --check in sync. Low-effort: in-session draft + plan review (READY-WITH-FOLDS) + impl + impl review (SHIP-WITH-FIXES) + qa review-tests (GATE).",
+            "decisions": [
+                "Delete vs keep-as-ignored: an ignored-but-present field still advertises background:false to the model and silently converts explicit blocking into background; deletion + prepareArguments shim is the SDK-documented shape",
+                "No in-branch VERSION bump: auto-bump cuts releases on cadence and any in-branch number collides (1.0.10 taken mid-task); orchestrator leaves versioning to the chain",
+                "typebox@1 exports no Value: joined shim test asserts keys-subset-of-schema + preservation instead of Value.Check",
+                "Merge-conflict rule vs active lanes: keep their additive plumbing (levelOverride), let removal win on shared lines, verify with residue grep + full related suites"
+            ]
+        },
+        {
+            "taskId": "pbi-ai-raccoon-tool-cards-ui",
+            "title": "UI cards for ai-raccoon tool results",
+            "finishedAt": "2026-09-05T23:30:49Z",
+            "summary": "Human cards for all 29 ai-raccoon MCP tool results + mcp_list_servers ledger card (no more raw JSON dumps): new extensions/pi-mcp-tools/McpCardRenderers.ts (bare-name descriptor table + shared shape helpers, collapsed never-JSON, expanded trimmed ~4KB, fail-open incl. adapter non-envelope strings), attach-only wiring in McpToolAdapter.ts + index.ts, TDD 59 tests (RED-first, indexed->indexedd mutation, F1/H1/H5 + QA folds), docs section + VERSION 1.0.7. PR #2 squash-merged, CI green, published to user scope (--check in sync). Low-effort: architect plan + plan-review (READY-WITH-FOLDS) + api-engineer impl + impl review (SHIP-WITH-FIXES) + qa review-tests (GATE).",
+            "decisions": [
+                "Descriptor table + shared helpers over 29 bespoke renderers: per-tool path entries keep mutation sensitivity, one harness enforces collapsed/expanded/fail-open once",
+                "Bare-name keying (never prefixed pi name): toolPrefix is configurable per server; adapter closes over bare name at registration",
+                "F1: memory_search data:null envelope falls back (unknown) instead of claiming no hits; only present-but-empty arrays report no hits",
+                "Card text stays in renderCall/renderResult (UI-only); execute/content/details byte-identical so the LLM payload never changes",
+                "QA SHOULD folds applied pre-PR (sweep-deleted/absorbed/refused pins, fallback-text oracle, custom-prefix + expanded:true); expectNoJson [ ] hardening deferred as narrow-hole follow-up"
+            ]
+        },
+        {
+            "taskId": "pbi-bus-lock-busy-timeout-fix",
+            "title": "message-bus busy_timeout hardening + CI/release-chain fixes",
+            "finishedAt": "2026-09-05T21:55:00Z",
+            "summary": "Fixed database-is-locked (SQLITE_BUSY_SNAPSHOT on DDL write): openBusDb helper applies PRAGMA busy_timeout=5000 (python parity), pinned by read-back test. Full suite 1029 pass, tsc clean, published. Also stood up CI/release (VERSION 1.0.1, ci/auto-bump/release workflows): fixed fresh-clone ext-deps gap, global-pi gap (reproduced with empty HOME), token-push trigger gap (tag+release in bump job), GH_TOKEN env gap. Chain proven: ci green, auto-bump cut v1.0.4 tag+release. Low-effort, in-session plan/review — reduced rigor noted; read-only opens deferred as follow-up.",
+            "decisions": [
+                "busy_timeout over retry loops: SQLite serialises waiters itself; 5s matches python store",
+                "Deterministic pragma read-back test instead of flaky contention test",
+                "Read-only opens deferred: deliver path stays RW anyway; avoids tableless-DB behavior change",
+                "Tag+release inside auto-bump (not dispatch): GITHUB_TOKEN pushes trigger no workflows",
+                "Manual VERSION pushes always win over automation; bump's own VERSION-only commit terminates the chain"
+            ]
+        },
+        {
+            "taskId": "pbi-message-bus-send-check-list",
+            "title": "Message-bus pi extension (send/check/list + ack + cards)",
+            "finishedAt": "2026-09-05T20:20:10Z",
+            "summary": "New message-bus pi extension (extensions/message-bus/: pure core + sqlite wiring + manifest; publish.ts one-liner; README + catalog): message-bus tool (send/list/check/ack), /messages command (list|check|ack/send/send-to), session_start+turn_start delivery hooks, message-bus-event card renderer, all on ai-badger user-DB backend (D3/C2/R2 parity, 30min/16-cap first read). 36 extension tests (RED-first incl. node:sqlite null-vs-undefined fix + ack-inbox-membership), full suite 1004 pass/6 skip, tsc clean, published to user scope, check in sync. Low-effort: 3 delegations went off-track (ran publish, no plan/review) — in-session plan+review, reduced rigor noted.",
+            "decisions": [
+                "node:sqlite direct over pi.exec python: self-contained, no python dep; missing DB never created (ENOENT rule)",
+                "No new push timer: idle wake stays with adapter poll; hooks are turn-boundary seam only",
+                "Ack restricted to inbox membership + never-ack-an-ack, project-broadcast shape",
+                "L1/R1a leg-scoped landing simplified to global landing, declared in header"
+            ]
+        },
+        {
+            "taskId": "pbi-pi-update-integration-checker",
+            "title": "Update-check extension hooking pi update to integration releases",
+            "finishedAt": "2026-09-05T20:10:00Z",
+            "summary": "New update-check extension (core matrix + session_start wiring + /update-check status|check, TDD 24 tests; full suite 973: 967 pass/6 skip). Honest scope: pi exposes no update lifecycle event, so no hook into pi update exists; notify-only release check instead (never auto-installs), pi version unchecked by doc. publish.ts ships the dir + writes atomic installed marker outside owned dirs. v1.0.0 tagged+released; published to user scope, check in sync; live API matrix verified (stale->update, current->silent, no-marker->guidance, offline->silent). Landed via branch:main push to avoid clobbering another session's uncommitted chain-reorder on the main checkout.",
+            "decisions": [
+                "Notify-only over auto-install: update mutates user scope, needs a human",
+                "Marker outside owned extension dir: --check exact-set equality must never see per-install state",
+                "Scheduled handler returns (not floats) the check promise: fixes test/shutdown race, real timers ignore it",
+                "In-session plan+implementation review, reduced rigor noted: evidence-led design, TDD RED-first, gates green"
+            ]
+        },
+        {
+            "taskId": "pbi-homepage-pi-article-integrations",
+            "title": "Home-page article about pi usage and integrations",
+            "finishedAt": "2026-09-05T20:00:00Z",
+            "summary": "Separate PR Arasz/arasz-home-page#261 (draft): article pi-agent-and-integrations (id 17, published) + LinkedIn note + regenerated data. Verified: converter clean, ng build green, 563 tests pass, lint clean, sitemap+RSS carry slug. Workspace care: home-page checkout sat on another task's branch with dirty .ai-badger files; work isolated via rebase --onto origin/main, their files left uncommitted, checkout restored.",
+            "decisions": [
+                "Direct implementation over subagent: article prose + pipeline verification is single-threaded work; humanizer + ARTICLE-PIPELINE applied in-session"
+            ]
+        },
+        {
+            "taskId": "pbi-ai-badger-readme-pi-harness",
+            "title": "ai-badger README pi harness entries",
+            "finishedAt": "2026-09-05T19:45:00Z",
+            "summary": "Separate PR Arasz/ai-badger#472 (draft): pi row in Supported agents (Scaffolded), pi added to agent-specific stacks, new Are-you-using-pi pointer to public pi-badger-integration. Done directly in ai-badger checkout (docs-only, in-session review); pre-push gates green. PR left draft for owner review/merge.",
+            "decisions": [
+                "Direct edit over subagent delegation: 6-line docs change, delegation overhead unjustified; noted as reduced rigor"
+            ]
+        },
+        {
+            "taskId": "pbi-docs-readme-install-visual-refresh",
+            "title": "Docs, README, install guide refresh from ai-badger template",
+            "finishedAt": "2026-09-05T19:30:00Z",
+            "summary": "Visual-first README (mermaid publish-flow diagram, install block, extension table, docs links; 17KB deep content moved verbatim to docs/reference/extension-catalog.md + docs/explanation/publish-flow.md), new docs/howto/install-extensions.md, docs/howto/configure-provider-keys.md (moved), docs/README.md index, CONTRIBUTING.md, SECURITY.md (pi-extension threat model), MIT LICENSE (closes task-1 gap). Gates: 943 pass/6 skip, tsc clean, publish --check in sync, links resolve, style scan clean.",
+            "decisions": [
+                "No badges: repo has no CI, badges would be decoration",
+                "In-session review, reduced rigor noted: docs-only, content moved verbatim (byte-counts logged), gates green",
+                "Worktree needed pi-mcp-tools bun install for tsc (nested node_modules is gitignored derived state, absent in fresh worktrees)"
+            ]
+        },
+        {
+            "taskId": "pbi-publish-repo-public-release-flow",
+            "title": "Publish pi-badger-integration repo public",
+            "finishedAt": "2026-09-05T19:00:00Z",
+            "summary": "Flipped Arasz/pi-badger-integration PRIVATE->PUBLIC (gh repo edit with visibility-consequences accept), set description + 6 topics (pi-coding-agent, ai-badger, ai-agents, bun, typescript, coding-assistant). Pre-gate: source + full-history secret scan clean (only I3 guard patterns and truncated ... placeholders). No code changed; last suite 949 green stands. Gap for chain task 2: no LICENSE file (defaults to all-rights-reserved until added).",
+            "decisions": [
+                "LICENSE deferred to docs-refresh task (task 2) rather than blocking publish",
+                "In-session plan review (reduced rigor, noted) instead of review subagent: no code changed, change is account-level and verified via gh repo view"
+            ]
+        },
+        {
+            "taskId": "pbi-router-failure-free-model-fallback",
+            "title": "Router-failure free-model fallback extension with configurable providers",
+            "finishedAt": "2026-09-05T18:30:00Z",
+            "summary": "New router-fallback pi extension (extensions/router-fallback/: core matcher + provider registry + wiring + manifest; publish.ts one-liner; README; /fallback command): detects billing/auth/model-unavailable failures via folded errorMessage (substring+status-prefix, never exact JSON) and session-only switches Groq llama-3.3-70b-versatile -> Gemini gemini-3.1-flash-lite -> OpenRouter :free chain (glm-5.2/laguna-s-2.1/m3/inkling-small), once per episode + cooldowns, configurable ordered providers, S-cut (no live /models fetch, pinned+find-filter). 138 extension tests (RED-first incl. J5 stub-fetch probe fixtures), full suite 949 green, tsc clean, published to user scope, check exit 0. High-effort: 3-lane research, MoE plan, MoE plan-review (J1-J8 + M1-M12 folds), 4 implementation lanes (A,B,C,E), MoE impl-review + QA GATE, 1 fix lane. H8 closed (0.84.4 shapes identical); H7/H9 live-generation BLOCKED (no valid key), flagged.",
+            "decisions": [
+                "Throttle holds SILENTLY (F7): plan F2/M2 specifies hold, so reviewer-demanded live selector routing was declined in favor of docs honesty + pinning test; wait branch stays unit-tested policy, not a live path",
+                "No registerProvider for built-in defaults (groq/google/openrouter all KnownProvider) — registration reserved for custom/keyless overlays; Gemini via native built-in, zero knobs",
+                "W9 503-substitution: literal-500 classifies throttle (never switches), so the hold-then-switch twin uses 503 (model-unavailable) + literal-500-holds-both twin; spec text amended, not the code",
+                "Token ledger convention: run-cumulative agent_end usage, cache-excluded; subagent-log tee-elision can orphan usage (d-488/d-489 listed lost) — reports survive via results cache; delegation token lookup refuses honestly, manual log-backed recording it is",
+                "Full-suite count reconciled by scratch-worktree rerun at base (947, not E-reported 941) +2 fix-lane tests = 949 — E number was stale, not a ghost"
+            ]
+        },
+        {
+            "taskId": "pbi-queue-admission-monitors-results-cache",
+            "title": "Queue-only admission, /monitors command, structured delegation results + result cache",
+            "finishedAt": "2026-09-02T11:06:46Z",
+            "summary": "Delegate admission repaired to the ruled run-now rule (registry.start -> admitRequest: one-element serial group in the ONE queue; admits iff a slot is free and the queue head is not slot-blocked — cap full, mid-flight serial heads, unfittable parallel heads queue; delegations wait tool action REMOVED, the monitor wait tool is the only waiting surface; stale wait-verb text driven to zero incl. grep-invisible docstring). Monitor: /monitors command (armed panel id/name/excerpt/age/time-left, cancel <id> via gate-skipping internals, headless silent no-op, completions) and the poll guard now counts the delegations results action (list|log|results). Subagent: in-memory result cache (ring of last 8, dual-indexed by delegation_id and parent_id, eviction/duplicate/parent-omission hygiene, injected-clock timestamps, char caps 120/2000/6000 with head/tail markers) wired at the deliverNote entry before the 2s batch window; structured results ride every card (details.result single, details.notes[i].result batched); delegations results [id] action with registry-disambiguated misses. Versions subagent 1.2.0, monitor 1.1.0. High-effort: plan-review MoE (2 experts, READY-WITH-FOLDS, 9 musts folded), two disjoint lanes (A subagent / B monitor) merged clean, implementation MoE (3 experts, triple SHIP, zero musts), QA review-tests GATE: BLOCKED cleared (mutation-proven aborted-note wiring row + rejection-redirect pins). 771 tests green (765 pass, 6 gated skips), typecheck clean."
+        }
+    ]
 }
