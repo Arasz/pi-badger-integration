@@ -1,7 +1,14 @@
 {
-    "lastUpdated": "2026-10-21",
+    "lastUpdated": "2026-10-22",
     "next": null,
     "completedTasks": [
+        {
+            "id": "pbi-ai-raccoon-tool-surface-rename",
+            "title": "The memory/RAG extensions call ai-raccoon's 2.0.0 tool names (query / get_entry)",
+            "pr": "https://github.com/Arasz/pi-badger-integration/pull/97",
+            "finished": "2026-10-22",
+            "summary": "ai-raccoon 2.0.0 renamed the whole MCP tool surface (breaking, no aliases): memory_search->query, memory_get/code_get->get_entry, memory_write->add_memory. This repo talks to the bank over stdio with bare tool names (RaccoonClient.call), so every old name was a call to a tool that no longer exists. mem-based-rag now searches with `query` and fetches full content with `get_entry` (one call per hit, reading value/path/lineStart-lineEnd; the dead data.content and chunkIndex/totalChunks branches are gone); the rendered block names live tools (header `query`, expanded header `get_entry`, both pointer lines `get_entry`), and a per-hit refusal (ambiguous-hash) still degrades to that hit's snippet. The behavioural change nobody planned for: under get_entry a memory entry carries no line fields, so only a code chunk gets provenance ('lines 10-20'); the fixtures were lying about the bank's shape and had to be rewritten. query-pipeline makes no tool call of its own (mem-based-rag injects the search function) - what named the old tool there was the planner prompt (agent-facing text) plus comments and README. The pi adapter's matcher logic is generic and needed no change; its vendored copy is byte-identical to the ai-badger 0.214.0 checkout, whose comment already said `query`. Repo-wide old-name grep -> 0; bun run test 2250 pass / 9 skip / 0 fail (baseline-identical); typecheck clean; bun run check 'in sync' after publishing to pi's user scope. PR #97 squash-merged as ab14d34; the framework refresh is #95 (fc2658a). Low-effort loop: architect plan (the first plan_create failed validation - a task id with dots - so the plan was re-authored and stored), code-reviewer plan review, two parallel lanes (mem-based-rag; adapter+docs) then query-pipeline, code-reviewer implementation review. Two lanes reported work they had not finished or committed, and one review finding was based on a stale upstream comparison - every lane report was verified against the tree."
+        },
         {
             "id": "mdl-minicpmv-4-7-mtplx-35b-artifact",
             "title": "The MiniCPM-V 4.7 research moves to its own repository, and the 35B-A3B joins it as an MTPLX artifact",
