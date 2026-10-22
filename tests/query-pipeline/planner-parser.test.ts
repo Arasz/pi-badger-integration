@@ -15,7 +15,7 @@ import { DELEGATOR_PERSONA, PLANNER_ADDENDUM, PLANNER_USER_PREFIX, buildPlannerU
 
 // The measured harness prompt prefix (research F4, 4/4 parseable), copied from
 // the harness run — the raw prompt goes between the `<<<` and `>>>` markers.
-const MEASURED_PREFIX = `You are a retrieval-query planner for an ai-raccoon memory bank. Do not use any tools. Do not read files. Do not search memory. Analyze the USER REQUEST below and produce focused memory_search queries for a hybrid (keyword + embedding) bank.
+const MEASURED_PREFIX = `You are a retrieval-query planner for an ai-raccoon memory bank. Do not use any tools. Do not read files. Do not search memory. Analyze the USER REQUEST below and produce focused query calls for a hybrid (keyword + embedding) bank.
 
 Constraints:
 - Group queries by core concept. One concept may need several angles; several concepts may each need a few angles.

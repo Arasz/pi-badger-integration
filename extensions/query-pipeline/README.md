@@ -4,12 +4,12 @@ Delegate-planned multi-query retrieval for the ai-raccoon bank, consumed by the
 `mem-based-rag` extension.
 
 **Flow:** `group` (concept-grouped queries planned with the delegator persona via
-a direct model call) → `split` (one `memory_search` per query, sequential,
+a direct model call) → `split` (one `query` per query, sequential,
 single-flight through mem-based-rag's `searchCall`) → `rank` (Jev `score`
 questions, batched) → `merge` (5 slots total: best chunk per distinct document
 first; when fewer than five documents match, the remaining slots backfill with
 the next-best chunks of the already-included documents) → the bank's
-`memory_search` envelope, which mem-based-rag parses, prunes and injects exactly
+`query` envelope, which mem-based-rag parses, prunes and injects exactly
 as before.
 
 ## Install
@@ -34,7 +34,7 @@ session-scoped, fail-open Jev warm call on `session_start` (one tiny score call,
 | `PI_BADGER_QUERY_PIPELINE_PLANNER_MS` | 15000 | 1000–60000 | Planner hard cap. Never consumes the search window. |
 | `PI_BADGER_QUERY_PIPELINE_SEARCH_MS` | 15000 | 500–60000 | Per-search cap. |
 | `PI_BADGER_QUERY_PIPELINE_SCORE_MS` | 8000 | 1000–60000 | Scoring stage cap and search-phase reserve. |
-| `PI_BADGER_QUERY_PIPELINE_SEARCH_LIMIT` | 5 | 1–20 | `limit` sent to each `memory_search`. |
+| `PI_BADGER_QUERY_PIPELINE_SEARCH_LIMIT` | 5 | 1–20 | `limit` sent to each `query`. |
 | `PI_BADGER_QUERY_PIPELINE_PLANNER_MODEL` | unset → the session model | — | `provider/model` reference resolved through `ctx.modelRegistry.find`. A value with no `/` is a typed `no-model` fallback. |
 | `PI_BADGER_JEV_SCORE_TIMEOUT_MS` | 15000 | 1000–120000 | Per scoring attempt (shared name with the decision-router contract). |
 | `PI_BADGER_JEV_ENDPOINT` | `https://openrouter.ai/api/alpha/decisions` | — | Shared with decision-router. |
@@ -45,7 +45,7 @@ session-scoped, fail-open Jev warm call on `session_start` (one tiny score call,
 
 `retrieve` never rejects. A planner failure, timeout, empty or invalid plan, an
 empty candidate pool, a failed search, or an exhausted budget degrades to a
-single `memory_search` on the caller query (today's enrichment) — or to an empty
+single `query` on the caller query (today's enrichment) — or to an empty
 envelope, which mem-based-rag reports as `no-hits`. A dead bank surfaces through
 the pipeline's `search-error` reason, which mem-based-rag rethrows into its
 existing `bank error` skip path so diagnostics survive.

@@ -154,7 +154,7 @@ describe("createRegistryPlanner — registry.complete call shape", () => {
 				content: [
 					{ type: "text", text: validPlanText() },
 					{ type: "thinking", thinking: "scratchpad", text: thinkingPlan },
-					{ type: "toolCall", name: "memory_search", arguments: {} },
+					{ type: "toolCall", name: "query", arguments: {} },
 				],
 			})),
 			model: modelA,
