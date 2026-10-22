@@ -163,7 +163,7 @@ describe("I1 pipeline routing", () => {
 		const message = await fireBefore(pi, PROMPT, ctx);
 
 		expect(planCalls).toEqual(["explain how delegation timeout interacts with slow CI runners tomorrow morning please"]);
-		expect(calls.map((c) => c.tool)).toEqual(["memory_search", "memory_search"]);
+		expect(calls.map((c) => c.tool)).toEqual(["query", "query"]);
 		expect(message?.message?.content).toContain("docs/a.md");
 		expect(message?.message?.content).toContain("docs/c.md");
 		// Progress painted and cleared.

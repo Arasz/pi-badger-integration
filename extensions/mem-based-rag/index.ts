@@ -18,7 +18,7 @@
  * in-process server mode is slated for removal; the proxy is the transport.
  *
  * Agent memory is untouched: same server, separate call site — the agent keeps
- * its own memory_search tool; this only enriches the user prompt.
+ * its own query tool; this only enriches the user prompt.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -670,7 +670,7 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 		const token = ++progressToken;
 		const pipeline = createQueryPipeline({
 			search: (q, limit, ms) =>
-				searchCall(raccoon, "memory_search", { projectId, sessionId, query: q, limit }, Math.min(ms, timeoutMs)),
+				searchCall(raccoon, "query", { projectId, sessionId, query: q, limit }, Math.min(ms, timeoutMs)),
 			registry: (ctx as { modelRegistry?: unknown }).modelRegistry,
 			model: (ctx as { model?: unknown }).model,
 			env: process.env,
@@ -808,7 +808,7 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 				process.env[QUERY_PIPELINE_ENV] === "0"
 					? await searchCall(
 							raccoon,
-							"memory_search",
+							"query",
 							{ projectId, sessionId, query: decision.query, limit: 5 },
 							config.timeoutMs,
 						)
@@ -832,8 +832,8 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 				const deadline = Date.now() + config.timeoutMs;
 				const remaining = (): number => Math.max(1, deadline - Date.now());
 				const items = await Promise.all([
-					...mem.map(async (hit) => ({ hit, kind: "memory" as const, ...(await fetchFull(raccoon, "memory_get", projectId, hit, remaining())) })),
-					...code.map(async (hit) => ({ hit, kind: "code" as const, ...(await fetchFull(raccoon, "code_get", projectId, hit, remaining())) })),
+					...mem.map(async (hit) => ({ hit, kind: "memory" as const, ...(await fetchFull(raccoon, "get_entry", projectId, hit, remaining())) })),
+					...code.map(async (hit) => ({ hit, kind: "code" as const, ...(await fetchFull(raccoon, "get_entry", projectId, hit, remaining())) })),
 				]);
 				content = toExpandedMemoryContext(decision.query, items, { snippetChars: config.snippetChars });
 			} else {
@@ -874,7 +874,7 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 
 	async function fetchFull(
 		raccoon: RaccoonClientLike,
-		tool: "memory_get" | "code_get",
+		tool: "get_entry",
 		projectId: string,
 		hit: MemoryHit,
 		timeoutMs: number,
@@ -886,14 +886,12 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 				`ai-raccoon ${tool} timed out after ${Math.min(timeoutMs, 5000)}ms`,
 			);
 			const data = (JSON.parse(text) as { data?: Record<string, unknown> }).data ?? {};
-			const value = typeof data.value === "string" ? data.value : typeof data.content === "string" ? data.content : undefined;
+			const value = typeof data.value === "string" ? data.value : undefined;
 			const path = typeof data.path === "string" ? data.path : undefined;
 			const chunk =
-				typeof data.chunkIndex === "number" && typeof data.totalChunks === "number"
-					? `chunk ${data.chunkIndex + 1}/${data.totalChunks}`
-					: typeof data.lineStart === "number" && typeof data.lineEnd === "number"
-						? `lines ${data.lineStart}-${data.lineEnd}`
-						: undefined;
+				typeof data.lineStart === "number" && typeof data.lineEnd === "number"
+					? `lines ${data.lineStart}-${data.lineEnd}`
+					: undefined;
 			return { ...(value !== undefined ? { value } : {}), ...(path !== undefined ? { path } : {}), ...(chunk !== undefined ? { chunk } : {}) };
 		} catch {
 			return {}; // per-hit fallback to the snippet happens in the formatter
@@ -1021,7 +1019,7 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 					);
 					const searchText = await searchCall(
 						raccoon,
-						"memory_search",
+						"query",
 						{ projectId, sessionId, query: decision.query, limit: 5 },
 						config.timeoutMs,
 					);
@@ -1056,12 +1054,12 @@ export default function (pi: ExtensionAPI, deps?: MemRagDeps) {
 						...mem.map(async (hit) => ({
 							hit,
 							kind: "memory" as const,
-							...(await fetchFull(raccoon, "memory_get", projectId, hit, remaining())),
+							...(await fetchFull(raccoon, "get_entry", projectId, hit, remaining())),
 						})),
 						...code.map(async (hit) => ({
 							hit,
 							kind: "code" as const,
-							...(await fetchFull(raccoon, "code_get", projectId, hit, remaining())),
+							...(await fetchFull(raccoon, "get_entry", projectId, hit, remaining())),
 						})),
 					]);
 					block = toExpandedMemoryContext(decision.query, fetched, { snippetChars: config.snippetChars });

@@ -98,10 +98,10 @@ interface FakeBehavior {
 	code?: Array<Record<string, unknown>>;
 	/** hash → full value object, plain string value, or Error to throw (per-hit failure). */
 	values?: Record<string, Record<string, unknown> | string | Error>;
-	/** Artificial delay (ms) applied to every memory_get/code_get (concurrency probe). */
+	/** Artificial delay (ms) applied to every get_entry (concurrency probe). */
 	getDelayMs?: number;
 	searchError?: Error;
-	/** When true, memory_search waits timeoutMs then rejects (simulates real client timeout). */
+	/** When true, query waits timeoutMs then rejects (simulates real client timeout). */
 	timeoutReject?: boolean;
 	searchDelayMs?: number;
 }
@@ -110,12 +110,12 @@ function makeFakeRaccoon(calls: ToolCall[], behavior: FakeBehavior) {
 	return {
 		call: async (tool: string, args: Record<string, unknown>, timeoutMs: number): Promise<string> => {
 			calls.push({ tool, args, timeoutMs });
-			if (tool === "memory_search") {
+			if (tool === "query") {
 				if (behavior.searchError) throw behavior.searchError;
 				if (behavior.timeoutReject) {
 					await new Promise((_resolve, reject) =>
 						setTimeout(
-							() => reject(new Error(`ai-raccoon memory_search timed out after ${timeoutMs}ms`)),
+							() => reject(new Error(`ai-raccoon query timed out after ${timeoutMs}ms`)),
 							timeoutMs,
 						),
 					);
@@ -126,7 +126,7 @@ function makeFakeRaccoon(calls: ToolCall[], behavior: FakeBehavior) {
 					data: { results: behavior.results ?? [], code: behavior.code ?? [] },
 				});
 			}
-			if (tool === "memory_get" || tool === "code_get") {
+			if (tool === "get_entry") {
 				if (behavior.getDelayMs) await new Promise((r) => setTimeout(r, behavior.getDelayMs));
 				const hash = String((args as Record<string, unknown>)["hash"] ?? "");
 				const v = behavior.values?.[hash];
@@ -320,9 +320,9 @@ describe("(2) both modes card", () => {
 		const r = await fireBefore(pi, "", ctx as never);
 		expect(r?.message?.display).toBe(false);
 		expect(typeof r?.message?.content).toBe("string");
-		expect(String(r?.message?.content)).toContain("Memory context (ai-raccoon memory_search");
+		expect(String(r?.message?.content)).toContain("Memory context (ai-raccoon query");
 		expect(String(r?.message?.content)).toContain("first memory snippet");
-		expect(String(r?.message?.content)).toContain("memory_get");
+		expect(String(r?.message?.content)).toContain("get_entry");
 
 		const component = renderMessage(pi, r.message);
 		expect(component).toBeDefined();
@@ -337,9 +337,9 @@ describe("(2) both modes card", () => {
 			results: MEM_HITS,
 			code: CODE_HITS,
 			values: {
-				m1: { value: "the full decision text for delegation timeouts", path: "shared/a.md", chunkIndex: 1, totalChunks: 36 },
-				m2: new Error("memory_get exploded"),
-				c1: { value: "full code body for the injection path", path: "src/a.ts", lineStart: 10, lineEnd: 20 },
+				m1: { value: "the full decision text for delegation timeouts", path: "shared/a.md", entryType: "memory" },
+				m2: new Error("get_entry exploded"),
+				c1: { value: "full code body for the injection path", path: "src/a.ts", lineStart: 10, lineEnd: 20, entryType: "code" },
 			},
 		});
 		const ctx = makeCtx("/tmp/wiring-expanded", "sess-expanded");
@@ -349,19 +349,18 @@ describe("(2) both modes card", () => {
 		expect(r?.message?.display).toBe(false);
 		expect(r?.message?.details?.mode).toBe("expanded");
 		const body = String(r?.message?.content ?? "");
-		expect(body).toContain("memory_get/code_get, expanded");
-		// Provenance: path + chunk for the successful get.
+		expect(body).toContain("get_entry, expanded");
+		// Provenance: path for the memory entry, a line range for the code chunk.
 		expect(body).toContain("shared/a.md");
-		expect(body).toContain("chunk 2/36");
+		expect(body).toContain("lines 10-20");
 		expect(body).toContain("the full decision text");
 		// Per-hit fallback: the failing m2 falls back to its search snippet, whole block survives.
 		expect(body).toContain("second memory snippet about timeouts");
 		expect(body).toContain("full code body");
 
 		const tools = calls.map((c) => c.tool);
-		expect(tools).toContain("memory_search");
-		expect(tools).toContain("memory_get");
-		expect(tools).toContain("code_get");
+		expect(tools).toContain("query");
+		expect(tools).toContain("get_entry");
 
 		const component = renderMessage(pi, r.message);
 		expect(component).toBeDefined();
@@ -403,7 +402,7 @@ describe("(3) skips incl no-hits", () => {
 		const r = await fireBefore(pi, SKILL_P1, ctx as never);
 		expect(r).toBeUndefined();
 		// Filter passed (search ran) but hits were empty.
-		expect(calls.map((c) => c.tool)).toContain("memory_search");
+		expect(calls.map((c) => c.tool)).toContain("query");
 		const status = await ragStatus(pi, "/tmp/wiring-nohits", "sess-nohits");
 		expect(status).toContain("enriched 0");
 		expect(status).toContain("skipped 1");
@@ -943,7 +942,7 @@ describe("review gate: session reset, isolation, renderer fallback, shared deadl
 		const r = await fireBefore(pi, "", ctx as never);
 		const elapsed = Date.now() - startedAt;
 		expect(r?.message).toBeDefined();
-		const gets = calls.filter((c) => c.tool === "memory_get" || c.tool === "code_get");
+		const gets = calls.filter((c) => c.tool === "get_entry");
 		expect(gets.length).toBe(3);
 		for (const g of gets) expect(g.timeoutMs).toBeLessThanOrEqual(8000);
 		expect(elapsed).toBeLessThan(4000);
@@ -1019,7 +1018,7 @@ describe("PKG-1 skill-precondition gate (skill-only auto-enrich)", () => {
 		await fireInput(pi, SKILL_LONG, ctx as never);
 		const r = await fireBefore(pi, "", ctx as never);
 		expect(r?.message?.customType).toBe("mem-based-rag");
-		const searches = calls.filter((c) => c.tool === "memory_search");
+		const searches = calls.filter((c) => c.tool === "query");
 		expect(searches).toHaveLength(1);
 		expect((searches[0]!.args as Record<string, unknown>)["query"]).toBe(P1);
 		expect(await ragStatus(pi, "/tmp/wiring-pkg1-1", "sess-pkg1-1")).toContain("enriched 1");
