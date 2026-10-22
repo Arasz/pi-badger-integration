@@ -4,7 +4,7 @@
  * `runPipeline` orchestrates planning -> per-query search -> Jev scoring ->
  * document-aware merge under one wall-clock budget, with a single-query
  * fallback on any stage failure. `retrieveResult` never rejects; `retrieve`
- * resolves the bank's `memory_search` envelope string so the existing
+ * resolves the bank's `query` envelope string so the existing
  * mem-based-rag parse/prune/slice/format path is untouched.
  *
  * Purity: every dependency is injected (`deps.env/now/scheduler/fetchFn`

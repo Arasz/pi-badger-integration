@@ -51,7 +51,7 @@ The repo built and tested against pi 1.0.0 (`devDependencies` pinned `@earendil-
 
 | pi change | Effect here |
 |---|---|
-| MCP tool names replace `-` with `_` (0.99.2): `mcp__ai-raccoon__memory_search` is now `mcp__ai_raccoon__memory_search` | The adapter's post hooks still fire. The shipped matchers accept any `mcp__<server>__` prefix, and a test pins the new spelling. |
+| MCP tool names replace `-` with `_` (0.99.2): `mcp__ai-raccoon__query` is now `mcp__ai_raccoon__query` | The adapter's post hooks still fire. The shipped matchers accept any `mcp__<server>__` prefix, and a test pins the new spelling. |
 | Tools carry an `exposure`, and MCP tools default to `codemode` (0.99) | `decision-router` now offers the classifier only tools pi declares to the model (`direct`, `model-only`). Before the fix it could promote a codemode-only MCP tool to a direct declaration. |
 | `--no-extensions` also turns off pi's built-in extensions (0.99.0) | The `/ask` child in `mem-based-rag` passes it to stay isolated, so it loses the built-in MCP and codemode too, which it wants. It also loses the built-in llama.cpp provider: if your default model is a llama.cpp model, `/ask` has no model to run. `subagent` children don't pass the flag, so they load the built-ins and connect your MCP servers in the background. |
 | `--provider` without `--model` is an error (1.0.0) | `subagent` never passes `--provider`; it passes `--model` or nothing. |

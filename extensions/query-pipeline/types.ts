@@ -19,7 +19,7 @@ export interface PipelineProgress {
 	candidates?: number; batches?: number; pool?: number;
 }
 
-/** One memory_search over the existing transport; resolves the bank's JSON envelope string. */
+/** One query over the existing transport; resolves the bank's JSON envelope string. */
 export type PipelineSearchFn = (query: string, limit: number, timeoutMs: number) => Promise<string>;
 
 export interface PipelineCandidate {           // structural twin of rag-core MemoryHit

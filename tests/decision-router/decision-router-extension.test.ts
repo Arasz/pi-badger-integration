@@ -645,7 +645,7 @@ describe("B7 (qa-F7) — the sent body carries state.tools", () => {
 		const h = setup();
 		h.toolState.all = [
 			...DEFAULT_CATALOGUE,
-			{ name: "mcp__ai_raccoon__memory_search", description: "Search memory", exposure: "codemode" },
+			{ name: "mcp__ai_raccoon__query", description: "Search memory", exposure: "codemode" },
 			{ name: "mcp__semantica__export_graph", description: "Export", exposure: "deferred" },
 			{ name: "secret", description: "Hidden", exposure: "hidden" },
 		];

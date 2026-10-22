@@ -200,7 +200,7 @@ describe("P1 H3 every-path-settles (hung seam = locked TUI)", () => {
 		(factory as (pi: unknown, deps: unknown) => void)(pi as never, {
 			createClient: () => ({
 				call: async (tool: string): Promise<string> => {
-					if (tool === "memory_search") return never();
+					if (tool === "query") return never();
 					return JSON.stringify({ data: {} });
 				},
 				stop: () => {},
@@ -223,7 +223,7 @@ describe("P1 H3 every-path-settles (hung seam = locked TUI)", () => {
 		(factory as (pi: unknown, deps: unknown) => void)(pi as never, {
 			createClient: () => ({
 				call: async (tool: string): Promise<string> => {
-					if (tool === "memory_search")
+					if (tool === "query")
 						return JSON.stringify({ data: { results: MEM_HITS, code: CODE_HITS } });
 					return never();
 				},
@@ -267,7 +267,7 @@ describe("P1 H3 every-path-settles (hung seam = locked TUI)", () => {
 		(factory as (pi: unknown, deps: unknown) => void)(pi as never, {
 			createClient: () => ({
 				call: async (tool: string): Promise<string> => {
-					if (tool === "memory_search") {
+					if (tool === "query") {
 						searches += 1;
 						if (searches === 1) return never();
 						return JSON.stringify({ data: { results: MEM_HITS, code: CODE_HITS } });

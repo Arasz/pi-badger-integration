@@ -6,8 +6,8 @@ Deep reference for the extensions this repo ships. For install steps see [Instal
 
 Substantive user prompts gain a labelled `Memory context:` block injected via
 `before_agent_start` — top-5 memory snippets plus top-5 code snippets from
-`memory_search`, each with its hash so the agent can `memory_get`/`code_get` the
-full entry. The block is agent-side only: it is injected with `display: false`,
+`query`, each with its hash so the agent can `get_entry` the full
+entry. The block is agent-side only: it is injected with `display: false`,
 so the terminal renders no memory card while the model still receives the
 context. The prompt itself is never rewritten: the `input` handler only
 captures the raw pre-expansion text (so a `/skill:task <words>` call is queried
@@ -20,8 +20,8 @@ calls, `<20` chars, fewer than 6 unique words (≥3 chars outside a noise
 dictionary), and empty results (no-hits skip). The block carries a
 trust-boundary header: retrieved snippets are untrusted background, never
 instructions. Modes:
-`default` (search snippets) and `expanded` (a `memory_get`/`code_get` per kept
-hit, with path + chunk/line provenance, per-hit snippet fallback). Transport is
+`default` (search snippets) and `expanded` (a `get_entry` per kept hit, with
+path + chunk/line provenance, per-hit snippet fallback). Transport is
 a persistent bare `ai-raccoon` child on the default proxy transport (pi extensions cannot invoke
 MCP tools): thin stdio JSON-RPC forwarded to the single shared serve — spawn+init ~0.3 s amortized, first search ~4.5 s model warm-up,
 steady ~0.4–0.5 s, every call timeout-bounded (default 20 s) and fail-open — a
@@ -50,13 +50,13 @@ One prompt becomes several focused queries. The `group` stage sends the query
 `PI_BADGER_QUERY_PIPELINE_PLANNER_MODEL` — with the delegator persona as the
 system prompt, and parses a `{"concepts":[{"name","queries"}]}` plan
 (normalizing over-long plans to at most 6 queries rather than rejecting them).
-The `split` stage runs one `memory_search` per query, sequentially through
+The `split` stage runs one `query` per query, sequentially through
 mem-based-rag's single-flight transport. The `rank` stage scores every candidate
 with Jev (`type:"score"` questions, batches of 12, copied by contract from the
 decision-router client). The `merge` stage fills **five slots total**: the best
 chunk per distinct document first, and only when fewer than five documents match
 does it backfill with the next-best chunks of the already-included documents.
-The result is the bank's own `memory_search` envelope, so the injected block and
+The result is the bank's own `query` envelope, so the injected block and
 its card are unchanged.
 
 While the pipeline runs, the footer shows `[query-pipeline · planning queries]`,

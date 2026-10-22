@@ -228,7 +228,7 @@ describe("P2 AC1/M3 emission counts + explicit triggerTurn + loop-freedom", () =
 			{
 				name: "bank-error",
 				search: async (tool: string): Promise<string> => {
-					if (tool === "memory_search") throw new Error("bank exploded");
+					if (tool === "query") throw new Error("bank exploded");
 					return JSON.stringify({ data: {} });
 				},
 				notifyTypes: ["info", "info"],
@@ -392,7 +392,7 @@ describe("P2 AC2/H2 durable delivery with notify dead", () => {
 			[
 				"bank-error",
 				async (tool: string): Promise<string> => {
-					if (tool === "memory_search") throw new Error("bank exploded");
+					if (tool === "query") throw new Error("bank exploded");
 					return JSON.stringify({ data: {} });
 				},
 				"bank error",

@@ -91,12 +91,12 @@ function makeFakeRaccoon(calls: ToolCall[], behavior: FakeBehavior) {
 	return {
 		call: async (tool: string, args: Record<string, unknown>, timeoutMs: number): Promise<string> => {
 			calls.push({ tool, args, timeoutMs });
-			if (tool === "memory_search") {
+			if (tool === "query") {
 				if (behavior.searchError) throw behavior.searchError;
 				if (behavior.timeoutReject) {
 					await new Promise((_resolve, reject) =>
 						setTimeout(
-							() => reject(new Error(`ai-raccoon memory_search timed out after ${timeoutMs}ms`)),
+							() => reject(new Error(`ai-raccoon query timed out after ${timeoutMs}ms`)),
 							timeoutMs,
 						),
 					);
@@ -107,7 +107,7 @@ function makeFakeRaccoon(calls: ToolCall[], behavior: FakeBehavior) {
 					data: { results: behavior.results ?? [], code: behavior.code ?? [] },
 				});
 			}
-			if (tool === "memory_get" || tool === "code_get") {
+			if (tool === "get_entry") {
 				if (behavior.getDelayMs) await new Promise((r) => setTimeout(r, behavior.getDelayMs));
 				const hash = String((args as Record<string, unknown>)["hash"] ?? "");
 				const v = behavior.values?.[hash];
@@ -225,7 +225,7 @@ describe("(1) rich /ask default", () => {
 		}
 		expect(threw).toBe(false);
 		// One search with limit 5.
-		const searches = calls.filter((c) => c.tool === "memory_search");
+		const searches = calls.filter((c) => c.tool === "query");
 		expect(searches).toHaveLength(1);
 		expect((searches[0]!.args as Record<string, unknown>)["limit"]).toBe(5);
 		expect((searches[0]!.args as Record<string, unknown>)["query"]).toBe(P1);
@@ -250,7 +250,7 @@ describe("(1) rich /ask default", () => {
 		]);
 		expect(tail[9]).toBe(CHILD_EXCLUDED_TOOLS);
 		const prompt = String(tail[11] ?? "");
-		expect(prompt).toContain("Memory context (ai-raccoon memory_search");
+		expect(prompt).toContain("Memory context (ai-raccoon query");
 		expect(prompt).toContain(`Question: ${P1}`);
 		expect(spawnCalls[0]!.opts.cwd).toBe("/tmp/ask-1");
 		expect(spawnCalls[0]!.opts.timeoutMs).toBe(ASK_CHILD_TIMEOUT_MS);
@@ -288,9 +288,9 @@ describe("(2) expanded /ask", () => {
 				results: MEM_HITS,
 				code: CODE_HITS,
 				values: {
-					m1: { value: "the full decision text for delegation timeouts", path: "shared/a.md", chunkIndex: 1, totalChunks: 36 },
-					m2: new Error("memory_get exploded"),
-					c1: { value: "full code body for the injection path", path: "src/a.ts", lineStart: 10, lineEnd: 20 },
+					m1: { value: "the full decision text for delegation timeouts", path: "shared/a.md", entryType: "memory" },
+					m2: new Error("get_entry exploded"),
+					c1: { value: "full code body for the injection path", path: "src/a.ts", lineStart: 10, lineEnd: 20, entryType: "code" },
 				},
 			},
 			async () => ({ stdout: jsonlAnswer(answer), stderr: "", exitCode: 0 }),
@@ -299,13 +299,13 @@ describe("(2) expanded /ask", () => {
 		const result = await fireAsk(pi, P1, "/tmp/ask-2", "sess-ask-2", notes);
 		expect(result).toBe(notes[notes.length - 1]!.message);
 		expect(String(result)).toContain(answer);
-		const gets = calls.filter((c) => c.tool === "memory_get" || c.tool === "code_get");
+		const gets = calls.filter((c) => c.tool === "get_entry");
 		expect(gets.length).toBe(3);
 		for (const g of gets) expect(g.timeoutMs).toBeLessThanOrEqual(5000);
 		// Fallback + provenance land in the spawned prompt (tail: script prefix aware).
 		expect(spawnCalls).toHaveLength(1);
 		const prompt = String(spawnCalls[0]!.argv.slice(-12)[11] ?? "");
-		expect(prompt).toContain("memory_get/code_get, expanded");
+		expect(prompt).toContain("get_entry, expanded");
 		expect(prompt).toContain("the full decision text");
 		expect(prompt).toContain("second memory snippet about timeouts");
 	});
@@ -351,7 +351,7 @@ describe("(4) /ask with /skill: body", () => {
 		const notes: Notify[] = [];
 		const result = await fireAsk(pi, `/skill:task ${P1}`, "/tmp/ask-4", "sess-ask-4", notes);
 		expect(String(result)).toContain(answer);
-		const searches = calls.filter((c) => c.tool === "memory_search");
+		const searches = calls.filter((c) => c.tool === "query");
 		expect(searches).toHaveLength(1);
 		expect((searches[0]!.args as Record<string, unknown>)["query"]).toBe(P1);
 		expect(spawnCalls).toHaveLength(1);
@@ -376,7 +376,7 @@ describe("(5) bank throw/timeout", () => {
 		expect(threw).toBe(false);
 		expect(result).toBeUndefined();
 		expect(spawnCalls).toHaveLength(0);
-		expect(calls.filter((c) => c.tool === "memory_search")).toHaveLength(1);
+		expect(calls.filter((c) => c.tool === "query")).toHaveLength(1);
 		expect(notes[notes.length - 1]!.message).toContain("bank error");
 		expect(notes[notes.length - 1]!.type).toBe("info");
 	});
@@ -639,7 +639,7 @@ describe("(11) /ask child prompt carries the stripped query", () => {
 		const args = `/skill:task ${P1}`;
 		const result = await fireAsk(pi, args, "/tmp/ask-11", "sess-ask-11", notes);
 		expect(result).toBe(notes[notes.length - 1]!.message);
-		const searches = calls.filter((c) => c.tool === "memory_search");
+		const searches = calls.filter((c) => c.tool === "query");
 		expect(searches).toHaveLength(1);
 		expect((searches[0]!.args as Record<string, unknown>)["query"]).toBe(P1);
 		expect(spawnCalls).toHaveLength(1);
@@ -700,7 +700,7 @@ describe("(13) /ask no-hits and skip counters", () => {
 		}
 		expect(threw).toBe(false);
 		expect(result).toBeUndefined();
-		expect(calls.filter((c) => c.tool === "memory_search")).toHaveLength(1);
+		expect(calls.filter((c) => c.tool === "query")).toHaveLength(1);
 		expect(spawnCalls).toHaveLength(0);
 		expect(notes[notes.length - 1]!.message).toContain("no-hits");
 		expect(notes[notes.length - 1]!.type).toBe("info");
@@ -751,7 +751,7 @@ describe("(14) /ask child budget split", () => {
 		await fireAsk(pi, P1, "/tmp/ask-child-set", "sess-ask-child-set", notes);
 		expect(spawnCalls).toHaveLength(1);
 		expect(spawnCalls[0]!.opts.timeoutMs).toBe(45000);
-		const searches = calls.filter((c) => c.tool === "memory_search");
+		const searches = calls.filter((c) => c.tool === "query");
 		expect(searches).toHaveLength(1);
 		expect(searches[0]!.timeoutMs).toBe(5000);
 	});
