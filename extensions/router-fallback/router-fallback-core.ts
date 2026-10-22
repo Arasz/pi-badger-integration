@@ -32,12 +32,13 @@
  * contract is still "new episode ⇒ switchCount 0", enforced cheaply on both sides.
  *
  * Pattern provenance: billing/non-retryable + retryable sets are inline copies of
- * pi-ai `utils/retry.js` (installed 1.0.2) plus the OpenRouter-documented typed
+ * pi-ai `utils/retry.js` (installed 1.4.0) plus the OpenRouter-documented typed
  * codes (`payment_required`, `insufficient credits`, `authentication`) from the
  * d-487 research record §4. Overflow sets are inline copies of pi-ai
  * `utils/overflow.js` OVERFLOW_PATTERNS + NON_OVERFLOW_PATTERNS (quirks included:
  * mirroring must agree with pi, not improve on it). If pi-ai is upgraded, diff
- * these two files (drift flag H-pi84).
+ * these two files (drift flag H-pi84) — pi-ai 1.3.0 and 1.4.0 both changed
+ * `retry.js`, and 1.4.0 changed `overflow.js` too.
  */
 
 export type FailureKind =
@@ -65,7 +66,19 @@ export interface ClassifyInput {
 // ------------------------------------------------------------------ signal sets
 // Inline copies — see module header for provenance. Case-insensitive by construction.
 
-/** Non-retryable billing substrings: retry.js 9 in order, then OpenRouter typed codes. */
+/**
+ * pi-ai's retryable status codes, digit-bounded so a code inside a longer word or
+ * number (a request id, a byte count) never matches — pi-ai 1.4.0 (#11057).
+ */
+const STATUS_CODE_PATTERN = /(?<![a-z0-9])(?:429|500|502|503|504|520|524)(?![a-z0-9])/i;
+
+/** The same set minus 503: a 503 classifies as model-unavailable, checked before throttle. */
+const THROTTLE_STATUS_CODE_PATTERN = /(?<![a-z0-9])(?:429|500|502|504|520|524)(?![a-z0-9])/i;
+
+/** A bare 503 in the body (no status prefix) still means model-unavailable. */
+const BARE_503_PATTERN = /(?<![a-z0-9])503(?![a-z0-9])/;
+
+/** Non-retryable billing substrings: retry.js 10 in order, then OpenRouter typed codes. */
 const BILLING_PATTERNS = [
 	/GoUsageLimitError/i,
 	/FreeUsageLimitError/i,
@@ -76,6 +89,7 @@ const BILLING_PATTERNS = [
 	/quota exceeded/i,
 	/billing/i,
 	/subscription_sharing_usage_limit_exceeded/i,
+	/subscription_sharing_workplace_individual_usage_limit_exceeded/i,
 	/payment_required/i,
 	/insufficient credits/i,
 ] as const;
@@ -95,14 +109,13 @@ const NO_PROVIDER_PATTERNS = [/no available model provider/i] as const;
 const THROTTLE_PATTERNS = [
 	/rate.?limit/i,
 	/too many requests/i,
-	/429/i,
-	/50[024]/i,
-	/520/i,
-	/524/i,
+	THROTTLE_STATUS_CODE_PATTERN,
 	/overloaded/i,
+	/server_busy/i,
+	/servers are currently busy/i,
 	/currently experiencing high demand/i,
 	/model is at capacity/i,
-	/service.?unavailable/i,
+	/service.?(?:is.?)?(?:temporarily.?)?unavailable/i,
 	/server.?error/i,
 	/internal.?error/i,
 ] as const;
@@ -110,28 +123,30 @@ const THROTTLE_PATTERNS = [
 /** Full retry.js RETRYABLE set — used ONLY by `recomputeRetryability`, never for kinds. */
 const RETRYABLE_PATTERNS = [
 	/overloaded/i,
+	/server_busy/i,
+	/servers are currently busy/i,
 	/currently experiencing high demand/i,
 	/model is at capacity/i,
 	/rate.?limit/i,
 	/too many requests/i,
-	/429/i,
-	/500/i,
-	/502/i,
-	/503/i,
-	/504/i,
-	/520/i,
-	/524/i,
-	/service.?unavailable/i,
+	STATUS_CODE_PATTERN,
+	/service.?(?:is.?)?(?:temporarily.?)?unavailable/i,
 	/server.?error/i,
 	/internal.?error/i,
-	/provider.?returned.?error/i,
+	/provider.?returned.?(?:an.?)?error/i,
 	/exceeded request buffer limit while retrying upstream/i,
+	/unable to forward upstream/i,
+	/upstream.?request.?failed/i,
+	/upstream_stream_read_error/i,
+	/stream was interrupted/i,
+	/http\/?2 stream failed/i,
 	/network.?error/i,
 	/connection.?error/i,
 	/connection.?refused/i,
 	/connection.?lost/i,
 	/other side closed/i,
 	/fetch failed/i,
+	/request to \S+ failed, reason:/i,
 	/getaddrinfo/i,
 	/ENOTFOUND/i,
 	/EAI_AGAIN/i,
@@ -148,6 +163,8 @@ const RETRYABLE_PATTERNS = [
 	/stream ended before message_stop/i,
 	/stream ended before a terminal response event/i,
 	/http2 request did not get a response/i,
+	/stream disconnected before completion/i,
+	/pending stream has been canceled/i,
 	/retry delay/i,
 	/you can retry your request/i,
 	/try your request again/i,
@@ -184,6 +201,7 @@ const OVERFLOW_PATTERNS = [
 	/context[_ ]length[_ ]exceeded/i,
 	/too many tokens/i,
 	/token limit exceeded/i,
+	/^(?:[\w -]+ API error \(413\):|413(?:\s|:|$))/i,
 	/^4(?:00|13)\s*(?:status code)?\s*\(no body\)/i,
 ] as const;
 
@@ -263,7 +281,7 @@ export function classifyFailure(input: ClassifyInput): FailureClassification {
 		return { kind: "auth", reason: `auth: matched auth signal ${auth}` };
 	}
 
-	if (statusPrefix === 503 || (text !== "" && /503/.test(text))) {
+	if (statusPrefix === 503 || (text !== "" && BARE_503_PATTERN.test(text))) {
 		return { kind: "model-unavailable", reason: "model-unavailable: status 503" };
 	}
 	const noProvider = text !== "" ? firstMatch(NO_PROVIDER_PATTERNS, text) : undefined;

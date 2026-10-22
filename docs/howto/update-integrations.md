@@ -82,6 +82,35 @@ The repo pins `@earendil-works/pi-coding-agent` at `1.0.3`; `bun run test` and `
 | Fixed an OAuth refresh cancel (`refresh_token_invalidated`), codemode failing for the rest of a session after a pnpm global update (new additive `detectInstallChange`), and an interactive `read EIO`/`setRawMode EIO` crash | No action here. `detectInstallChange` is a new export in `config.d.ts`; nothing existing changed shape, and no extension calls it. |
 | pi-ai's `retry.js` and `overflow.js` are byte-identical between 1.0.2 and 1.0.3 | `router-fallback`'s inline signal sets, re-synced in #42 (`22d27bb`), stay current; `cmp` against the 1.0.3 files exits 0. |
 
+## pi 1.1.0 - 1.3.0
+
+The pin moved to 1.3.0 in the 2026-10-17 maintenance sweep (#53) without a changelog pass, so those three releases are recorded here in one go. Only one of them touched this repo:
+
+| pi change | Effect here |
+|---|---|
+| `before_agent_start` became a union on `messageType` (1.2.0): a `user` event carries `prompt` and `images`, a `custom` event carries `message` and no `prompt` | `mem-based-rag` reads `event.prompt` through a narrowing check, so a custom-triggered run no longer looks like a prompt. The `rtk` and adapter handlers ignore the event payload. No further change. |
+| MCP servers report `resources: true` in `pi mcp list --json` instead of resource counts (1.2.0) | Nothing here parses that output; `.pi/mcp.json` is the tracked config. |
+| Themes moved to the published schema at `https://pi.dev/schemas/theme.schema.json` (1.2.0) | This repo ships no theme. |
+| Resumed sessions keep their active tools (1.3.0) | `subagent`, `message-bus` and `monitor` register tools without `defaultActive`, so they stay active on resume. No change. |
+| pi-ai `retry.js` gained load and gateway signals: `server_busy`, `servers are currently busy`, `service is temporarily unavailable`, `provider returned an error`, `unable to forward upstream`, `pending stream has been canceled` (1.3.0) | `router-fallback`'s inline copy of the retryable set still carried the 1.0.2 wording, so those failures were classified `not-fallback` while pi retried them. The re-sync in the 1.4.0 pass below picked them up. |
+
+## pi 1.4.0
+
+The repo pins `@earendil-works/pi-coding-agent` at `1.4.0`; `bun run test` and `bun run typecheck` pass against it, with the extension API type surface byte-identical to 1.3.0 (`dist/index.d.ts` and `dist/core/extensions/types.d.ts` compare equal). One change needed a code edit, the rest are notes:
+
+| pi change | Effect here |
+|---|---|
+| pi-ai `retry.js` and `overflow.js` both changed (1.4.0): new retryable gateway signals (`upstream request failed`, `upstream_stream_read_error`, `stream was interrupted`, `http/2 stream failed`, `stream disconnected before completion`, `request to <url> failed, reason:`), a new non-retryable billing signal (`subscription_sharing_workplace_individual_usage_limit_exceeded`), status codes bounded so a code inside a request id no longer matches, and HTTP 413 counted as request-size overflow | `router-fallback` keeps inline copies of both files and had drifted since 1.0.2. The copies are re-synced: the missing signals are recognized, a workplace usage-limit failure is `billing-exhaustion` (never a model switch), a `429` inside a request id is no longer a throttle, and a 413 fold is caught by the overflow pre-check. |
+| Provider attribution headers moved into pi-ai's client identity, so `before_provider_headers` handlers no longer see the OpenRouter, NVIDIA NIM and OpenCode attribution headers (1.4.0) | `rtk` is the only handler here and it adds its own proxy headers for the `anthropic` provider; the removed headers never belonged to that provider. No change. |
+| Extension tools the branch never added or removed are active again on resume and on `/tree` navigation, unless registered with `defaultActive: false` (1.4.0) | The tools this repo registers (`delegate`, the message-bus tool, the monitor and wait tools) are meant to be available, so making them active on resume is the wanted behavior. No change. |
+| Extensions can import `@earendil-works/pi-ai/models` (the loader now aliases that subpath) (1.4.0) | No extension imports pi-ai at runtime. No change. |
+| The `grep` tool runs `rg --no-config` (1.4.0) | No extension shells out to ripgrep. No change. |
+| Compaction and branch summaries use the model's output limit; `generateSummary()` ignores `reserveTokens` (1.4.0) | Nothing here calls `generateSummary`. No change. |
+| The GitHub Copilot default model moves to `gpt-6.1-sol`, the NVIDIA default to `nemotron-3.5-super-vl-120b-a12b`, the Xiaomi default to `mimo-v2.6-pro`, and `openai-codex` drops `gpt-5.5` and `gpt-5.3-codex-spark` (1.4.0) | `router-fallback`'s frozen chain (`openrouter/free`, `inclusionai/ling-3.1-flash`, `groq/llama-3.3-70b-versatile`, `google/gemini-3.1-flash-lite`, `google/gemini-3.1-pro-preview`) is unaffected; every id is still in the 1.4.0 catalog. No repo code names a retired model. |
+| Codemode scripts wait up to 60 s for a free worker; `PI_CODEMODE_MAX_WORKERS` raises the limit of two (1.4.0) | No extension calls the codemode API. No change. |
+
+The extension `node_modules` trees keep their own `pi-coding-agent` copy, and that is deliberate: pi's extension loader aliases `@earendil-works/pi-coding-agent` to the host's own `dist/index.js`, so the bundled copy is only ever a type source. Its 1.3.0 `.d.ts` files are byte-identical to 1.4.0's extension surface, so the bundled types stay valid.
+
 ## Behavior matrix
 
 Every combination holds without erroring a session. Session start stays silent unless a newer release is confirmed; the `check` subcommand reports everything.

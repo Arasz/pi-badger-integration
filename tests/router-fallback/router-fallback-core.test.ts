@@ -494,3 +494,82 @@ describe("kill-switch, clamp and cap helpers", () => {
 		expect(capNoticeText("short")).toBe("short");
 	});
 });
+
+// ------------------------------------------------- pi-ai 1.4.0 signal re-sync (R1–R9)
+//
+// The inline copies mirror pi-ai `utils/retry.js` + `utils/overflow.js`. pi-ai 1.4.0
+// changed both files (pi-ai 1.3.0 already changed retry.js), so each row below names
+// the signal the copy was missing and the verdict pi gives it.
+
+describe("pi-ai 1.4.0 re-sync: retryable signals the copy was missing", () => {
+	test("R1: 'stream disconnected before completion' is retryable (pi-ai 1.4.0)", () => {
+		expect(
+			recomputeRetryability({
+				stopReason: "error",
+				errorMessage: "stream disconnected before completion: stream closed before response.completed",
+			}),
+		).toBe(true);
+	});
+
+	test("R2: 'upstream request failed' is retryable (pi-ai 1.4.0)", () => {
+		expect(
+			recomputeRetryability({ stopReason: "error", errorMessage: "upstream request failed" }),
+		).toBe(true);
+	});
+
+	test("R3: 'request to <url> failed, reason:' is retryable (pi-ai 1.4.0)", () => {
+		expect(
+			recomputeRetryability({
+				stopReason: "error",
+				errorMessage: "request to https://oauth2.googleapis.com/token failed, reason: socket hang up",
+			}),
+		).toBe(true);
+	});
+
+	test("R4: 'The service is temporarily unavailable' is retryable (pi-ai 1.3.0)", () => {
+		expect(
+			recomputeRetryability({
+				stopReason: "error",
+				errorMessage: "The service is temporarily unavailable",
+			}),
+		).toBe(true);
+	});
+
+	test("R5: 'servers are currently busy' is retryable (pi-ai 1.3.0)", () => {
+		expect(
+			recomputeRetryability({ stopReason: "error", errorMessage: "servers are currently busy" }),
+		).toBe(true);
+	});
+});
+
+describe("pi-ai 1.4.0 re-sync: billing signal the copy was missing", () => {
+	test("R6: the workplace usage-limit signal is billing-exhaustion, never a switch", () => {
+		const text = "subscription_sharing_workplace_individual_usage_limit_exceeded";
+		expect(match(text).kind).toBe("billing-exhaustion");
+		expect(recomputeRetryability({ stopReason: "error", errorMessage: text })).toBe(false);
+	});
+});
+
+describe("pi-ai 1.4.0 re-sync: throttle wording and digit-bounded status codes", () => {
+	test("R7: 'The service is temporarily unavailable' classifies as throttle", () => {
+		expect(match("The service is temporarily unavailable").kind).toBe("throttle");
+	});
+
+	test("R8: a status code inside a request id is not a throttle signal", () => {
+		expect(match("request id 429182 could not be served").kind).toBe("not-fallback");
+		expect(match("request id 503182 could not be served").kind).toBe("not-fallback");
+		expect(
+			recomputeRetryability({ stopReason: "error", errorMessage: "request id 429182 could not be served" }),
+		).toBe(false);
+	});
+});
+
+describe("pi-ai 1.4.0 re-sync: HTTP 413 is a request-size overflow", () => {
+	test("R9: a 413 fold is caught by the overflow pre-check, never a fallback", () => {
+		const fold = 'github-copilot API error (413): {"message":"failed to parse request","code":""}';
+		const result = match(fold);
+		expect(result.kind).toBe("not-fallback");
+		expect(result.reason).toMatch(/context-overflow/i);
+		expect(recomputeRetryability({ stopReason: "error", errorMessage: fold })).toBe(false);
+	});
+});
